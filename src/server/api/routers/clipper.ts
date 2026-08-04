@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
 import { TRPCError } from "@trpc/server";
+import type { PrismaClient } from "@prisma/client";
 import { Resend } from "resend";
 import {
   resolveTikTokPostUrl,
@@ -12,6 +13,41 @@ import { calculateEngagementRate } from "@/lib/ranking-helpers";
 
 // Inicializar Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+/**
+ * Carteira e extrato são dados do PRÓPRIO clipador. Um terceiro só pode ler
+ * se for ADMIN — é o que a tela /clippers faz ao abrir o detalhe de alguém.
+ *
+ * Sem esta checagem, qualquer usuário logado lia o saldo, o total ganho e o
+ * histórico de transações de qualquer clipador apenas trocando o
+ * `clipperProfileId` na chamada (o id vem do input, não da sessão).
+ */
+async function assertCanReadClipperFinancials(
+  db: PrismaClient,
+  callerUserId: string,
+  clipperProfileId: string,
+) {
+  const [target, caller] = await Promise.all([
+    db.clipperProfile.findUnique({
+      where: { id: clipperProfileId },
+      select: { userId: true },
+    }),
+    db.user.findUnique({
+      where: { id: callerUserId },
+      select: { role: true },
+    }),
+  ]);
+
+  // O dono do perfil sempre pode ler o próprio financeiro.
+  if (target?.userId === callerUserId) return;
+  // Admin lê de qualquer um (detalhe do clipador no painel).
+  if (caller?.role === "ADMIN") return;
+
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "Você só pode consultar a sua própria carteira.",
+  });
+}
 
 type LeagueErrorBody = {
   message?: string;
@@ -310,7 +346,8 @@ export const clipperRouter = createTRPCRouter({
   }),
 
   // Buscar todos os clippers
-  getAll: privateProcedure
+  // Somente ADMIN: lista de todos os clipadores (devolve cpf, telefone e chave PIX).
+  getAll: adminProcedure
     .input(
       z.object({
         status: z
@@ -466,7 +503,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Buscar Social Accounts de um clipper
-  getClipperSocialAccounts: privateProcedure
+  // Somente ADMIN: contas sociais de um clipador qualquer.
+  getClipperSocialAccounts: adminProcedure
     .input(z.object({ clipperProfileId: z.string() }))
     .query(async ({ ctx, input }) => {
       const socialAccounts = await ctx.db.socialAccount.findMany({
@@ -652,7 +690,8 @@ export const clipperRouter = createTRPCRouter({
   }),
 
   // Verificar clipper
-  verify: privateProcedure
+  // Somente ADMIN: aprovar clipador.
+  verify: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -737,7 +776,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Rejeitar clipper
-  reject: privateProcedure
+  // Somente ADMIN: rejeitar clipador.
+  reject: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -799,7 +839,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Banir clipador
-  ban: privateProcedure
+  // Somente ADMIN: banir clipador.
+  ban: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -830,7 +871,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Desbanir clipador (reverter para VERIFIED)
-  unban: privateProcedure
+  // Somente ADMIN: desbanir clipador.
+  unban: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -951,6 +993,14 @@ export const clipperRouter = createTRPCRouter({
   getWallet: privateProcedure
     .input(z.object({ clipperProfileId: z.string() }))
     .query(async ({ ctx, input }) => {
+      // Fora do try: um FORBIDDEN não pode ser engolido pelo catch abaixo,
+      // que devolve null em qualquer erro.
+      await assertCanReadClipperFinancials(
+        ctx.db,
+        ctx.userId,
+        input.clipperProfileId,
+      );
+
       try {
         console.log(
           "🔍 Buscando wallet para clipperProfileId:",
@@ -1012,6 +1062,13 @@ export const clipperRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      // Fora do try: um FORBIDDEN não pode ser engolido pelo catch abaixo.
+      await assertCanReadClipperFinancials(
+        ctx.db,
+        ctx.userId,
+        input.clipperProfileId,
+      );
+
       try {
         // Buscar a wallet primeiro
         const wallet = await ctx.db.wallet.findUnique({
@@ -1074,7 +1131,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Estatísticas da wallet
-  getWalletStats: privateProcedure
+  // Somente ADMIN: estatísticas da carteira de um clipador qualquer.
+  getWalletStats: adminProcedure
     .input(z.object({ clipperProfileId: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
@@ -3316,7 +3374,8 @@ export const clipperRouter = createTRPCRouter({
   // ============================================================================
 
   // Ranking geral de clippers (views totais, ganhos, etc.)
-  getRankingData: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: ranking interno com e-mail, saldo e total ganho de todos.
+  getRankingData: adminProcedure.query(async ({ ctx }) => {
     try {
       // 1. Top Clippers por Views Totais (todas as competições)
       const topByTotalViews = await ctx.db.clipperApplication.findMany({

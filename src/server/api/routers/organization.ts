@@ -1,5 +1,5 @@
 import { currentUser } from "@clerk/nextjs/server";
-import { createTRPCRouter, privateProcedure } from "../trpc";
+import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 
@@ -397,7 +397,8 @@ export const organizationRouter = createTRPCRouter({
   }),
 
   // Adicionar membro à organização
-  addMember: privateProcedure
+  // Somente ADMIN: adicionar membro à organização.
+  addMember: adminProcedure
     .input(
       z.object({
         organizationId: z.string(),
@@ -472,7 +473,8 @@ export const organizationRouter = createTRPCRouter({
     }),
 
   // Atualizar role de um membro
-  updateMemberRole: privateProcedure
+  // Somente ADMIN: alterar o papel de um membro.
+  updateMemberRole: adminProcedure
     .input(
       z.object({
         memberId: z.string(),
@@ -520,7 +522,8 @@ export const organizationRouter = createTRPCRouter({
     }),
 
   // Remover membro da organização
-  removeMember: privateProcedure
+  // Somente ADMIN: remover membro da organização.
+  removeMember: adminProcedure
     .input(z.object({ memberId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const user = await currentUser();
