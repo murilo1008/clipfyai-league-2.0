@@ -1,4 +1,4 @@
-import { createTRPCRouter, privateProcedure } from "../trpc";
+import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -162,7 +162,8 @@ export const campaignRouter = createTRPCRouter({
   }),
 
   // Buscar todas as campanhas para o select
-  getAll: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: listagem administrativa de campanhas.
+  getAll: adminProcedure.query(async ({ ctx }) => {
     try {
       const campaigns = await ctx.db.campaign.findMany({
         select: {
@@ -186,7 +187,8 @@ export const campaignRouter = createTRPCRouter({
   }),
 
   // Relatórios completos de uma campanha
-  getReports: privateProcedure
+  // Somente ADMIN: relatório da campanha.
+  getReports: adminProcedure
     .input(z.object({ campaignId: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
@@ -556,7 +558,8 @@ export const campaignRouter = createTRPCRouter({
     }),
 
   // Query paginada para TODOS os posts de uma campanha (infinite scroll)
-  getReportsPosts: privateProcedure
+  // Somente ADMIN: posts do relatório da campanha.
+  getReportsPosts: adminProcedure
     .input(
       z.object({
         campaignId: z.string(),
@@ -642,7 +645,8 @@ export const campaignRouter = createTRPCRouter({
     }),
 
   // Query paginada para TODAS as contas de uma campanha (infinite scroll)
-  getReportsAccounts: privateProcedure
+  // Somente ADMIN: contas do relatório da campanha.
+  getReportsAccounts: adminProcedure
     .input(
       z.object({
         campaignId: z.string(),

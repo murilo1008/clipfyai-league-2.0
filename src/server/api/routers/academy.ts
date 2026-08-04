@@ -1,4 +1,4 @@
-import { createTRPCRouter, privateProcedure } from "../trpc";
+import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 
@@ -302,7 +302,8 @@ export const academyRouter = createTRPCRouter({
   // ============================================================================
 
   // Buscar visão geral da academia (para admin)
-  getOverview: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: painel do CMS da academia.
+  getOverview: adminProcedure.query(async ({ ctx }) => {
     try {
       // Buscar total de módulos
       const totalModules = await ctx.db.academyModule.count();
@@ -424,7 +425,8 @@ export const academyRouter = createTRPCRouter({
   }),
 
   // Buscar todos os módulos (para admin)
-  getAllModules: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: listagem administrativa de módulos.
+  getAllModules: adminProcedure.query(async ({ ctx }) => {
     try {
       const modules = await ctx.db.academyModule.findMany({
         orderBy: { order: "asc" },
@@ -459,7 +461,8 @@ export const academyRouter = createTRPCRouter({
   }),
 
   // Criar novo módulo
-  createModule: privateProcedure
+  // Somente ADMIN: criar módulo.
+  createModule: adminProcedure
     .input(
       z.object({
         title: z.string().min(1, "Título é obrigatório"),
@@ -522,7 +525,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Atualizar módulo
-  updateModule: privateProcedure
+  // Somente ADMIN: editar módulo.
+  updateModule: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -576,7 +580,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Deletar módulo
-  deleteModule: privateProcedure
+  // Somente ADMIN: excluir módulo.
+  deleteModule: adminProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -594,7 +599,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Alternar publicação do módulo
-  toggleModulePublish: privateProcedure
+  // Somente ADMIN: publicar/despublicar módulo.
+  toggleModulePublish: adminProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -625,7 +631,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Reordenar módulos
-  reorderModules: privateProcedure
+  // Somente ADMIN: reordenar módulos.
+  reorderModules: adminProcedure
     .input(
       z.object({
         modules: z.array(
@@ -659,7 +666,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Mover módulo para cima ou para baixo
-  moveModule: privateProcedure
+  // Somente ADMIN: mover módulo.
+  moveModule: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -723,7 +731,8 @@ export const academyRouter = createTRPCRouter({
   // ============================================================================
 
   // Buscar todas as aulas
-  getAllLessons: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: listagem administrativa de aulas.
+  getAllLessons: adminProcedure.query(async ({ ctx }) => {
     try {
       const lessons = await ctx.db.academyLesson.findMany({
         orderBy: [
@@ -776,7 +785,8 @@ export const academyRouter = createTRPCRouter({
   }),
 
   // Criar nova aula
-  createLesson: privateProcedure
+  // Somente ADMIN: criar aula.
+  createLesson: adminProcedure
     .input(
       z.object({
         moduleId: z.string(),
@@ -860,7 +870,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Atualizar aula
-  updateLesson: privateProcedure
+  // Somente ADMIN: editar aula.
+  updateLesson: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -927,7 +938,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Deletar aula
-  deleteLesson: privateProcedure
+  // Somente ADMIN: excluir aula.
+  deleteLesson: adminProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -945,7 +957,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Alternar publicação da aula
-  toggleLessonPublish: privateProcedure
+  // Somente ADMIN: publicar/despublicar aula.
+  toggleLessonPublish: adminProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -976,7 +989,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Alternar aula gratuita
-  toggleLessonFree: privateProcedure
+  // Somente ADMIN: marcar aula como gratuita.
+  toggleLessonFree: adminProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -1007,7 +1021,8 @@ export const academyRouter = createTRPCRouter({
     }),
 
   // Mover aula
-  moveLesson: privateProcedure
+  // Somente ADMIN: mover aula.
+  moveLesson: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -1071,7 +1086,8 @@ export const academyRouter = createTRPCRouter({
   // ADMIN - MÉTRICAS & ENGAJAMENTO (Relatórios)
   // ============================================================================
 
-  getReports: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: relatórios da academia.
+  getReports: adminProcedure.query(async ({ ctx }) => {
     try {
       // 1. Estatísticas gerais
       const [

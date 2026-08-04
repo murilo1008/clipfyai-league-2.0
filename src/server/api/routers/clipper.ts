@@ -474,7 +474,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Buscar um clipper por ID
-  getById: privateProcedure
+  // Somente ADMIN: perfil completo de um clipador (cpf, telefone, chave PIX).
+  getById: adminProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
       const clipper = await ctx.db.clipperProfile.findUnique({
@@ -518,7 +519,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Estatísticas dos clippers
-  getStats: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: estatísticas agregadas de clipadores.
+  getStats: adminProcedure.query(async ({ ctx }) => {
     const [verified, pending, unverified, rejected, total, activeSubscribers] =
       await Promise.all([
         ctx.db.clipperProfile.count({
@@ -809,7 +811,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Definir status como pendente
-  setPending: privateProcedure
+  // Somente ADMIN: mudar status de verificação para pendente.
+  setPending: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -909,7 +912,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Definir status como não verificado
-  setUnverified: privateProcedure
+  // Somente ADMIN: mudar status de verificação para não verificado.
+  setUnverified: adminProcedure
     .input(
       z.object({
         id: z.string(),
@@ -939,7 +943,8 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Atualizar clipper (para edições futuras)
-  update: privateProcedure
+  // Somente ADMIN: editar o cadastro de um clipador.
+  update: adminProcedure
     .input(
       z.object({
         id: z.string(),

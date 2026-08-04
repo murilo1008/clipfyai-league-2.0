@@ -5,7 +5,8 @@ import { TRPCError } from "@trpc/server";
 
 export const organizationRouter = createTRPCRouter({
   // Listar todas as organizações
-  getAll: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: listagem de organizações.
+  getAll: adminProcedure.query(async ({ ctx }) => {
     try {
       const organizations = await ctx.db.organization.findMany({
         include: {
@@ -110,7 +111,8 @@ export const organizationRouter = createTRPCRouter({
   }),
 
   // Buscar uma organização por ID
-  getById: privateProcedure
+  // Somente ADMIN: detalhe da organização.
+  getById: adminProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
@@ -348,7 +350,8 @@ export const organizationRouter = createTRPCRouter({
     }),
 
   // Obter estatísticas agregadas
-  getStats: privateProcedure.query(async ({ ctx }) => {
+  // Somente ADMIN: estatísticas da organização.
+  getStats: adminProcedure.query(async ({ ctx }) => {
     try {
       const totalOrgs = await ctx.db.organization.count();
       const activeOrgs = await ctx.db.organization.count({
