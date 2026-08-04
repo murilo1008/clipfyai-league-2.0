@@ -1,0 +1,1185 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Telas baixas (celular deitado, janelas curtas): compacta o layout
+   em vez de deixar o conteúdo estourar a dobra. */
+@custom-variant short (@media (max-height: 700px));
+
+/* ============================================================
+   CLIPFY LEAGUE 2.0 — DESIGN TOKENS
+   Paleta extraída da apresentação oficial da marca:
+   - Fundo "dark petróleo espacial": #020A14 → #081828
+   - Gradiente da marca: ciano #14F7FE → mint #1FFEC8 → verde #37FA9C
+   ============================================================ */
+
+:root {
+  --radius: 1rem;
+
+  /* Marca (imutável entre temas) */
+  --brand-cyan: #14f7fe;
+  --brand-mint: #1ffec8;
+  --brand-green: #37fa9c;
+  --brand-gradient: linear-gradient(
+    110deg,
+    var(--brand-cyan) 0%,
+    var(--brand-mint) 50%,
+    var(--brand-green) 100%
+  );
+
+  /* Tema claro — branco-gelo com tint teal */
+  --background: #f2f8f9;
+  --foreground: #0b2430;
+  --card: #ffffff;
+  --card-foreground: #0b2430;
+  --popover: #ffffff;
+  --popover-foreground: #0b2430;
+  --primary: #089eb8;
+  --primary-foreground: #ffffff;
+  --secondary: #dfeff2;
+  --secondary-foreground: #16404e;
+  --muted: #e6f0f2;
+  --muted-foreground: #5a7482;
+  --accent: #d8f1f4;
+  --accent-foreground: #0b2430;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #d3e3e8;
+  --input: #c6dae0;
+  --ring: #089eb8;
+  --chart-1: #089eb8;
+  --chart-2: #0eb981;
+  --chart-3: #16c5a8;
+  --chart-4: #0284c7;
+  --chart-5: #0f766e;
+  --sidebar: transparent;
+  --sidebar-foreground: #16404e;
+  --sidebar-primary: #089eb8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(8, 158, 184, 0.1);
+  --sidebar-accent-foreground: #0b2430;
+  --sidebar-border: rgba(11, 36, 48, 0.1);
+  --sidebar-ring: #089eb8;
+
+  /* Cores de plataforma p/ gráficos — validadas (CVD + contraste) no light */
+  --chart-facebook: #2563eb;
+  --chart-instagram: #db2777;
+  --chart-kwai: #b45309;
+  --chart-tiktok: #0891b2;
+  --chart-youtube: #dc2626;
+  --chart-growth: #0eb981;
+  /* Degradê da marca p/ o gráfico de crescimento — escurecido p/ contraste no light */
+  --chart-growth-start: #0d9488;
+  --chart-growth-end: #059669;
+}
+
+.dark {
+  /* Tema escuro — padrão da marca (apresentação) */
+  --background: #030d18;
+  --foreground: #ecf7f9;
+  --card: #0a1c2b;
+  --card-foreground: #ecf7f9;
+  --popover: #0b1d2c;
+  --popover-foreground: #ecf7f9;
+  --primary: #14f7fe;
+  --primary-foreground: #04222a;
+  --secondary: #102c3b;
+  --secondary-foreground: #c9e7ea;
+  --muted: #0e2233;
+  --muted-foreground: #7c93a4;
+  --accent: #0e2a36;
+  --accent-foreground: #e8f6f8;
+  --destructive: #ff6b6b;
+  --destructive-foreground: #2a0505;
+  --border: rgba(148, 224, 232, 0.14);
+  --input: rgba(148, 224, 232, 0.18);
+  --ring: #14f7fe;
+  --chart-1: #14f7fe;
+  --chart-2: #37fa9c;
+  --chart-3: #1ffec8;
+  --chart-4: #38bdf8;
+  --chart-5: #14b8a6;
+  --sidebar: transparent;
+  --sidebar-foreground: #d7e5e9;
+  --sidebar-primary: #14f7fe;
+  --sidebar-primary-foreground: #04222a;
+  --sidebar-accent: rgba(20, 247, 254, 0.09);
+  --sidebar-accent-foreground: #eafdfe;
+  --sidebar-border: rgba(148, 224, 232, 0.12);
+  --sidebar-ring: #14f7fe;
+
+  /* Cores de plataforma p/ gráficos — validadas (CVD + contraste) no dark */
+  --chart-facebook: #4f8df7;
+  --chart-instagram: #ee4d96;
+  --chart-kwai: #cc8010;
+  --chart-tiktok: #14a5be;
+  --chart-youtube: #f05252;
+  --chart-growth: #37fa9c;
+  /* Degradê da marca p/ o gráfico de crescimento — neon da apresentação */
+  --chart-growth-start: #14f7fe;
+  --chart-growth-end: #37fa9c;
+}
+
+@theme {
+  --font-sans:
+    var(--font-geologica-sans), ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 16px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-mint: var(--brand-mint);
+  --color-brand-green: var(--brand-green);
+}
+
+/* ============================================================
+   UTILITIES DE MARCA
+   ============================================================ */
+
+@layer utilities {
+  /* Gradiente oficial ciano → mint → verde */
+  .bg-gradient-custom {
+    background: var(--brand-gradient);
+  }
+
+  .bg-gradient-clipfy {
+    background: linear-gradient(
+      135deg,
+      var(--brand-cyan) 0%,
+      var(--brand-mint) 55%,
+      var(--brand-green) 100%
+    );
+  }
+
+  .btn-gradient-auth {
+    background: var(--brand-gradient);
+    color: #04222a;
+    transition:
+      filter 0.2s ease,
+      transform 0.2s ease;
+  }
+  .btn-gradient-auth:hover {
+    filter: brightness(1.08) saturate(1.05);
+  }
+
+  /* Texto com gradiente da marca */
+  .text-gradient {
+    background: var(--brand-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* Vidro petróleo */
+  .glass {
+    background: rgba(242, 248, 249, 0.72);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid rgba(11, 36, 48, 0.08);
+  }
+  .dark .glass {
+    background: rgba(8, 24, 40, 0.55);
+    border: 1px solid rgba(148, 224, 232, 0.1);
+  }
+
+  /* Card da apresentação: escuro, borda fina teal, linha de glow no topo */
+  .glass-card {
+    position: relative;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(22px) saturate(170%);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
+    border: 1px solid rgba(11, 36, 48, 0.1);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .dark .glass-card {
+    background: rgba(8, 24, 40, 0.62);
+    border: 1px solid rgba(148, 224, 232, 0.15);
+  }
+  .glass-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 12% auto 12%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--brand-cyan) 65%, transparent),
+      color-mix(in srgb, var(--brand-green) 65%, transparent),
+      transparent
+    );
+    pointer-events: none;
+  }
+  .glass-card-hover {
+    transition:
+      border-color 0.25s ease,
+      box-shadow 0.25s ease,
+      transform 0.25s ease;
+  }
+  .glass-card-hover:hover {
+    border-color: color-mix(in srgb, var(--brand-cyan) 35%, transparent);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--brand-cyan) 20%, transparent),
+      0 12px 40px -12px color-mix(in srgb, var(--brand-cyan) 35%, transparent);
+    transform: translateY(-2px);
+  }
+
+  /* Grid fino da apresentação */
+  .bg-grid-pattern {
+    background-image:
+      linear-gradient(to right, rgba(11, 36, 48, 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(11, 36, 48, 0.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+  .dark .bg-grid-pattern {
+    background-image:
+      linear-gradient(to right, rgba(20, 247, 254, 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(20, 247, 254, 0.045) 1px, transparent 1px);
+  }
+
+  /* Fundo oficial (slide 12 da apresentação): petróleo radial + glow teal.
+     Mantém o nome legado usado pelas páginas do league. */
+  .dashboard-galaxy {
+    background:
+      radial-gradient(
+        1100px 700px at 50% 118%,
+        rgba(5, 33, 43, 0.9),
+        transparent 60%
+      ),
+      radial-gradient(
+        900px 540px at 78% -12%,
+        rgba(8, 40, 48, 0.55),
+        transparent 60%
+      ),
+      radial-gradient(ellipse at center, #071321 0%, #030d18 62%, #02080f 100%);
+  }
+  /* Light: branco 100% puro, sem glows nem sombra */
+  :root:not(.dark) .dashboard-galaxy {
+    background: #ffffff;
+  }
+}
+
+/* ============================================================
+   ANIMAÇÕES
+   ============================================================ */
+
+@layer utilities {
+  @keyframes gradient {
+    0%,
+    100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fadeInDown {
+    from {
+      opacity: 0;
+      transform: translateY(-16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes scaleIn {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+  @keyframes glow {
+    0%,
+    100% {
+      box-shadow: 0 0 18px rgba(20, 247, 254, 0.25);
+    }
+    50% {
+      box-shadow: 0 0 34px rgba(55, 250, 156, 0.35);
+    }
+  }
+
+  .animate-gradient {
+    background-size: 200% 200%;
+    animation: gradient 6s ease infinite;
+  }
+  .animate-shimmer {
+    animation: shimmer 2.4s linear infinite;
+  }
+  .animate-fade-in-up {
+    animation: fadeInUp 0.5s ease-out both;
+  }
+  .animate-fade-in-down {
+    animation: fadeInDown 0.5s ease-out both;
+  }
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out both;
+  }
+  .animate-scale-in {
+    animation: scaleIn 0.35s ease-out both;
+  }
+  .animate-float {
+    animation: float 5s ease-in-out infinite;
+  }
+  .animate-glow {
+    animation: glow 3.2s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-gradient,
+    .animate-shimmer,
+    .animate-fade-in-up,
+    .animate-fade-in-down,
+    .animate-fade-in,
+    .animate-scale-in,
+    .animate-float,
+    .animate-glow {
+      animation: none;
+    }
+  }
+}
+
+/* ============================================================
+   HERO DA HOME — visualização animada (loop constante, CSS/SVG puro):
+   grid em pan diagonal, barras de views pulsando em onda, área do
+   gráfico "respirando", linha com stroke fluindo, halo pulsante e
+   chips flutuantes. Tudo `infinite` e respeitando reduced-motion.
+   ============================================================ */
+
+@keyframes hero-grid-pan {
+  to {
+    background-position:
+      36px 36px,
+      36px 36px;
+  }
+}
+@keyframes hero-bar-pulse {
+  0%,
+  100% {
+    transform: scaleY(0.32);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes hero-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0);
+  }
+}
+@keyframes hero-pulse-ring {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+@keyframes hero-trace {
+  to {
+    stroke-dashoffset: -260;
+  }
+}
+@keyframes hero-area-breathe {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes hero-filmstrip {
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes hero-sweep {
+  0% {
+    transform: translateX(-160%) skewX(-18deg);
+  }
+  60%,
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+  }
+}
+@keyframes hero-podium-glow {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes hero-clip-progress {
+  0% {
+    width: 6%;
+  }
+  85% {
+    width: 100%;
+  }
+  100% {
+    width: 100%;
+  }
+}
+
+.hero-grid {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--brand-cyan) 9%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--brand-cyan) 9%, transparent) 1px,
+      transparent 1px
+    );
+  background-size:
+    36px 36px,
+    36px 36px;
+  animation: hero-grid-pan 9s linear infinite;
+}
+.hero-bar {
+  transform-origin: bottom;
+  animation: hero-bar-pulse var(--bar-dur, 3s) ease-in-out infinite;
+  animation-delay: var(--bar-delay, 0s);
+}
+.hero-float {
+  animation: hero-float var(--float-dur, 7s) ease-in-out infinite;
+  animation-delay: var(--float-delay, 0s);
+  will-change: transform;
+}
+.hero-pulse-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hero-pulse-ring 3s ease-out infinite;
+}
+.hero-trace {
+  stroke-dasharray: 14 12;
+  animation: hero-trace 2.4s linear infinite;
+}
+.hero-area-breathe {
+  animation: hero-area-breathe 5s ease-in-out infinite;
+}
+.hero-filmstrip {
+  animation: hero-filmstrip var(--strip-dur, 28s) linear infinite;
+  will-change: transform;
+}
+.hero-sweep {
+  animation: hero-sweep 5.5s ease-in-out infinite;
+  will-change: transform;
+}
+.hero-podium-glow {
+  animation: hero-podium-glow var(--podium-dur, 3.6s) ease-in-out infinite;
+  animation-delay: var(--podium-delay, 0s);
+}
+.hero-clip-progress {
+  animation: hero-clip-progress var(--clip-dur, 5s) ease-in-out infinite;
+  animation-delay: var(--clip-delay, 0s);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-grid,
+  .hero-bar,
+  .hero-float,
+  .hero-pulse-ring,
+  .hero-trace,
+  .hero-area-breathe,
+  .hero-filmstrip,
+  .hero-clip-progress,
+  .hero-sweep,
+  .hero-podium-glow {
+    animation: none;
+  }
+}
+
+/* ============================================================
+   ARENA HERO — Competições: aurora em deriva, piso em perspectiva,
+   holofotes pulsando, pódio subindo com brilho varrendo, partículas
+   ascendentes e anel orbitando o troféu. CSS puro, reduced-motion ok.
+   ============================================================ */
+
+@keyframes arena-aurora {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.5;
+  }
+  33% {
+    transform: translate3d(5%, -7%, 0) scale(1.18);
+    opacity: 0.85;
+  }
+  66% {
+    transform: translate3d(-6%, 5%, 0) scale(0.92);
+    opacity: 0.6;
+  }
+}
+@keyframes arena-rise {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes arena-breathe {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(1.045);
+  }
+}
+@keyframes arena-shine {
+  0% {
+    transform: translateX(-160%) skewX(-16deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  38%,
+  100% {
+    transform: translateX(280%) skewX(-16deg);
+    opacity: 0;
+  }
+}
+@keyframes arena-particle {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.5);
+    opacity: 0;
+  }
+  10% {
+    opacity: var(--particle-opacity, 0.9);
+  }
+  75% {
+    opacity: 0.3;
+  }
+  100% {
+    transform: translate3d(var(--particle-x, 0px), -120px, 0) scale(1.05);
+    opacity: 0;
+  }
+}
+@keyframes arena-ring-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes arena-spot {
+  0%,
+  100% {
+    opacity: 0.22;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+@keyframes arena-tilt {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(-1.5deg);
+  }
+  50% {
+    transform: translate3d(0, -12px, 0) rotate(2deg);
+  }
+}
+@keyframes arena-twinkle {
+  0%,
+  100% {
+    transform: scale(0.35) rotate(0deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1) rotate(90deg);
+    opacity: var(--twinkle-opacity, 0.9);
+  }
+}
+@keyframes arena-comet {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(var(--comet-angle, -32deg));
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  24%,
+  100% {
+    transform: translate3d(var(--comet-x, -340px), var(--comet-y, 240px), 0)
+      rotate(var(--comet-angle, -32deg));
+    opacity: 0;
+  }
+}
+@keyframes arena-confetti {
+  0% {
+    transform: translate3d(0, -12px, 0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: var(--confetti-opacity, 0.85);
+  }
+  80% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: translate3d(var(--confetti-x, 14px), 170px, 0)
+      rotate(var(--confetti-rot, 260deg));
+    opacity: 0;
+  }
+}
+@keyframes arena-ripple {
+  0% {
+    transform: scale(0.3);
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+.arena-aurora {
+  animation: arena-aurora 14s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.arena-podium {
+  transform-origin: bottom;
+  animation:
+    arena-rise 1s cubic-bezier(0.22, 1, 0.36, 1) var(--rise-delay, 0s) both,
+    arena-breathe 6s ease-in-out calc(var(--rise-delay, 0s) + 1.4s) infinite;
+}
+.arena-shine {
+  animation: arena-shine 4.8s ease-in-out var(--shine-delay, 0s) infinite;
+  will-change: transform, opacity;
+}
+.arena-particle {
+  animation: arena-particle var(--particle-dur, 6s) linear
+    var(--particle-delay, 0s) infinite;
+  will-change: transform, opacity;
+}
+.arena-ring {
+  animation: arena-ring-spin 8s linear infinite;
+  will-change: transform;
+}
+.arena-spot {
+  animation: arena-spot 7s ease-in-out var(--spot-delay, 0s) infinite;
+}
+.arena-tilt {
+  animation: arena-tilt var(--float-dur, 7s) ease-in-out var(--float-delay, 0s)
+    infinite;
+  will-change: transform;
+}
+.arena-twinkle {
+  animation: arena-twinkle var(--twinkle-dur, 3.6s) ease-in-out
+    var(--twinkle-delay, 0s) infinite;
+  will-change: transform, opacity;
+}
+.arena-comet {
+  animation: arena-comet var(--comet-dur, 9s) ease-in var(--comet-delay, 0s)
+    infinite;
+  will-change: transform, opacity;
+}
+.arena-confetti {
+  animation: arena-confetti var(--confetti-dur, 6s) linear
+    var(--confetti-delay, 0s) infinite;
+  will-change: transform, opacity;
+}
+.arena-ripple {
+  animation: arena-ripple var(--ripple-dur, 4s) ease-out var(--ripple-delay, 0s)
+    infinite;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arena-aurora,
+  .arena-podium,
+  .arena-shine,
+  .arena-particle,
+  .arena-ring,
+  .arena-spot,
+  .arena-tilt,
+  .arena-twinkle,
+  .arena-comet,
+  .arena-confetti,
+  .arena-ripple {
+    animation: none;
+  }
+  .arena-particle,
+  .arena-shine,
+  .arena-twinkle,
+  .arena-comet,
+  .arena-confetti,
+  .arena-ripple {
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   SPLASH DE AUTENTICAÇÃO — tokens por tema.
+   O neon da marca (#14f7fe) desaparece no branco: no LIGHT os
+   acentos caem para o teal escuro da paleta (--primary / #0d9488),
+   que mantém contraste AA sobre o gelo; no DARK volta o gradiente
+   ciano → mint → verde da apresentação.
+   ============================================================ */
+
+:root {
+  --auth-accent: #0891b2;
+  --auth-accent-soft: #0d9488;
+  /* Texto pequeno precisa de 4.5:1 — o teal claro não passa no branco */
+  --auth-accent-text: #0e7490;
+  --auth-gradient: linear-gradient(
+    110deg,
+    #0891b2 0%,
+    #0d9488 52%,
+    #059669 100%
+  );
+  --auth-on-accent: #ffffff;
+  --auth-emblem: #ffffff;
+  --auth-halo-color: color-mix(in oklab, #0891b2 24%, transparent);
+  --auth-ring: color-mix(in oklab, #0891b2 26%, transparent);
+  --auth-ring-soft: color-mix(in oklab, #0891b2 13%, transparent);
+  --auth-track: color-mix(in oklab, #0b2430 10%, transparent);
+  --auth-tile: color-mix(in oklab, #0b2430 5%, transparent);
+  --auth-tile-fg: color-mix(in oklab, #0b2430 42%, transparent);
+  --auth-tile-done: color-mix(in oklab, #0d9488 16%, transparent);
+  --auth-spark: color-mix(in oklab, #0d9488 60%, transparent);
+  --auth-glow-1: color-mix(in oklab, #14b8a6 18%, transparent);
+  --auth-glow-2: color-mix(in oklab, #0891b2 15%, transparent);
+  --auth-grid-line: color-mix(in oklab, #0b2430 6%, transparent);
+  --auth-card-shadow: 0 32px 80px -44px rgba(11, 36, 48, 0.5);
+  --auth-bar-glow: 0 0 16px color-mix(in oklab, #0891b2 38%, transparent);
+  --auth-emblem-shadow: 0 12px 34px -16px rgba(8, 145, 178, 0.55);
+}
+
+.dark {
+  --auth-accent: var(--brand-cyan);
+  --auth-accent-soft: var(--brand-mint);
+  --auth-accent-text: var(--brand-mint);
+  --auth-gradient: var(--brand-gradient);
+  --auth-on-accent: #04222a;
+  --auth-emblem: #0a1c2b;
+  --auth-halo-color: color-mix(in oklab, var(--brand-cyan) 26%, transparent);
+  --auth-ring: color-mix(in oklab, var(--brand-cyan) 30%, transparent);
+  --auth-ring-soft: color-mix(in oklab, var(--brand-cyan) 16%, transparent);
+  --auth-track: rgba(255, 255, 255, 0.1);
+  --auth-tile: rgba(255, 255, 255, 0.05);
+  --auth-tile-fg: rgba(236, 247, 249, 0.36);
+  --auth-tile-done: color-mix(in oklab, var(--brand-green) 22%, transparent);
+  --auth-spark: var(--brand-mint);
+  --auth-glow-1: color-mix(in oklab, var(--brand-cyan) 16%, transparent);
+  --auth-glow-2: color-mix(in oklab, var(--brand-green) 13%, transparent);
+  --auth-grid-line: color-mix(in oklab, var(--brand-cyan) 6%, transparent);
+  --auth-card-shadow: 0 0 90px -38px
+    color-mix(in oklab, var(--brand-cyan) 75%, transparent);
+  --auth-bar-glow: 0 0 18px
+    color-mix(in oklab, var(--brand-mint) 45%, transparent);
+  --auth-emblem-shadow: 0 0 34px -8px
+    color-mix(in oklab, var(--brand-cyan) 45%, transparent);
+}
+
+/* Fundo: gelo com brumas teal no light / petróleo da apresentação no dark */
+.auth-backdrop {
+  background:
+    radial-gradient(
+      1000px 620px at 50% -12%,
+      color-mix(in oklab, #0891b2 8%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      760px 520px at 88% 108%,
+      color-mix(in oklab, #059669 7%, transparent),
+      transparent 60%
+    ),
+    linear-gradient(180deg, #ffffff 0%, #f4fafb 55%, #eaf4f6 100%);
+}
+.dark .auth-backdrop {
+  background:
+    radial-gradient(
+      1100px 700px at 50% 118%,
+      rgba(5, 33, 43, 0.9),
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 540px at 78% -12%,
+      rgba(8, 40, 48, 0.55),
+      transparent 60%
+    ),
+    radial-gradient(ellipse at center, #071321 0%, #030d18 62%, #02080f 100%);
+}
+
+/* Grid fino em pan lento, com máscara radial p/ sumir nas bordas */
+.auth-grid {
+  background-image:
+    linear-gradient(to right, var(--auth-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--auth-grid-line) 1px, transparent 1px);
+  background-size:
+    40px 40px,
+    40px 40px;
+  mask-image: radial-gradient(
+    ellipse 72% 60% at 50% 45%,
+    black 30%,
+    transparent 100%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 72% 60% at 50% 45%,
+    black 30%,
+    transparent 100%
+  );
+  animation: auth-grid-pan 16s linear infinite;
+}
+
+/* Preenchimentos que herdam o gradiente correto do tema */
+.auth-fill {
+  background: var(--auth-gradient);
+  color: var(--auth-on-accent);
+}
+.auth-bar {
+  background: var(--auth-gradient);
+  box-shadow: var(--auth-bar-glow);
+}
+
+/* Arco cônico do emblema: gradiente cônico recortado num anel de 3px
+   (o rounded-full do elemento fecha os cantos do cônico). */
+.auth-arc {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 70deg,
+    var(--auth-accent) 190deg,
+    var(--auth-accent-soft) 250deg,
+    transparent 320deg
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 3px),
+    #000 calc(100% - 3px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 3px),
+    #000 calc(100% - 3px)
+  );
+}
+
+@keyframes auth-indeterminate {
+  0% {
+    transform: translateX(-105%);
+  }
+  100% {
+    transform: translateX(330%);
+  }
+}
+@keyframes auth-halo {
+  0%,
+  100% {
+    transform: scale(0.94);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 0.8;
+  }
+}
+@keyframes auth-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes auth-grid-pan {
+  to {
+    background-position:
+      40px 40px,
+      40px 40px;
+  }
+}
+@keyframes auth-sheen {
+  0% {
+    transform: translateX(-130%) skewX(-18deg);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+    opacity: 0;
+  }
+}
+
+.auth-indeterminate {
+  animation: auth-indeterminate 1.7s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  will-change: transform;
+}
+.auth-halo {
+  animation: auth-halo 3.6s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+/* Arco cônico girando na borda do emblema */
+.auth-spin {
+  animation: auth-spin var(--auth-spin-dur, 4.8s) linear infinite;
+  will-change: transform;
+}
+.auth-sheen {
+  animation: auth-sheen 3.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-halo,
+  .auth-spin,
+  .auth-sheen,
+  .auth-grid {
+    animation: none;
+  }
+  .auth-sheen {
+    opacity: 0;
+  }
+  /* A barra continua se movendo — é o único sinal de "ainda carregando" —
+     mas em ritmo bem mais lento e discreto. */
+  .auth-indeterminate {
+    animation-duration: 3.2s;
+  }
+}
+
+/* ============================================================
+   SKELETON DA MARCA — brilho ciano varrendo os "ossos" enquanto
+   carrega, com stagger por --shimmer-delay. Theme-aware e com
+   fallback para prefers-reduced-motion (fica só o pulse suave).
+   ============================================================ */
+
+@keyframes skeleton-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Dentro de @layer components para que os utilitários do Tailwind
+   (absolute, bg-*, size-*) vençam estas regras — CSS sem layer
+   ganharia da camada utilities e quebraria o posicionamento. */
+@layer components {
+  .skeleton-bone {
+    position: relative;
+    overflow: hidden;
+    background-color: color-mix(in oklab, var(--muted) 75%, transparent);
+    animation: skeleton-breathe 2.4s ease-in-out var(--shimmer-delay, 0s) infinite;
+  }
+  .skeleton-bone::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in oklab, var(--brand-cyan) 14%, transparent) 50%,
+      transparent 80%
+    );
+    animation: skeleton-shimmer 1.9s ease-in-out var(--shimmer-delay, 0s) infinite;
+  }
+  .skeleton-bone:not(.dark *)::after {
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in oklab, var(--primary) 12%, transparent) 50%,
+      transparent 80%
+    );
+  }
+
+  /* ------------------------------------------------------------
+     Ossos sobre as superfícies ESCURAS da marca (os heros são
+     #050f1c nos dois temas). O --muted do dark some nesse fundo,
+     então aqui o osso é um véu branco translúcido com shimmer
+     ciano mais forte. Sempre combinado com .skeleton-bone.
+     ------------------------------------------------------------ */
+  .skeleton-bone.skeleton-bone-strong {
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+  .skeleton-bone.skeleton-bone-strong::after {
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in oklab, var(--brand-cyan) 26%, transparent) 50%,
+      transparent 80%
+    );
+  }
+  /* Variante "apagada" — camadas de fundo do fantasma (cards atrás). */
+  .skeleton-bone.skeleton-bone-faint {
+    background-color: rgba(255, 255, 255, 0.035);
+  }
+
+  /* Painel fantasma: mesma cara dos cards das visualizações
+     (vidro petróleo + hairline ciano), sem shimmer próprio. */
+  .skeleton-panel {
+    position: relative;
+    background-color: rgba(10, 28, 43, 0.72);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklab, var(--brand-cyan) 18%, transparent),
+      0 24px 60px -28px rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .skeleton-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0 14% auto 14%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--brand-cyan) 55%, transparent),
+      color-mix(in oklab, var(--brand-mint) 35%, transparent),
+      transparent
+    );
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bone {
+    animation: none;
+    opacity: 0.7;
+  }
+  .skeleton-bone::after {
+    animation: none;
+    transform: translateX(-100%);
+  }
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  /* Scrollbar da marca */
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(90, 116, 130, 0.35);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, var(--brand-cyan), var(--brand-green));
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: rgba(20, 247, 254, 0.18);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, var(--brand-cyan), var(--brand-green));
+  }
+}

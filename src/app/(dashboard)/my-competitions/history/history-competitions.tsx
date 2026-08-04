@@ -1,0 +1,692 @@
+"use client"
+
+import * as React from "react"
+import Image from "next/image"
+import { useRouter } from "next/navigation"
+import {
+  ArrowUpRight,
+  CalendarBlank,
+  CalendarDots,
+  CheckCircle,
+  Crown,
+  Eye,
+  Funnel,
+  Hash,
+  MagnifyingGlass,
+  Medal,
+  Ranking,
+  ShareNetwork,
+  Target,
+  TrendUp,
+  Trophy,
+  UsersThree,
+  VideoCamera,
+  Wallet,
+  X,
+} from "@phosphor-icons/react"
+import { toast } from "sonner"
+
+import { HomeHero } from "@/components/home/home-hero"
+import { StatTile } from "@/components/home/stat-tile"
+import { HistoryHeroViz, HistoryHeroVizSkeleton } from "@/components/my-competitions/history-hero-viz"
+import { CountUp, formatCompact } from "@/components/shared/count-up"
+import { Reveal } from "@/components/shared/reveal"
+import {
+  Bone,
+  HeroSkeleton,
+  StatTilesGridSkeleton,
+  ToolbarSkeleton,
+} from "@/components/shared/skeletons"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Progress } from "@/components/ui/progress"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
+import { platformConfig, type PlatformKey } from "@/lib/platform-config"
+import { cn } from "@/lib/utils"
+import { api } from "@/trpc/react"
+
+/* ===== Ranking (top3 / top10 / top50 / demais) ===== */
+const getRankingConfig = (ranking: number) => {
+  if (ranking <= 3)
+    return {
+      icon: Crown,
+      color: "text-yellow-500 dark:text-yellow-400",
+      badge: "border-yellow-500/40 bg-yellow-500/15",
+      label: "TOP 3",
+    }
+  if (ranking <= 10)
+    return {
+      icon: Medal,
+      color: "text-blue-500 dark:text-blue-400",
+      badge: "border-blue-500/40 bg-blue-500/15",
+      label: "TOP 10",
+    }
+  if (ranking <= 50)
+    return {
+      icon: Trophy,
+      color: "text-emerald-500 dark:text-emerald-400",
+      badge: "border-emerald-500/40 bg-emerald-500/15",
+      label: "TOP 50",
+    }
+  return {
+    icon: Target,
+    color: "text-zinc-300",
+    badge: "border-border bg-muted/60",
+    label: "Participou",
+  }
+}
+
+/** Converte strings tipo "R$ 5.000" (com espaço comum ou NBSP) em número. */
+const getPrizeValue = (prizeStr: string | undefined) => {
+  if (!prizeStr) return 0
+  const value = parseFloat(prizeStr.replace(/[^\d,]/g, "").replace(",", "."))
+  return isNaN(value) ? 0 : value
+}
+
+const formatDate = (iso: string) =>
+  new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(iso))
+
+const formatPercent = (value: number) =>
+  `${value.toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })}%`
+
+export default function HistoryCompetitions() {
+  const router = useRouter()
+  const { maskText } = useMaskedCurrency()
+
+  const [search, setSearch] = React.useState("")
+  const [platformFilter, setPlatformFilter] = React.useState("all")
+  const [prizeFilter, setPrizeFilter] = React.useState("all")
+
+  // Status PRO do usuário
+  const { data: userData } = api.user.getCurrentUser.useQuery()
+  const isProSubscriber = userData?.subscriptionStatus === "ACTIVE"
+
+  // Histórico de competições concluídas
+  const { data: historyCompetitions = [], isLoading } =
+    api.campaign.getMyCompletedCompetitions.useQuery()
+
+  const filteredCompetitions = historyCompetitions.filter((competition) => {
+    const matchesSearch =
+      competition.name.toLowerCase().includes(search.toLowerCase()) ||
+      (competition.description ?? "")
+        .toLowerCase()
+        .includes(search.toLowerCase())
+    const matchesPlatform =
+      platformFilter === "all" ||
+      competition.platforms.includes(
+        platformFilter as (typeof competition.platforms)[number],
+      )
+    const prizeValue = getPrizeValue(competition.myPrize)
+    const matchesPrize =
+      prizeFilter === "all" ||
+      (prizeFilter === "paid" && competition.prizePaid) ||
+      (prizeFilter === "pending" && !competition.prizePaid && prizeValue > 0) ||
+      (prizeFilter === "none" && prizeValue === 0)
+    return matchesSearch && matchesPlatform && matchesPrize
+  })
+
+  const handleShare = (slug: string) => {
+    void navigator.clipboard.writeText(
+      `${window.location.origin}/my-competitions/${slug}`,
+    )
+    toast.success("Link copiado!", {
+      description: "Link da competição copiado para a área de transferência",
+    })
+  }
+
+  // ===== Estatísticas =====
+  const totalCompetitions = filteredCompetitions.length
+  const totalEarned = filteredCompetitions.reduce(
+    (sum, c) => sum + getPrizeValue(c.myPrize),
+    0,
+  )
+  const totalPosts = filteredCompetitions.reduce((sum, c) => sum + c.myPosts, 0)
+  const averageRanking =
+    totalCompetitions > 0
+      ? Math.round(
+          filteredCompetitions.reduce((sum, c) => sum + c.myRanking, 0) /
+            filteredCompetitions.length,
+        )
+      : 0
+
+  const heroEarned = historyCompetitions.reduce(
+    (sum, c) => sum + getPrizeValue(c.myPrize),
+    0,
+  )
+  const heroPosts = historyCompetitions.reduce((sum, c) => sum + c.myPosts, 0)
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8">
+        <HeroSkeleton stats={3} viz={<HistoryHeroVizSkeleton />} />
+        <StatTilesGridSkeleton count={4} className="grid-cols-1 sm:grid-cols-2" />
+        <ToolbarSkeleton buttons={2} />
+        <div className="flex flex-col gap-4">
+          {[0, 1, 2].map((index) => (
+            <HistoryCardSkeleton key={index} index={index} />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8">
+      {/* ===== Hero ===== */}
+      <HomeHero
+        eyebrow="Clipfy League · Histórico"
+        title={
+          <>
+            Histórico de <span className="text-gradient">competições</span>
+          </>
+        }
+        subtitle="Reveja seu desempenho em competições anteriores — classificações finais, posts enviados e prêmios conquistados."
+        viz={<HistoryHeroViz />}
+        vizSkeleton={<HistoryHeroVizSkeleton />}
+        stats={[
+          {
+            icon: <CheckCircle className="size-3.5" weight="fill" />,
+            label: "Concluídas",
+            value: historyCompetitions.length,
+            kind: "int",
+          },
+          {
+            icon: <Wallet className="size-3.5" weight="fill" />,
+            label: "Total ganho",
+            value: heroEarned,
+            kind: "compactBRL",
+          },
+          {
+            icon: <VideoCamera className="size-3.5" weight="fill" />,
+            label: "Posts",
+            value: heroPosts,
+            kind: "int",
+          },
+        ]}
+      />
+
+      {/* ===== KPIs ===== */}
+      <Reveal immediate>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatTile
+            icon={<CheckCircle className="size-4" weight="fill" />}
+            label="Concluídas"
+            value={totalCompetitions}
+            kind="int"
+            hint="total histórico"
+            accent="cyan"
+          />
+          <StatTile
+            icon={<Wallet className="size-4" weight="fill" />}
+            label="Total Ganho"
+            value={totalEarned}
+            kind="brl"
+            hint="em prêmios"
+            accent="green"
+            gradientValue
+          />
+          <StatTile
+            icon={<VideoCamera className="size-4" weight="fill" />}
+            label="Posts"
+            value={totalPosts}
+            kind="int"
+            hint="total de vídeos"
+            accent="cyan"
+          />
+          {/* Ranking Médio — tile no padrão do StatTile, com prefixo "#" */}
+          <div className="glass-card glass-card-hover flex flex-col gap-3 rounded-2xl p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground text-[11px] font-semibold tracking-[0.14em] uppercase">
+                Ranking Médio
+              </span>
+              <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
+                <Ranking className="size-4" weight="fill" />
+              </span>
+            </div>
+            <span className="text-2xl font-bold tracking-tight tabular-nums sm:text-[1.7rem]">
+              #
+              <CountUp value={averageRanking} kind="int" />
+            </span>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">posição média</span>
+            </div>
+          </div>
+        </div>
+      </Reveal>
+
+      {/* ===== Toolbar: busca + plataforma + prêmio ===== */}
+      <Reveal immediate delayMs={60}>
+        <div className="glass-card flex flex-col gap-3 rounded-3xl p-3.5 sm:p-4 lg:flex-row lg:items-center">
+          <div className="relative min-w-0 flex-1">
+            <MagnifyingGlass className="text-muted-foreground pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar no histórico..."
+              className="focus-visible:ring-brand-cyan/40 h-10 rounded-xl pl-10"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Limpar busca"
+                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 cursor-pointer"
+              >
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
+          <div className="flex flex-col gap-2.5 min-[420px]:flex-row min-[420px]:items-center">
+            <Select value={platformFilter} onValueChange={setPlatformFilter}>
+              <SelectTrigger className="h-10! w-full cursor-pointer rounded-xl min-[420px]:w-[180px]">
+                <Funnel className="text-muted-foreground size-3.5" />
+                <SelectValue placeholder="Plataforma" />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                <SelectItem value="all">Todas Plataformas</SelectItem>
+                <SelectItem value="INSTAGRAM">Instagram</SelectItem>
+                <SelectItem value="TIKTOK">TikTok</SelectItem>
+                <SelectItem value="YOUTUBE">YouTube</SelectItem>
+                <SelectItem value="KWAI">Kwai</SelectItem>
+                <SelectItem value="FACEBOOK">Facebook</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={prizeFilter} onValueChange={setPrizeFilter}>
+              <SelectTrigger className="h-10! w-full cursor-pointer rounded-xl min-[420px]:w-[160px]">
+                <Wallet className="text-muted-foreground size-3.5" />
+                <SelectValue placeholder="Prêmio" />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="paid">Pagos</SelectItem>
+                <SelectItem value="pending">Pendentes</SelectItem>
+                <SelectItem value="none">Sem prêmio</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </Reveal>
+
+      {/* ===== Lista do histórico ===== */}
+      {filteredCompetitions.length === 0 ? (
+        <Reveal immediate delayMs={120}>
+          <div className="glass-card flex flex-col items-center gap-4 rounded-3xl px-6 py-16 text-center">
+            <span className="bg-gradient-custom flex size-13 items-center justify-center rounded-2xl text-[#04222A]">
+              <CalendarDots className="size-6" weight="fill" />
+            </span>
+            <div>
+              <p className="text-base font-bold">
+                Nenhuma competição encontrada
+              </p>
+              <p className="text-muted-foreground mt-1 text-sm">
+                {search || platformFilter !== "all" || prizeFilter !== "all"
+                  ? "Tente ajustar seus filtros de busca"
+                  : "Você ainda não completou nenhuma competição"}
+              </p>
+            </div>
+            {historyCompetitions.length === 0 && (
+              <Button
+                onClick={() => router.push("/my-competitions/schedule")}
+                className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
+              >
+                <Trophy className="size-4" weight="fill" />
+                Ver Competições Disponíveis
+              </Button>
+            )}
+          </div>
+        </Reveal>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {filteredCompetitions.map((competition, index) => {
+            const rankConfig = getRankingConfig(competition.myRanking)
+            const RankIcon = rankConfig.icon
+            const rankPercentile =
+              competition.totalParticipants > 0
+                ? (competition.myRanking / competition.totalParticipants) * 100
+                : 0
+            const prizeValue = getPrizeValue(competition.myPrize)
+            const blurPrize = competition.isProOnly && !isProSubscriber
+
+            return (
+              <Reveal immediate key={competition.id} delayMs={120 + index * 80}>
+                <article className="glass-card glass-card-hover group overflow-hidden rounded-3xl">
+                  <div className="grid md:grid-cols-[350px_1fr]">
+                    {/* ===== Capa ===== */}
+                    <div className="relative aspect-video w-full overflow-hidden md:aspect-auto md:h-full md:min-h-[300px]">
+                      <Image
+                        src={competition.coverImageUrl}
+                        alt={competition.name}
+                        fill
+                        sizes="(max-width: 768px) 100vw, 350px"
+                        priority={index === 0}
+                        className="object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-black/25" />
+
+                      {/* Badges topo */}
+                      <div className="absolute inset-x-3 top-3 flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant="outline"
+                            className="gap-1.5 rounded-full border-violet-500/40 bg-violet-500/20 text-violet-300 backdrop-blur-md"
+                          >
+                            <CheckCircle className="size-3" weight="fill" />
+                            Concluída
+                          </Badge>
+                          {competition.isProOnly && (
+                            <Badge className="gap-1 rounded-full border-yellow-400/50 bg-gradient-to-r from-yellow-500 to-amber-500 font-black text-black shadow-lg shadow-amber-500/30">
+                              <Crown className="size-3" weight="fill" />
+                              PRO
+                            </Badge>
+                          )}
+                        </div>
+                        {competition.myRanking > 0 && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "gap-1 rounded-full backdrop-blur-md",
+                              rankConfig.badge,
+                              rankConfig.color,
+                            )}
+                          >
+                            <RankIcon className="size-3" weight="fill" />
+                            <span className="font-bold tabular-nums">
+                              #{competition.myRanking}
+                            </span>
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* Classificação final sobre a capa */}
+                      {competition.myRanking > 0 && (
+                        <div className="absolute inset-x-3 bottom-3">
+                          <div className="rounded-xl border border-[color-mix(in_oklab,var(--brand-cyan)_30%,transparent)] bg-black/45 p-2.5 backdrop-blur-md">
+                            <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                              <span className="font-medium text-white/85">
+                                Classificação Final
+                              </span>
+                              <span className="font-bold text-white tabular-nums">
+                                {competition.myRanking}º /{" "}
+                                {competition.totalParticipants}
+                              </span>
+                            </div>
+                            <Progress
+                              value={Math.max(0, 100 - rankPercentile)}
+                              className="h-1.5 bg-white/15"
+                            />
+                            <p className="mt-1 text-[10px] text-white/70">
+                              Top {rankPercentile.toFixed(0)}%
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ===== Conteúdo ===== */}
+                    <div className="flex min-w-0 flex-col gap-3.5 p-4 sm:p-5 md:p-6">
+                      <div>
+                        <h3 className="text-base leading-tight font-bold tracking-tight sm:text-lg md:text-xl">
+                          {competition.name}
+                        </h3>
+                        {competition.description && (
+                          <p className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-relaxed sm:text-[13px]">
+                            {competition.description}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Plataformas */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {competition.platforms.map((platform) => {
+                          const config =
+                            platformConfig[platform as PlatformKey]
+                          if (!config) return null
+                          const PlatformIcon = config.icon
+                          return (
+                            <Badge
+                              key={platform}
+                              variant="outline"
+                              className={cn(
+                                "gap-1.5 rounded-full",
+                                config.bgColor,
+                                config.borderColor,
+                              )}
+                            >
+                              <PlatformIcon
+                                className={cn("size-3", config.color)}
+                              />
+                              <span className="hidden font-medium min-[420px]:inline">
+                                {config.label}
+                              </span>
+                            </Badge>
+                          )
+                        })}
+                      </div>
+
+                      {/* Stats 2x2 → 4 colunas */}
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <MiniStat
+                          icon={<VideoCamera className="size-3" weight="fill" />}
+                          value={String(competition.myPosts)}
+                          label="posts"
+                          valueClass="text-blue-600 dark:text-blue-400"
+                        />
+                        <MiniStat
+                          icon={<Eye className="size-3" weight="fill" />}
+                          value={formatCompact(competition.myTotalViews)}
+                          label="views"
+                          valueClass="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4]"
+                        />
+                        <MiniStat
+                          icon={<TrendUp className="size-3" weight="bold" />}
+                          value={formatPercent(competition.myEngagementRate)}
+                          label="ER"
+                          valueClass="text-pink-600 dark:text-pink-400"
+                        />
+                        <MiniStat
+                          icon={<UsersThree className="size-3" weight="fill" />}
+                          value={String(competition.totalParticipants)}
+                          label="participantes"
+                          valueClass="text-orange-600 dark:text-orange-400"
+                        />
+                      </div>
+
+                      {/* Período (com ano) */}
+                      <p className="text-muted-foreground inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
+                        <CalendarBlank className="size-3.5 shrink-0" />
+                        {formatDate(competition.startDate)} –{" "}
+                        {formatDate(competition.endDate)}
+                      </p>
+
+                      {/* Prêmio */}
+                      {prizeValue > 0 ? (
+                        <div
+                          className={cn(
+                            "flex items-center justify-between gap-2 rounded-xl border px-3 py-2",
+                            competition.prizePaid
+                              ? "border-emerald-500/25 bg-emerald-500/10"
+                              : "border-amber-500/25 bg-amber-500/10",
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1.5 text-xs font-semibold",
+                              competition.prizePaid
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-amber-600 dark:text-amber-400",
+                            )}
+                          >
+                            <Medal className="size-3.5" weight="fill" />
+                            {competition.prizePaid
+                              ? "Prêmio Recebido"
+                              : "Prêmio Pendente"}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-sm font-bold tabular-nums",
+                              competition.prizePaid
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-amber-600 dark:text-amber-400",
+                              blurPrize && "blur-sm select-none",
+                            )}
+                          >
+                            {maskText(competition.myPrize)}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="border-border/70 bg-muted/40 flex items-center gap-2 rounded-xl border px-3 py-2">
+                          <Target className="text-muted-foreground size-3.5 shrink-0" />
+                          <span className="text-muted-foreground text-xs font-semibold">
+                            Sem premiação
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Hashtags */}
+                      {competition.requiredHashtags.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Hash className="text-muted-foreground size-3.5 shrink-0" />
+                          {competition.requiredHashtags
+                            .slice(0, 2)
+                            .map((tag) => (
+                              <Badge
+                                key={tag}
+                                variant="outline"
+                                className="border-brand-cyan/25 text-brand-cyan not-dark:border-primary/30 not-dark:text-primary rounded-full font-mono text-[10px]"
+                              >
+                                {tag}
+                              </Badge>
+                            ))}
+                          {competition.requiredHashtags.length > 2 && (
+                            <span className="text-muted-foreground text-[10px] font-semibold">
+                              +{competition.requiredHashtags.length - 2}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* CTAs */}
+                      <div className="mt-auto flex flex-col gap-2 pt-1 min-[420px]:flex-row">
+                        <Button
+                          variant="outline"
+                          className="h-10 flex-1 cursor-pointer rounded-xl font-semibold"
+                          onClick={() =>
+                            router.push(`/my-competitions/${competition.slug}`)
+                          }
+                        >
+                          <ArrowUpRight className="size-4" weight="bold" />
+                          Ver Detalhes
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-10 flex-1 cursor-pointer rounded-xl font-semibold"
+                          onClick={() => handleShare(competition.slug)}
+                        >
+                          <ShareNetwork className="size-4" weight="fill" />
+                          Compartilhar
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              </Reveal>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ===== Mini stat do card horizontal ===== */
+function MiniStat({
+  icon,
+  value,
+  label,
+  valueClass,
+}: {
+  icon: React.ReactNode
+  value: string
+  label: string
+  valueClass?: string
+}) {
+  return (
+    <div className="bg-muted/40 flex flex-col items-center gap-0.5 rounded-xl px-2 py-2">
+      <span className="inline-flex items-center gap-1 text-[13px] font-bold tabular-nums">
+        <span className="text-foreground/70">{icon}</span>
+        <span className={valueClass}>{value}</span>
+      </span>
+      <span className="text-muted-foreground text-[10px] font-semibold tracking-wide uppercase">
+        {label}
+      </span>
+    </div>
+  )
+}
+
+/* ===== Skeleton fantasma do card horizontal ===== */
+function HistoryCardSkeleton({ index }: { index: number }) {
+  const base = index * 150
+  return (
+    <div className="glass-card overflow-hidden rounded-3xl">
+      <div className="grid md:grid-cols-[350px_1fr]">
+        {/* Capa fantasma */}
+        <div className="relative aspect-video w-full md:aspect-square md:h-full">
+          <Bone delay={base} className="h-full w-full rounded-none" />
+          <div className="absolute inset-x-3 top-3 flex items-start justify-between gap-2">
+            <Bone delay={base + 60} className="h-6 w-24 rounded-full" />
+            <Bone delay={base + 120} className="h-6 w-14 rounded-full" />
+          </div>
+          <div className="absolute inset-x-3 bottom-3">
+            <Bone delay={base + 180} className="h-16 w-full rounded-xl" />
+          </div>
+        </div>
+        {/* Conteúdo fantasma */}
+        <div className="flex min-w-0 flex-col gap-3.5 p-4 sm:p-5 md:p-6">
+          <div className="flex flex-col gap-2">
+            <Bone delay={base + 80} className="h-5 w-3/4 max-w-sm" />
+            <Bone delay={base + 140} className="h-4 w-full max-w-md rounded-full" />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[0, 1, 2].map((chip) => (
+              <Bone
+                key={chip}
+                delay={base + 200 + chip * 60}
+                className="h-6 w-20 rounded-full"
+              />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[0, 1, 2, 3].map((stat) => (
+              <Bone
+                key={stat}
+                delay={base + 260 + stat * 60}
+                className="h-[58px] rounded-xl"
+              />
+            ))}
+          </div>
+          <Bone delay={base + 420} className="h-4 w-52 rounded-full" />
+          <Bone delay={base + 480} className="h-10 w-full rounded-xl" />
+          <div className="flex flex-col gap-2 min-[420px]:flex-row">
+            <Bone delay={base + 540} className="h-10 flex-1 rounded-xl" />
+            <Bone delay={base + 600} className="h-10 flex-1 rounded-xl" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

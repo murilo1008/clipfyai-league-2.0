@@ -1,0 +1,3718 @@
+// ClipfyAI - Schema Prisma
+// Plataforma de gerenciamento de competições de cortes cross-plataforma
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// AUTENTICAÇÃO E USUÁRIOS
+// ============================================================================
+
+enum UserRole {
+  ADMIN // Admin Clipfy - controle total do sistema
+  ORGANIZER_ADMIN // Admin Organizador - gerencia campanhas
+  CLIENT // Cliente - empresa/influenciador que vê resultados
+  CLIPPER // Clipador - participante das competições
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+  TRIAL
+  NONE
+}
+
+enum SubscriptionTier {
+  NONE // Sem assinatura
+  PRO // Clipfy League PRO
+  ULTRA // Clipfy League ULTRA (upgrade do PRO)
+}
+
+model User {
+  id                  String   @id // ID do Clerk (não gera CUID)
+  email               String   @unique
+  name                String?
+  imageUrl            String?
+  onboardingCompleted Boolean  @default(false)
+  role                UserRole @default(CLIPPER)
+  referralSlug        String? // Slug de origem do cadastro (ex: slug da competição, canal, campanha)
+  referredByClipperId String? // Clipador afiliado responsável por este cadastro
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Possui loja
+  hasStore Boolean @default(false)
+
+  // Loja Kiwify
+  hasKiwifyStore  Boolean @default(false)
+  kiwifyClientId  String?
+  kiwifySecretKey String?
+  kiwifyAccountId String?
+
+  subscriptionStatus SubscriptionStatus @default(NONE)
+  subscriptionTier   SubscriptionTier   @default(NONE) // Tier da assinatura (PRO, ULTRA)
+
+  // Dados específicos do ULTRA
+  ultraSubscriptionId   String? // ID da assinatura ULTRA na Kiwify
+  ultraOrderId          String? // ID do pedido ULTRA na Kiwify
+  ultraSubscriptionDate DateTime? // Data de assinatura do ULTRA
+
+  // Produtos de compra única
+  hasClipperManual          Boolean   @default(false) // Manual do Clipador (produto único Kiwify)
+  clipperManualPurchaseDate DateTime? // Data da compra do Manual
+
+  // Kiwify (nova plataforma de pagamento)
+  kiwifySubscriptionId String? // ID da assinatura na Kiwify
+  kiwifyOrderId        String? // ID do pedido na Kiwify
+
+  // Plataforma de pagamento atual (para saber onde cancelar)
+  paymentPlatform String? // "kiwify"
+
+  lastPurchaseDate DateTime? // Data da última compra
+
+  // Relações
+  organizations     OrganizationMember[]
+  createdCampaigns  Campaign[]           @relation("CampaignCreator")
+  clientCampaigns   Campaign[]           @relation("CampaignClient") // Campanhas do cliente
+  clipperProfile    ClipperProfile?
+  clientProfile     ClientProfile?
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+  fraudReviews      FraudFlag[]          @relation("FraudReviewer")
+  referredByClipper ClipperProfile?      @relation("ClipperReferrals", fields: [referredByClipperId], references: [id], onDelete: SetNull)
+
+  // Academia
+  lessonProgress AcademyLessonProgress[]
+  lessonLikes    AcademyLessonLike[]
+
+  // Blog
+  blogPosts        BlogPost[]
+  blogComments     BlogComment[]
+  blogPostLikes    BlogPostLike[]
+  blogCommentLikes BlogCommentLike[]
+
+  @@index([email])
+  @@index([role])
+  @@index([referredByClipperId])
+}
+
+// ============================================================================
+// ORGANIZAÇÕES E MEMBROS
+// ============================================================================
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  logoUrl     String?
+  website     String?
+  country     String?
+  timezone    String   @default("UTC")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Configurações de quotas
+  quotaMonthlyIngest       Int @default(100000) // Limite de coletas mensais
+  quotaActiveCampaigns     Int @default(5)
+  quotaCreatorsPerCampaign Int @default(1000)
+
+  // Relações
+  members          OrganizationMember[]
+  campaigns        Campaign[]
+  webhookEndpoints WebhookEndpoint[]
+  quotaUsage       QuotaUsage[]
+  youtubeShopAuths YouTubeShopAuth[]
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model OrganizationMember {
+  id             String           @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrganizationRole @default(MEMBER)
+  permissions    Json? // Permissões granulares customizadas
+  invitedBy      String?
+  joinedAt       DateTime         @default(now())
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  // Relações
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+// ============================================================================
+// CAMPANHAS (COMPETIÇÕES)
+// ============================================================================
+
+enum CampaignStatus {
+  DRAFT // Rascunho
+  SCHEDULED // Agendada
+  ACTIVE // Ativa
+  PAUSED // Pausada
+  COMPLETED // Concluída
+  ARCHIVED // Arquivada
+}
+
+// Tipo de métrica usada para calcular o ranking da competição
+enum RankingMetricType {
+  VIEWS // Apenas Views (padrão atual)
+  VIEWS_X_ENGAGEMENT // Views multiplicado pela taxa de engajamento
+}
+
+enum SpotifyMetricsRunStatus {
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum SpotifyMetricsRunItemStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum ClipPostBucketVideoStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum ClipPostBucketVideoTranscriptionStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+model Campaign {
+  id             String         @id @default(cuid())
+  organizationId String
+  creatorId      String // User que criou (admin/organizer)
+  clientId       String? // Cliente proprietário da campanha
+  name           String
+  slug           String         @unique
+  description    String?
+  status         CampaignStatus @default(DRAFT)
+
+  // Período
+  startDate   DateTime
+  endDate     DateTime
+  timezone    String    @default("UTC")
+  publishedAt DateTime?
+
+  // Configurações
+  platforms         String[] // ["INSTAGRAM", "TIKTOK", "YOUTUBE", "KWAI", "FACEBOOK"]
+  requiredHashtags  String[] // Hashtags obrigatórias
+  requiredMentions  String[] // @menções obrigatórias
+  prohibitedContent String[] // Palavras/temas proibidos
+  eligibilityRules  Json? // Regras adicionais de elegibilidade
+
+  // Landing page
+  landingUrl          String? // URL customizada
+  landingContent      String? // Conteúdo markdown
+  isLeaderboardPublic Boolean @default(false)
+  coverImageUrl       String? // URL da imagem de capa (1:1 - quadrada)
+
+  // Privacidade
+  isPrivate Boolean @default(false) // Se true, competição é privada (acesso restrito)
+  isProOnly Boolean @default(false) // Se true, apenas assinantes PRO podem se inscrever
+
+  // Download de vídeos
+  downloadVideos Boolean @default(false) // Se true, todos os vídeos desta competição serão baixados
+
+  // Métricas de plays de músicas vinculadas no Spotify
+  spotifyMetricsEnabled Boolean @default(false)
+
+  // Configurações de ranking
+  activeRankingRuleId String?
+  tiebreakerRules     Json? // Regras de desempate
+  rankingMetricType   RankingMetricType @default(VIEWS) // Tipo de métrica usada para ranking
+
+  // Configurações de triagem
+  requiresApproval    Boolean @default(true)
+  autoApproveCreators Boolean @default(false)
+
+  // Pagamento PIX do rank diário (fluxo Asaas após crédito na carteira)
+  dailyPix Boolean @default(false)
+
+  // Ranking diário de clipadores por quantidade de vídeos publicados
+  topClippersRankingEnabled Boolean @default(false)
+  topClippersPrizeTable     Json?
+
+  // ============================================================================
+  // LINKS DE AFILIADOS (OPCIONAIS)
+  // URLs base para links de afiliados - o ID do ClipperProfile será adicionado no frontend
+  // ============================================================================
+  affiliateLinkInstagram String? // Link de afiliado para Instagram
+  affiliateLinkTiktok    String? // Link de afiliado para TikTok
+  affiliateLinkYoutube   String? // Link de afiliado para YouTube
+  affiliateLinkFacebook  String? // Link de afiliado para Facebook
+  affiliateLinkKwai      String? // Link de afiliado para Kwai
+
+  // Metadados
+  termsUrl  String?
+  prizeInfo Json? // Informações sobre prêmios
+  metadata  Json? // Dados customizados
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  organization              Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator                   User                           @relation("CampaignCreator", fields: [creatorId], references: [id])
+  client                    User?                          @relation("CampaignClient", fields: [clientId], references: [id], onDelete: SetNull)
+  activeRankingRule         RankingRule?                   @relation("ActiveRankingRule", fields: [activeRankingRuleId], references: [id])
+  rankingRules              RankingRule[]                  @relation("CampaignRankingRules")
+  applications              ClipperApplication[]
+  clipPosts                 ClipPost[]
+  metricsExtractionRuns     CampaignMetricsExtractionRun[]
+  monthlyRankings           MonthlyRanking[]               @relation("MonthlyRankings")
+  dailyRankings             DailyRanking[]                 @relation("DailyRankings")
+  fraudFlags                FraudFlag[]
+  auditLogs                 AuditLog[]
+  notifications             Notification[]
+  metricsExtractionFailures MetricsExtractionFailure[]
+  links                     Link[] // Links de rastreamento
+  bucketVideos              ClipPostBucketVideo[] // Vídeos baixados no bucket
+  rawVideos                 RawVideo[]                     @relation("CampaignRawVideos")
+  spotifyTracks             CampaignSpotifyTrack[]
+  commentAnalysisJobs       CommentAnalysisJob[]
+  commentAnalysisAggregates CommentAnalysisAggregate[]
+
+  @@index([organizationId])
+  @@index([slug])
+  @@index([status])
+  @@index([startDate, endDate])
+  @@index([creatorId])
+  @@index([clientId])
+}
+
+// ============================================================================
+// MÉTRICAS DE MÚSICAS DO SPOTIFY
+// ============================================================================
+
+model SpotifyTrack {
+  id              String    @id @default(cuid())
+  spotifyTrackId  String    @unique // ID público de 22 caracteres
+  spotifyUri      String    @unique
+  shareUrl        String?
+  name            String?
+  artists         Json?
+  albumName       String?
+  albumImageUrl   String?
+  lastCollectedAt DateTime?
+  lastError       String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  campaigns CampaignSpotifyTrack[]
+  metrics   SpotifyTrackMetric[]
+  runItems  SpotifyMetricsRunItem[]
+
+  @@index([lastCollectedAt])
+}
+
+model CampaignSpotifyTrack {
+  id             String   @id @default(cuid())
+  campaignId     String
+  spotifyTrackId String
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  spotifyTrack SpotifyTrack @relation(fields: [spotifyTrackId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, spotifyTrackId])
+  @@index([campaignId, isActive])
+  @@index([spotifyTrackId, isActive])
+}
+
+model SpotifyTrackMetric {
+  id             String   @id @default(cuid())
+  spotifyTrackId String
+  playCount      BigInt
+  collectedAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  spotifyTrack SpotifyTrack @relation(fields: [spotifyTrackId], references: [id], onDelete: Cascade)
+
+  @@index([spotifyTrackId, collectedAt])
+  @@index([collectedAt])
+}
+
+model SpotifyMetricsRun {
+  id             String                  @id @default(cuid())
+  status         SpotifyMetricsRunStatus @default(RUNNING)
+  totalCount     Int                     @default(0)
+  processedCount Int                     @default(0)
+  successCount   Int                     @default(0)
+  failedCount    Int                     @default(0)
+  startedAt      DateTime                @default(now())
+  completedAt    DateTime?
+  errorMessage   String?                 @db.Text
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  items SpotifyMetricsRunItem[]
+
+  @@index([status, createdAt])
+}
+
+model SpotifyMetricsRunItem {
+  id             String                      @id @default(cuid())
+  runId          String
+  spotifyTrackId String
+  status         SpotifyMetricsRunItemStatus @default(QUEUED)
+  attemptsMade   Int                         @default(0)
+  errorMessage   String?                     @db.Text
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  run          SpotifyMetricsRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  spotifyTrack SpotifyTrack      @relation(fields: [spotifyTrackId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, spotifyTrackId])
+  @@index([runId, status])
+  @@index([spotifyTrackId])
+}
+
+// ============================================================================
+// REGRAS DE RANKING (VERSIONADAS) - 100% VIEWS
+// ============================================================================
+
+model RankingRule {
+  id          String  @id @default(cuid())
+  campaignId  String
+  label       String // "V1", "V2", etc.
+  description String?
+  version     Int     @default(1)
+  isActive    Boolean @default(false)
+
+  // ============================================================================
+  // PREMIAÇÃO DIÁRIA
+  // ============================================================================
+
+  // Configurações gerais do ranking diário
+  dailyEnabled          Boolean @default(true) // Se ativa premiação diária
+  dailyTopCount         Int     @default(15) // Quantidade de posições premiadas por dia
+  dailyTotalPrize       Float   @default(1000) // Total de prêmios por dia (R$)
+  dailyTotalMonthBudget Float   @default(30000) // Budget mensal total diário (R$)
+
+  // Tabela de prêmios diária (JSON)
+  // Formato: { "1": 350, "2": 200, "3": 150, "4-15": 25 }
+  dailyPrizeTable Json
+
+  // Janela de tempo para considerar views diárias
+  dailyWindowStart String @default("00:00") // Hora inicial (formato HH:mm)
+  dailyWindowEnd   String @default("23:59") // Hora final (formato HH:mm)
+  dailyTimezone    String @default("America/Sao_Paulo") // Timezone BRT
+
+  // Regras de desempate diário (ordem de prioridade)
+  // Formato: ["views_6h", "views_12h", "posted_earlier"]
+  dailyTiebreakerRules Json
+
+  // ============================================================================
+  // BÔNUS POR MARCO DE VIEWS
+  // ============================================================================
+
+  bonusEnabled          Boolean @default(false) // Se ativa bônus por milestone
+  bonusMilestone        Int     @default(1000000) // Views necessárias para bônus (1M)
+  bonusAmount           Float   @default(100) // Valor do bônus (R$)
+  bonusDeductFromDaily  Boolean @default(false) // Se true, abate do pool diário; se false, é à parte
+  bonusMonthlyBudgetCap Float?  @default(6000) // Teto mensal de bônus (R$) - null = sem limite
+
+  // ============================================================================
+  // PREMIAÇÃO MENSAL
+  // ============================================================================
+
+  monthlyEnabled    Boolean @default(true) // Se ativa premiação mensal
+  monthlyTopCount   Int     @default(10) // Quantidade de posições premiadas no mês
+  monthlyTotalPrize Float   @default(20000) // Total de prêmios mensais (R$)
+
+  // Tabela de prêmios mensal (JSON)
+  // Formato: { "1": 7000, "2": 4000, "3": 3000, ... "10": 400 }
+  monthlyPrizeTable Json
+
+  // Regras de desempate mensal (ordem de prioridade)
+  // Formato: ["videos_100k", "videos_500k", "peak_views", "first_post"]
+  monthlyTiebreakerRules Json
+
+  // Limiares para contagem de vídeos no desempate
+  monthlyThreshold100k Int @default(100000) // Threshold para contar vídeos com +100k
+  monthlyThreshold500k Int @default(500000) // Threshold para contar vídeos com +500k
+
+  // ============================================================================
+  // CONFIGURAÇÕES GERAIS
+  // ============================================================================
+
+  // Métrica principal (mantido como String para compatibilidade)
+  // Use rankingMetricType no Campaign para a nova funcionalidade
+  primaryMetric String @default("VIEWS") // "VIEWS", "ENGAGEMENT", etc.
+
+  // Plataformas elegíveis
+  eligiblePlatforms String[] @default(["INSTAGRAM", "TIKTOK", "YOUTUBE", "FACEBOOK", "KWAI"])
+
+  // Se o mesmo corte sair em várias plataformas, considerar apenas a melhor
+  countBestPlatformOnly Boolean @default(true)
+
+  // Observações e regras adicionais (texto livre)
+  notes String?
+
+  // Metadados para futuras automações
+  automationConfig Json? // Configurações para jobs automáticos
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  campaign        Campaign         @relation("CampaignRankingRules", fields: [campaignId], references: [id], onDelete: Cascade)
+  activeCampaigns Campaign[]       @relation("ActiveRankingRule")
+  monthlyRankings MonthlyRanking[] @relation("MonthlyRankings")
+  dailyRankings   DailyRanking[]   @relation("DailyRankings")
+
+  @@unique([campaignId, version])
+  @@index([campaignId, isActive])
+  @@index([isActive])
+}
+
+// ============================================================================
+// CLÃS
+// ============================================================================
+
+model Clan {
+  id          String  @id @default(cuid())
+  name        String // Nome do clã (ex: "Alpha Squad")
+  tag         String  @unique @db.VarChar(4) // Tag de no máximo 4 letras (ex: "ALFA")
+  emoji       String // Emoji do clã (ex: "🔥", "⚡", "🐉")
+  emojiColor  String // Cor hex do emoji/badge (ex: "#FF5733")
+  imageUrl    String? // Imagem do clã (proporção 1:1)
+  description String? @db.Text // Descrição do clã
+
+  // Dono do clã (clipador responsável por aprovar/rejeitar inscrições)
+  ownerId String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  owner        ClipperProfile?   @relation("ClanOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  members      ClipperProfile[]  @relation("ClanMembers")
+  applications ClanApplication[]
+
+  @@index([tag])
+  @@index([isActive])
+  @@index([ownerId])
+}
+
+enum ClanApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model ClanApplication {
+  id        String @id @default(cuid())
+  clanId    String
+  clipperId String
+
+  status     ClanApplicationStatus @default(PENDING)
+  message    String?               @db.Text // Mensagem opcional do clipador ao se inscrever
+  reviewedAt DateTime?
+  reviewedBy String? // userId de quem aprovou/rejeitou (owner ou admin)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  clan    Clan           @relation(fields: [clanId], references: [id], onDelete: Cascade)
+  clipper ClipperProfile @relation(fields: [clipperId], references: [id], onDelete: Cascade)
+
+  @@unique([clanId, clipperId])
+  @@index([clanId, status])
+  @@index([clipperId])
+}
+
+// ============================================================================
+// PERFIL DO CLIPADOR (CLIPPER)
+// ============================================================================
+
+enum ClipperVerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+  BANNED
+}
+
+model ClipperProfile {
+  id            String  @id @default(cuid())
+  userId        String  @unique
+  affiliateCode String? @unique
+
+  // Identificação
+  fullName        String
+  artisticName    String?
+  phone           String  @default("")
+  cpf             String  @default("")
+  pixKey          String  @default("")
+  country         String  @default("Brasil")
+  state           String  @default("")
+  city            String  @default("")
+  discordUsername String  @default("") // Username do Discord (ex: @usuario)
+  discordId       String  @default("") // ID do Discord (números)
+
+  // Clã (opcional)
+  clanId String?
+
+  // Classes
+  classesInterestedIn Boolean @default(false)
+
+  // Perfis sociais - Arrays para múltiplas contas
+  instagramUsernames String[] // ["@conta1", "@conta2", "@conta3"]
+  tiktokUsernames    String[] // ["@conta1", "@conta2"]
+  youtubeUsernames   String[] // ["@canal1", "@canal2"]
+  kwaiUsernames      String[] // ["@conta1", "@conta2"]
+  facebookUsernames  String[] // ["@conta1", "@conta2"]
+
+  // Histórico e capacidade
+  niches            String[] // ["Gaming", "Tech", "Lifestyle"]
+  tools             String[] // ["Premiere", "CapCut", "DaVinci"]
+  postingFrequency  String   @default("") // "3-5/semana"
+  portfolioLinks    String[] // Links para melhores cortes
+  avgViews          Int?
+  avgEngagementRate Float?
+  bestVideoUrl      String?
+  bestVideoViews    Int?
+  weeklyCommitment  String   @default("") // Quantos vídeos pode postar por dia
+
+  // Conformidade e motivação
+  agreeToTerms          Boolean @default(false)
+  agreeToCompliance     Boolean @default(false)
+  agreeToPublicProfile  Boolean @default(false)
+  agreeToDataProcessing Boolean @default(false)
+  isOver18              Boolean @default(false)
+  motivationText        String  @default("") // Por que quer participar
+
+  // Verificação e scoring
+  verificationStatus ClipperVerificationStatus @default(UNVERIFIED)
+  autoScore          Float? // Score automático de triagem
+  verifiedAt         DateTime?
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clan                  Clan?                 @relation("ClanMembers", fields: [clanId], references: [id], onDelete: SetNull)
+  ownedClans            Clan[]                @relation("ClanOwner")
+  clanApplications      ClanApplication[]
+  applications          ClipperApplication[]
+  wallet                Wallet?
+  socialAccounts        SocialAccount[] // Nova relação com contas de redes sociais
+  monthlyRankingEntries MonthlyRankingEntry[] // Entradas em rankings mensais
+  links                 Link[] // Links de rastreamento
+  kiwifySales           KiwifySale[] // Vendas da Kiwify
+  tiktokConnections     TikTokConnection[]
+  referredUsers         User[]                @relation("ClipperReferrals")
+
+  @@index([userId])
+  @@index([clanId])
+  @@index([verificationStatus])
+}
+
+// ============================================================================
+// PERFIL DO CLIENTE (CLIENT)
+// ============================================================================
+
+model ClientProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  // Informações Básicas
+  fullName String?
+  phone    String?
+  cpf      String? // Ou CNPJ se for empresa
+
+  // Informações da Empresa/Organização
+  company  String?
+  position String? // Cargo na empresa
+  website  String?
+
+  // Localização
+  country String? @default("Brasil")
+  state   String?
+  city    String?
+
+  // Notas e Observações
+  notes String? @db.Text // Notas internas sobre o cliente
+
+  // Status
+  status ClientStatus @default(PENDING) // Status do cliente
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum ClientStatus {
+  ACTIVE // Cliente ativo
+  INACTIVE // Cliente inativo
+  PENDING // Aguardando ativação
+}
+
+// ============================================================================
+// CONTAS DE REDES SOCIAIS DOS CLIPPERS
+// ============================================================================
+
+enum SocialPlatform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+  KWAI
+  FACEBOOK
+}
+
+enum AccountNiche {
+  MOTIVATIONAL
+  GOSSIP
+  MEME
+  ENTREPRENEURSHIP
+  HUMOR
+  GAMING
+  SPORTS
+  MUSIC
+  EDUCATION
+  NEWS
+  POLITICS
+  LIFESTYLE
+  FITNESS
+  FASHION
+  BEAUTY
+  FOOD
+  TRAVEL
+  TECH
+  FINANCE
+  RELIGION
+  ENTERTAINMENT
+  HOT
+  FAMILY
+  MATERNITY
+  PATERNITY
+  MARRIAGE
+  BODYBUILDING
+  WOMEN
+  MEN
+  COUPLE
+  PETS
+  CARS
+  MOTORCYCLES
+  ANIME
+  KPOP
+  DANCE
+  COMEDY
+  DRAMA
+  ASTROLOGY
+  PSYCHOLOGY
+  SELF_HELP
+  PRODUCTIVITY
+  MARKETING
+  SALES
+  REAL_ESTATE
+  CRYPTO
+  INVESTING
+  DIY
+  ART
+  PHOTOGRAPHY
+  CINEMA
+  SERIES
+  BOOKS
+  PODCAST
+  ASMR
+  NATURE
+  SUSTAINABILITY
+  HEALTH
+  MENTAL_HEALTH
+  NUTRITION
+  VEGAN
+  WINE
+  COFFEE
+  BEER
+  COOKING
+  CONFECTIONERY
+  DECORATION
+  ARCHITECTURE
+  GARDEN
+  CLEANING
+  ORGANIZATION
+  PARENTING
+  BABY
+  KIDS
+  TEENS
+  SCHOOL
+  UNIVERSITY
+  LANGUAGES
+  LAW
+  MEDICINE
+  ENGINEERING
+  SCIENCE
+  HISTORY
+  PHILOSOPHY
+  SOCIOLOGY
+  ECONOMY
+  MILITARY
+  POLICE
+  FIREFIGHTER
+  TRUCKER
+  RURAL
+  AGRIBUSINESS
+  FISHING
+  HUNTING
+  SURF
+  SKATE
+  CROSSFIT
+  YOGA
+  PILATES
+  RUNNING
+  CYCLING
+  SWIMMING
+  MARTIAL_ARTS
+  BOXING
+  SOCCER
+  BASKETBALL
+  VOLLEYBALL
+  TENNIS
+  GOLF
+  ESPORTS
+  STREAMER
+  COSPLAY
+  TATTOO
+  PIERCING
+  NAILS
+  HAIR
+  SKINCARE
+  MAKEUP
+  PLUS_SIZE
+  LUXURY
+  MINIMALISM
+  VINTAGE
+  STREETWEAR
+  SNEAKERS
+  JEWELRY
+  WATCHES
+  HANDBAGS
+  WEDDING
+  PARTY
+  EVENTS
+  CARNIVAL
+  FUNK
+  SERTANEJO
+  RAP
+  ROCK
+  POP
+  ELECTRONIC
+  GOSPEL
+  PAGODE
+  FORRO
+  MPB
+  REGGAE
+  JAZZ
+  CLASSICAL
+  COUNTRY
+  TRAP
+  LGBTQ
+  DIVERSITY
+  FEMINISM
+  ACTIVISM
+  CHARITY
+  VOLUNTEERING
+  SPIRITUAL
+  MEDITATION
+  TAROT
+  NUMEROLOGY
+  CONSPIRACY
+  TRUE_CRIME
+  HORROR
+  PARANORMAL
+  RIDDLES
+  TRIVIA
+  CHALLENGES
+  PRANKS
+  REACTIONS
+  UNBOXING
+  REVIEWS
+  TUTORIALS
+  TIPS
+  HACKS
+  STORYTIME
+  CONFESSIONS
+  RELATIONSHIPS
+  DATING
+  BREAKUP
+  FRIENDSHIP
+  BULLYING
+  MENTAL_WELLNESS
+  THERAPY
+  ADHD
+  AUTISM
+  DISABILITY
+  ACCESSIBILITY
+  SIGN_LANGUAGE
+  IMMIGRATION
+  EXPAT
+  NOMAD
+  BACKPACKING
+  CAMPING
+  HIKING
+  BEACH
+  MOUNTAIN
+  FARM
+  CITY
+  INTERIOR
+  FAVELA
+  PERIFERIAS
+  NORDESTE
+  AMAZONIA
+  OTHER
+}
+
+model SocialAccount {
+  id               String @id @default(cuid())
+  clipperProfileId String
+
+  // Identificação da conta
+  platform   SocialPlatform
+  username   String // @username ou handle
+  profileUrl String? // URL completa do perfil
+
+  // Nicho da conta
+  niche AccountNiche?
+
+  // Flags
+  isPrimary  Boolean @default(false) // Conta principal do clipador
+  isVerified Boolean @default(false) // Verificada pela plataforma
+  isActive   Boolean @default(true) // Conta ativa/usada
+
+  // Métricas (opcional - pode ser preenchido depois)
+  followers         Int? // Número de seguidores
+  avgViews          Int? // Média de visualizações
+  avgEngagementRate Float? // Taxa de engajamento média
+  lastCheckedAt     DateTime? // Última verificação das métricas
+
+  // Metadados
+  metadata  Json? // Dados adicionais (bio, categorias, etc)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  clipperProfile      ClipperProfile             @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  applicationAccounts ApplicationSocialAccount[] // Contas usadas em applications
+  youtubeAuth         YouTubeAuth?
+  instagramAuth       InstagramAuth?
+  tiktokAuth          TikTokConnection?
+  clipPosts           ClipPost[]
+
+  @@unique([clipperProfileId, platform, username]) // Uma conta única por clipper/plataforma/username
+  @@index([clipperProfileId])
+  @@index([platform])
+  @@index([username])
+  @@index([isPrimary])
+}
+
+enum YouTubeAuthStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+model YouTubeAuth {
+  id              String @id @default(cuid())
+  socialAccountId String @unique
+
+  accessToken  String
+  refreshToken String?
+  tokenType    String   @default("Bearer")
+  scope        String
+  expiresAt    DateTime
+
+  channelId    String?
+  channelTitle String?
+  channelUrl   String?
+  thumbnailUrl String?
+
+  reportingJobId        String?
+  reportingJobCreatedAt DateTime?
+
+  status       YouTubeAuthStatus @default(PENDING)
+  lastSyncAt   DateTime?
+  errorMessage String?
+  metadata     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  socialAccount SocialAccount    @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  syncLogs      YouTubeSyncLog[]
+
+  @@index([socialAccountId])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([channelId])
+}
+
+enum YouTubeSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+model YouTubeSyncLog {
+  id            String            @id @default(cuid())
+  youtubeAuthId String
+  status        YouTubeSyncStatus @default(PENDING)
+
+  videosProcessed Int @default(0)
+  videosUpdated   Int @default(0)
+  videosFailed    Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  duration    Int?
+
+  errorMessage String?
+  errorDetails Json?
+  logs         Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  youtubeAuth YouTubeAuth @relation(fields: [youtubeAuthId], references: [id], onDelete: Cascade)
+
+  @@index([youtubeAuthId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum InstagramAuthStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+enum InstagramSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+// ============================================================================
+// APLICAÇÕES DOS CLIPPERS (TRIAGEM)
+// ============================================================================
+
+enum ApplicationStatus {
+  PENDING // Aguardando análise
+  UNDER_REVIEW // Em revisão manual
+  APPROVED
+  REJECTED
+  REVOKED // Aprovação revogada (fraude posterior)
+}
+
+model ClipperApplication {
+  id               String            @id @default(cuid())
+  campaignId       String
+  clipperProfileId String
+  status           ApplicationStatus @default(PENDING)
+
+  // Dados da aplicação (snapshot do formulário)
+  formData Json
+
+  // Análise automática
+  autoScore    Float?
+  autoFlags    Json? // Flags automáticas encontradas
+  autoDecision String? // "APPROVE", "REJECT", "MANUAL_REVIEW"
+
+  // Revisão manual
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  reviewNotes     String?
+  rejectionReason String?
+
+  approvedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  // Relações
+  campaign              Campaign                   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clipperProfile        ClipperProfile             @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  clipPosts             ClipPost[]
+  socialAccounts        ApplicationSocialAccount[] // Contas sociais usadas nesta inscrição
+  monthlyRankingEntries MonthlyRankingEntry[] // Entradas em rankings mensais
+  dailyRankingEntries   DailyRankingEntry[] // Entradas em rankings diários
+
+  @@unique([campaignId, clipperProfileId])
+  @@index([campaignId])
+  @@index([clipperProfileId])
+  @@index([clipperProfileId, status])
+  @@index([status])
+  @@index([createdAt])
+  @@index([campaignId, status]) // Contagens de participantes por campanha+status
+}
+
+// ============================================================================
+// CONTAS SOCIAIS USADAS EM APPLICATIONS
+// ============================================================================
+
+model ApplicationSocialAccount {
+  id            String   @id @default(cuid())
+  applicationId String
+  accountId     String
+  createdAt     DateTime @default(now())
+
+  // Relações
+  application   ClipperApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, accountId]) // Uma conta pode ser usada apenas uma vez por application
+  @@index([applicationId])
+  @@index([accountId])
+}
+
+// ============================================================================
+// CLIP POSTS (VÍDEOS ENVIADOS)
+// ============================================================================
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+  KWAI
+  FACEBOOK
+}
+
+enum ClipPostStatus {
+  PENDING // Aguardando validação
+  ELIGIBLE // Elegível ("Tem as # e @ obrigatórias")
+  INELIGIBLE // Inelegível ("Não tem as # e @ obrigatórias")
+  DISQUALIFIED // Desclassificado (fraude - compra de views)
+}
+
+enum MetricsExtractionRunStatus {
+  DISCOVERING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum MetricsExtractionRunItemStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum CommentAnalysisScope {
+  POST
+  CAMPAIGN
+}
+
+enum CommentAnalysisJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum CommentAnalysisItemStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  SKIPPED
+  FAILED
+}
+
+enum CommentAnalysisAggregateScope {
+  POST
+  CAMPAIGN
+}
+
+model ClipPost {
+  id            String   @id @default(cuid())
+  campaignId    String
+  applicationId String
+  platform      Platform
+
+  // URL e identificação
+  submittedUrl    String // URL original enviada pelo clipador
+  normalizedUrl   String? // URL limpa/padronizada (sem parâmetros)
+  platformVideoId String? // ID único do vídeo na plataforma (ex: ABC123xyz)
+
+  // Dados extraídos do vídeo
+  username     String? // Username da conta que postou
+  caption      String? // Legenda completa
+  hashtags     String[]  @default([]) // Hashtags extraídas da legenda
+  mentions     String[]  @default([]) // Menções (@) extraídas da legenda
+  thumbnailUrl String?
+  duration     Int? // Duração em segundos
+  postedAt     DateTime? // Quando foi postado na plataforma
+
+  // Métricas atuais (última extração)
+  views           BigInt  @default(0)
+  likes           Int     @default(0)
+  comments        Int     @default(0)
+  shares          Int     @default(0)
+  saves           Int? // Instagram
+  socialAccountId String?
+
+  // Localização
+  locationId   String? // ID da localização
+  locationName String? // Nome da localização
+  locationSlug String? // Slug da localização
+  locationLat  Float? // Latitude
+  locationLng  Float? // Longitude
+
+  // Status e validação
+  status              ClipPostStatus @default(PENDING)
+  eligibilityChecks   Json? // Resultado de cada validação
+  ineligibilityReason String?
+
+  // Flags de validação
+  hasDuplicates       Boolean  @default(false)
+  hasRequiredHashtags Boolean?
+  hasRequiredMentions Boolean?
+  isInDateRange       Boolean?
+  isPublicProfile     Boolean?
+
+  // Metadados
+  lastMetricsUpdate DateTime? // Última vez que métricas foram atualizadas
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relações
+  campaign                  Campaign                           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  application               ClipperApplication                 @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  socialAccount             SocialAccount?                     @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  metricsHistory            ClipPostMetrics[] // Histórico de métricas
+  fraudFlags                FraudFlag[]
+  dailyRankingEntries       DailyRankingEntry[] // Entradas em rankings diários
+  metricsExtractionFailures MetricsExtractionFailure[]
+  metricsExtractionRunItems CampaignMetricsExtractionRunItem[]
+  bucketVideo               ClipPostBucketVideo?
+  youtubeAnalytics          YouTubeVideoAnalytics[]
+  originalVideoSearches     OriginalVideoSearch[]
+  commentsData              ClipPostComment[]
+  commentAnalysisJobs       CommentAnalysisJob[]
+  commentAnalysisJobItems   CommentAnalysisJobItem[]
+  commentAnalysisAggregates CommentAnalysisAggregate[]
+
+  @@unique([campaignId, platformVideoId, platform])
+  @@index([campaignId])
+  @@index([applicationId])
+  @@index([socialAccountId])
+  @@index([platform])
+  @@index([status])
+  @@index([username])
+  @@index([postedAt])
+  @@index([createdAt])
+  @@index([lastMetricsUpdate])
+  @@index([campaignId, status]) // Contagens/filtros frequentes por campanha+status
+  @@index([campaignId, status, lastMetricsUpdate, id]) // Descoberta de posts para atualização de métricas
+  @@index([campaignId, createdAt, id]) // Jobs diários por campanha e data de criação
+  @@index([applicationId, status]) // Queries por application+ELIGIBLE
+}
+
+model ClipPostComment {
+  id String @id @default(cuid())
+
+  clipPostId        String
+  platform          Platform
+  platformCommentId String
+  platformVideoId   String?
+
+  parentCommentId String?
+  parentComment   ClipPostComment?  @relation("ClipPostCommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         ClipPostComment[] @relation("ClipPostCommentReplies")
+
+  text              String    @db.Text
+  textHash          String?
+  username          String?
+  displayName       String?
+  authorChannelId   String?
+  createdAtPlatform DateTime?
+  likes             Int       @default(0)
+  replyCount        Int       @default(0)
+  source            String
+  raw               Json?
+  lastSyncAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clipPost         ClipPost                 @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  analyses         CommentAnalysisResult[]
+  analysisJobItems CommentAnalysisJobItem[]
+
+  @@unique([clipPostId, platform, platformCommentId])
+  @@index([clipPostId])
+  @@index([clipPostId, likes, createdAtPlatform, createdAt])
+  @@index([textHash])
+  @@index([platformVideoId])
+  @@index([parentCommentId])
+  @@index([createdAtPlatform])
+}
+
+model CommentAnalysisJob {
+  id                          String                   @id @default(cuid())
+  scope                       CommentAnalysisScope
+  status                      CommentAnalysisJobStatus @default(PENDING)
+  campaignId                  String?
+  clipPostId                  String?
+  requestedByUserId           String?
+  requestedByUserEmail        String?
+  forceReprocess              Boolean                  @default(false)
+  promptVersion               String
+  classifierModel             String
+  summarizerModel             String?
+  embeddingModel              String?
+  totalComments               Int                      @default(0)
+  queuedComments              Int                      @default(0)
+  processedComments           Int                      @default(0)
+  skippedComments             Int                      @default(0)
+  failedComments              Int                      @default(0)
+  inputTokens                 Int                      @default(0)
+  outputTokens                Int                      @default(0)
+  classifierInputTokens       Int                      @default(0)
+  classifierCachedInputTokens Int                      @default(0)
+  classifierOutputTokens      Int                      @default(0)
+  summarizerInputTokens       Int                      @default(0)
+  summarizerCachedInputTokens Int                      @default(0)
+  summarizerOutputTokens      Int                      @default(0)
+  embeddingInputTokens        Int                      @default(0)
+  estimatedCostUsd            Float?
+  actualCostUsd               Float?
+  startedAt                   DateTime?
+  completedAt                 DateTime?
+  lastProgressAt              DateTime                 @default(now())
+  errorMessage                String?                  @db.Text
+  metadata                    Json?
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @updatedAt
+
+  campaign Campaign?                @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  clipPost ClipPost?                @relation(fields: [clipPostId], references: [id], onDelete: SetNull)
+  items    CommentAnalysisJobItem[]
+
+  @@index([scope, status])
+  @@index([campaignId, status])
+  @@index([clipPostId, status])
+  @@index([createdAt])
+}
+
+model CommentAnalysisJobItem {
+  id             String                    @id @default(cuid())
+  jobId          String
+  commentId      String
+  clipPostId     String
+  campaignId     String
+  status         CommentAnalysisItemStatus @default(PENDING)
+  skippedReason  String?
+  attemptsMade   Int                       @default(0)
+  batchRequestId String?
+  errorMessage   String?                   @db.Text
+  startedAt      DateTime?
+  completedAt    DateTime?
+  metadata       Json?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  job      CommentAnalysisJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  comment  ClipPostComment    @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  clipPost ClipPost           @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, commentId])
+  @@index([jobId, status])
+  @@index([jobId, status, attemptsMade, createdAt])
+  @@index([jobId, batchRequestId])
+  @@index([commentId])
+  @@index([clipPostId])
+  @@index([campaignId])
+}
+
+model CommentAnalysisResult {
+  id                         String   @id @default(cuid())
+  commentId                  String
+  clipPostId                 String
+  campaignId                 String
+  platform                   Platform
+  textHash                   String
+  normalizedText             String   @db.Text
+  language                   String?
+  sentiment                  String
+  sentimentScore             Float
+  opinionTypes               String[] @default([])
+  intensity                  String
+  tones                      String[] @default([])
+  topics                     String[] @default([])
+  summary                    String   @db.Text
+  isSpam                     Boolean  @default(false)
+  isOffTopic                 Boolean  @default(false)
+  isNoise                    Boolean  @default(false)
+  shouldExcludeFromAggregate Boolean  @default(false)
+  moderation                 Json
+  confidence                 Float
+  representativeScore        Float?
+  rawModelOutput             Json?
+  promptVersion              String
+  model                      String
+  inputTokens                Int?
+  outputTokens               Int?
+  analyzedAt                 DateTime @default(now())
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  comment ClipPostComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, promptVersion, model, textHash])
+  @@index([clipPostId, sentiment])
+  @@index([campaignId, sentiment])
+  @@index([textHash])
+  @@index([textHash, promptVersion, model, analyzedAt])
+  @@index([clipPostId, promptVersion, model, commentId, analyzedAt])
+  @@index([campaignId, promptVersion, model, commentId, analyzedAt])
+  @@index([analyzedAt])
+}
+
+model CommentAnalysisAggregate {
+  id                   String                        @id @default(cuid())
+  scope                CommentAnalysisAggregateScope
+  clipPostId           String?
+  campaignId           String?
+  jobId                String?
+  promptVersion        String
+  model                String
+  analyzedComments     Int
+  ignoredComments      Int                           @default(0)
+  sentimentCounts      Json
+  opinionTypeCounts    Json
+  moderationCounts     Json
+  topicCounts          Json
+  topPositivePoints    Json
+  topCriticisms        Json
+  topSuggestions       Json
+  representative       Json
+  summary              String                        @db.Text
+  publicPerception     String
+  confidence           Float
+  inputTokens          Int?
+  cachedInputTokens    Int?
+  outputTokens         Int?
+  embeddingInputTokens Int?
+  generatedAt          DateTime                      @default(now())
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+
+  clipPost ClipPost? @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([clipPostId])
+  @@index([campaignId])
+  @@index([scope, clipPostId, promptVersion, model, generatedAt])
+  @@index([scope, campaignId, promptVersion, model, generatedAt])
+  @@index([scope, generatedAt])
+}
+
+model YouTubeVideoAnalytics {
+  id         String @id @default(cuid())
+  clipPostId String
+  videoId    String
+
+  views         BigInt @default(0)
+  likes         Int    @default(0)
+  dislikes      Int?   @default(0)
+  comments      Int    @default(0)
+  favoriteCount Int?   @default(0)
+  shares        Int?   @default(0)
+
+  estimatedMinutesWatched Float?
+  averageViewDuration     Float?
+  averageViewPercentage   Float?
+  subscribersGained       Int?
+  subscribersLost         Int?
+
+  topAgeGroups Json?
+  topGenders   Json?
+  topCountries Json?
+  topProvinces Json?
+  topCities    Json?
+
+  topTrafficSources    Json?
+  topPlaybackLocations Json?
+  topDeviceTypes       Json?
+  topOperatingSystems  Json?
+  audienceRetention    Json?
+
+  collectedAt  DateTime @default(now())
+  apiSource    String   @default("YOUTUBE_DATA_API_V3")
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clipPost ClipPost @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+
+  @@unique([clipPostId, collectedAt])
+  @@index([clipPostId])
+  @@index([videoId])
+  @@index([collectedAt])
+  @@index([views])
+}
+
+model YouTubeProvinceAnalytics {
+  id      String @id @default(cuid())
+  videoId String
+
+  country      String
+  province     String
+  provinceName String
+
+  views            Int    @default(0)
+  engagedViews     Int?   @default(0)
+  watchTimeMinutes Float? @default(0)
+
+  reportDate  DateTime
+  collectedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([videoId, country, province, reportDate])
+  @@index([videoId])
+  @@index([country])
+  @@index([reportDate])
+  @@index([views])
+}
+
+// ============================================================================
+// HISTÓRICO DE MÉTRICAS (COLETADAS 2X POR DIA)
+// ============================================================================
+
+model ClipPostMetrics {
+  id          String   @id @default(cuid())
+  clipPostId  String
+  collectedAt DateTime @default(now())
+
+  // Métricas extraídas
+  views    BigInt @default(0)
+  likes    Int    @default(0)
+  comments Int    @default(0)
+  shares   Int    @default(0)
+  saves    Int? // Instagram
+
+  // Métricas derivadas (calculadas no momento da coleta)
+  engagementRate Float? // (likes + comments + shares + saves) / views * 100
+  velocity24h    Float? // Taxa de crescimento nas últimas 24h
+  velocity48h    Float? // Taxa de crescimento nas últimas 48h
+
+  // Deltas desde última coleta
+  viewsDelta    BigInt? // Diferença de views
+  likesDelta    Int? // Diferença de likes
+  commentsDelta Int? // Diferença de comentários
+  sharesDelta   Int? // Diferença de compartilhamentos
+  savesDelta    Int? // Diferença de salvamentos
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  // Relações
+  clipPost ClipPost @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+
+  @@index([clipPostId, collectedAt])
+  @@index([collectedAt])
+}
+
+model CampaignMetricsExtractionRun {
+  id                   String                             @id @default(cuid())
+  campaignId           String
+  status               MetricsExtractionRunStatus         @default(DISCOVERING)
+  triggeredByUserId    String?
+  triggeredByUserEmail String?
+  totalCount           Int                                @default(0)
+  queuedCount          Int                                @default(0)
+  processedCount       Int                                @default(0)
+  successCount         Int                                @default(0)
+  failedCount          Int                                @default(0)
+  skippedCount         Int                                @default(0)
+  startedAt            DateTime                           @default(now())
+  completedAt          DateTime?
+  lastProgressAt       DateTime                           @default(now())
+  errorMessage         String?
+  metadata             Json?
+  createdAt            DateTime                           @default(now())
+  updatedAt            DateTime                           @updatedAt
+  campaign             Campaign                           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  items                CampaignMetricsExtractionRunItem[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CampaignMetricsExtractionRunItem {
+  id             String                         @id @default(cuid())
+  runId          String
+  clipPostId     String?
+  campaignId     String
+  platform       Platform?
+  platformPostId String?
+  queueName      String?
+  queueJobId     String?
+  status         MetricsExtractionRunItemStatus @default(QUEUED)
+  attemptsMade   Int                            @default(0)
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  skippedReason  String?
+  metadata       Json?
+  createdAt      DateTime                       @default(now())
+  updatedAt      DateTime                       @updatedAt
+  run            CampaignMetricsExtractionRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  clipPost       ClipPost?                      @relation(fields: [clipPostId], references: [id], onDelete: SetNull)
+
+  @@unique([runId, clipPostId])
+  @@index([runId])
+  @@index([campaignId])
+  @@index([clipPostId])
+  @@index([queueName, queueJobId])
+  @@index([status])
+}
+
+enum FailureStatus {
+  OPEN // Falha ainda não resolvida
+  RESOLVED // Falha foi resolvida (post foi extraído com sucesso depois)
+  IGNORED // Falha foi ignorada (post deletado, etc)
+}
+
+model MetricsExtractionFailure {
+  id                String        @id @default(cuid())
+  clipPostId        String // ID do post que falhou
+  campaignId        String? // Para facilitar queries por campanha
+  platform          Platform // INSTAGRAM, TIKTOK, FACEBOOK, YOUTUBE, KWAI
+  platformPostId    String // URL ou ID do post na plataforma
+  // Dados do job BullMQ
+  jobId             String? // ID do job BullMQ para referência
+  attemptsMade      Int           @default(2) // Quantas tentativas foram feitas
+  maxAttempts       Int           @default(2) // Total de tentativas configuradas
+  // Erro
+  errorMessage      String // Mensagem de erro
+  errorStack        String?       @db.Text // Stack trace completo (opcional, mas útil para debug)
+  errorType         String? // Tipo do erro (ex: "TimeoutError", "HTTPError", etc)
+  // Contexto adicional
+  submittedUrl      String? // URL original do post (backup)
+  lastMetricsUpdate DateTime? // Última vez que foi atualizado com sucesso
+  // Status e resolução
+  status            FailureStatus @default(OPEN) // OPEN, RESOLVED, IGNORED
+  resolvedAt        DateTime?
+  resolvedBy        String? // ID do usuário que resolveu (opcional)
+  resolutionNotes   String?       @db.Text
+  // Metadados
+  metadata          Json? // Dados adicionais (response HTTP, status code, etc)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  // Relações
+  clipPost          ClipPost      @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  campaign          Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([clipPostId])
+  @@index([campaignId])
+  @@index([platform])
+  @@index([status])
+  @@index([createdAt])
+  @@index([status, createdAt]) // Para queries de falhas abertas ordenadas por data
+}
+
+// ============================================================================
+// RANKINGS - Cada registro contém o ranking COMPLETO do período
+// ============================================================================
+
+// Ranking Mensal - Snapshot do período mensal
+model MonthlyRanking {
+  id            String @id @default(cuid())
+  campaignId    String
+  rankingRuleId String
+
+  // Período mensal
+  monthPeriod String // Formato: "2025-01", "2025-02", etc.
+  windowStart DateTime // Início do mês
+  windowEnd   DateTime // Fim do mês
+
+  // Estatísticas gerais do ranking
+  totalParticipants Int    @default(0) // Total de pessoas no ranking
+  totalPosts        Int    @default(0) // Total de posts considerados
+  totalViews        BigInt @default(0) // Soma total de views de todos
+  averageViews      Float? // Média de views por clipador
+
+  // Metadados
+  metadata     Json? // Dados adicionais, configurações usadas, etc.
+  calculatedAt DateTime @default(now()) // Última atualização
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relações
+  campaign    Campaign              @relation("MonthlyRankings", fields: [campaignId], references: [id], onDelete: Cascade)
+  rankingRule RankingRule           @relation("MonthlyRankings", fields: [rankingRuleId], references: [id])
+  entries     MonthlyRankingEntry[] // Sub-tabela com uma linha por clipador
+
+  @@unique([campaignId, rankingRuleId, monthPeriod])
+  @@index([campaignId, monthPeriod])
+  @@index([calculatedAt])
+}
+
+// SUB-TABELA: Uma entrada por clipador no ranking mensal
+// Atualizável incrementalmente a cada extração de métricas
+model MonthlyRankingEntry {
+  id               String @id @default(cuid())
+  monthlyRankingId String
+  clipperProfileId String
+  applicationId    String
+
+  // Posição e ranking
+  position         Int // Posição atual no ranking (ordenado por totalViews DESC)
+  previousPosition Int? // Posição anterior (para mostrar ↑↓)
+
+  // Métricas acumuladas do mês
+  totalViews    BigInt @default(0) // Total de views do mês
+  totalLikes    Int    @default(0)
+  totalComments Int    @default(0)
+  totalShares   Int    @default(0)
+  totalSaves    Int    @default(0)
+
+  // Score calculado baseado no tipo de métrica da competição
+  // Para VIEWS: rankingScore = totalViews
+  // Para VIEWS_X_ENGAGEMENT: rankingScore = totalViews * engagementRate
+  rankingScore Float @default(0) // Score usado para ordenar o ranking
+
+  // Estatísticas derivadas
+  postsCount          Int     @default(0) // Quantos posts o clipador tem
+  averageViewsPerPost Float? // Média de views por post
+  bestPostViews       BigInt? // Views do melhor post
+  bestPostId          String? // ID do melhor post
+  engagementRate      Float? // Taxa de engajamento geral
+
+  // ============================================================================
+  // CAMPOS PARA DESEMPATE MENSAL
+  // ============================================================================
+
+  // Contagem de vídeos por threshold de views (para desempate)
+  videosOver100k Int @default(0) // Quantidade de vídeos com +100k views
+  videosOver500k Int @default(0) // Quantidade de vídeos com +500k views
+
+  // Data do primeiro post válido no mês (para desempate por quem postou primeiro)
+  firstPostDate DateTime?
+
+  // Prêmio calculado (baseado na posição e tabela de prêmios)
+  prizeAmount Float  @default(0) // Valor do prêmio mensal (R$)
+  prizeStatus String @default("PENDING") // "PENDING", "APPROVED", "PAID"
+
+  // Cache de dados do clipador (desnormalizado para performance)
+  clipperName     String?
+  clipperUsername String?
+  clipperImageUrl String?
+
+  // Timestamps
+  lastUpdated DateTime @default(now()) // Última vez que métricas foram atualizadas
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  monthlyRanking MonthlyRanking     @relation(fields: [monthlyRankingId], references: [id], onDelete: Cascade)
+  clipperProfile ClipperProfile     @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  application    ClipperApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([monthlyRankingId, clipperProfileId]) // Um clipador por ranking
+  @@index([monthlyRankingId, position]) // Query rápida por posição
+  @@index([monthlyRankingId, totalViews]) // Ordenação por views
+  @@index([monthlyRankingId, rankingScore]) // Ordenação por score (VIEWS_X_ENGAGEMENT)
+  @@index([clipperProfileId])
+  @@index([applicationId]) // Busca de rankings por application (batch queries)
+  @@index([lastUpdated])
+  @@index([prizeStatus])
+}
+
+// Ranking Diário - Snapshot do dia específico
+model DailyRanking {
+  id            String @id @default(cuid())
+  campaignId    String
+  rankingRuleId String
+
+  // Data específica do ranking
+  rankingDate DateTime // Data do ranking (YYYY-MM-DD)
+
+  // Estatísticas gerais do ranking do dia
+  totalPosts      Int     @default(0) // Total de posts no ranking
+  totalDailyViews BigInt  @default(0) // Soma de views ganhas no dia
+  totalClippers   Int     @default(0) // Quantos clippers diferentes
+  bestDailyViews  BigInt? // Maior número de views do dia
+  averageViews    Float? // Média de views por post
+
+  // Divulgação
+  announced Boolean @default(false)
+
+  /// Lote de pagamento PIX (Asaas) deste snapshot concluído com sucesso.
+  dailyPixPayoutCompleted Boolean @default(false)
+
+  // Metadados
+  metadata     Json? // Dados adicionais
+  calculatedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relações
+  campaign    Campaign            @relation("DailyRankings", fields: [campaignId], references: [id], onDelete: Cascade)
+  rankingRule RankingRule         @relation("DailyRankings", fields: [rankingRuleId], references: [id])
+  entries     DailyRankingEntry[] // Sub-tabela com uma linha por post
+
+  @@unique([campaignId, rankingRuleId, rankingDate])
+  @@index([campaignId, rankingDate])
+  @@index([rankingDate])
+  @@index([calculatedAt])
+}
+
+// SUB-TABELA: Uma entrada por post no ranking diário
+// Atualizável incrementalmente a cada extração de métricas
+model DailyRankingEntry {
+  id             String @id @default(cuid())
+  dailyRankingId String
+  clipPostId     String
+  applicationId  String
+
+  // Posição e ranking (ordenado por dailyViews DESC - 100% views)
+  position         Int // Posição atual no ranking do dia
+  previousPosition Int? // Posição no dia anterior (para mostrar ↑↓)
+
+  // Métricas do DIA (delta desde ontem ou desde postagem até 23:59 do dia)
+  dailyViews    BigInt @default(0) // Views ganhas HOJE
+  dailyLikes    Int    @default(0) // Likes ganhos hoje
+  dailyComments Int    @default(0) // Comentários ganhos hoje
+  dailyShares   Int    @default(0) // Compartilhamentos ganhos hoje
+  dailySaves    Int    @default(0) // Salvamentos ganhos hoje
+
+  // Score calculado baseado no tipo de métrica da competição
+  // Para VIEWS: dailyRankingScore = dailyViews
+  // Para VIEWS_X_ENGAGEMENT: dailyRankingScore = dailyViews * engagementRate
+  dailyRankingScore Float @default(0) // Score usado para ordenar o ranking diário
+
+  // Métricas TOTAIS do post (acumuladas desde a postagem)
+  totalViewsAtDate    BigInt @default(0) // Total de views até o fim do dia
+  totalLikesAtDate    Int    @default(0) // Total de likes até o fim do dia
+  totalCommentsAtDate Int    @default(0) // Total de comentários até o fim do dia
+  totalSharesAtDate   Int    @default(0) // Total de shares até o fim do dia
+
+  // ============================================================================
+  // CAMPOS PARA DESEMPATE DIÁRIO
+  // ============================================================================
+
+  // Views nas primeiras 6 horas após postagem (para desempate)
+  viewsFirst6h BigInt? @default(0)
+
+  // Views nas primeiras 12 horas após postagem (para desempate)
+  viewsFirst12h BigInt? @default(0)
+
+  // Taxas e crescimento
+  viewsGrowthRate Float? // % de crescimento vs dia anterior
+  engagementRate  Float? // Taxa de engajamento do dia
+
+  // ============================================================================
+  // PRÊMIOS E BÔNUS
+  // ============================================================================
+
+  // Prêmio diário (baseado na posição e tabela de prêmios)
+  dailyPrizeAmount Float  @default(0) // Valor do prêmio diário (R$)
+  dailyPrizeStatus String @default("PENDING") // "PENDING", "APPROVED", "PAID"
+
+  // Bônus por marco de views (1M+)
+  qualifiesForBonus Boolean   @default(false) // Se o vídeo atingiu 1M+ views
+  bonusAmount       Float     @default(0) // Valor do bônus (R$)
+  bonusStatus       String    @default("PENDING") // "PENDING", "APPROVED", "PAID"
+  bonusAwardedAt    DateTime? // Quando o bônus foi concedido
+
+  // Cache de dados do post (desnormalizado para performance)
+  postUrl       String?
+  postThumbnail String?
+  postCaption   String?   @db.Text
+  platform      Platform?
+  postedAt      DateTime?
+
+  // Cache de dados do clipador
+  clipperProfileId String?
+  clipperName      String?
+  clipperUsername  String?
+  clipperImageUrl  String?
+
+  // Desclassificação (soft-delete)
+  isDisqualified Boolean @default(false)
+
+  // Pagamento PIX direto (fluxo Asaas)
+  dailyPrizePaid          Boolean   @default(false)
+  dailyPrizePaidAt        DateTime?
+  asaasTransferId         String?
+  asaasPayoutReceiptUrl   String?
+  dailyPixStatus          String    @default("PENDING")
+  asaasExternalReference  String?
+  asaasStatus             String?
+  asaasFailReason         String?
+  asaasEndToEndIdentifier String?
+  asaasEffectiveDate      DateTime?
+  asaasLastEvent          String?
+  asaasLastEventId        String?
+  asaasLastWebhookAt      DateTime?
+
+  // Timestamps
+  lastUpdated DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  dailyRanking DailyRanking       @relation(fields: [dailyRankingId], references: [id], onDelete: Cascade)
+  clipPost     ClipPost           @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  application  ClipperApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([dailyRankingId, clipPostId]) // Um post por ranking do dia
+  @@index([dailyRankingId, position]) // Query rápida por posição
+  @@index([dailyRankingId, dailyViews]) // Ordenação por views do dia
+  @@index([dailyRankingId, dailyRankingScore]) // Ordenação por score (VIEWS_X_ENGAGEMENT)
+  @@index([clipPostId])
+  @@index([lastUpdated])
+  @@index([dailyPrizeStatus])
+  @@index([dailyPixStatus])
+  @@index([asaasTransferId])
+  @@index([asaasExternalReference])
+  @@index([bonusStatus])
+  @@index([qualifiesForBonus])
+}
+
+// ============================================================================
+// ANTIFRAUDE E FLAGS
+// ============================================================================
+
+enum FraudFlagType {
+  DUPLICATE // Link duplicado
+  ANOMALOUS_ER // ER anômalo
+  SUSPICIOUS_VELOCITY // Saltos suspeitos de views
+  MISSING_HASHTAG // Sem hashtag obrigatória
+  MISSING_MENTION // Sem menção obrigatória
+  OUT_OF_DATE_RANGE // Fora do período
+  PRIVATE_PROFILE // Perfil privado
+  CONTENT_VIOLATION // Violação de conteúdo
+  BOT_ACTIVITY // Atividade de bot detectada
+  OTHER
+}
+
+enum FraudFlagSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FraudFlagStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED_VALID // Flag válida, ação tomada
+  RESOLVED_FALSE // Falso positivo
+  IGNORED
+}
+
+model FraudFlag {
+  id         String            @id @default(cuid())
+  campaignId String
+  clipPostId String?
+  type       FraudFlagType
+  severity   FraudFlagSeverity
+  status     FraudFlagStatus   @default(OPEN)
+
+  // Detalhes
+  message      String
+  details      Json? // Dados técnicos da detecção
+  evidenceUrls String[] // Screenshots, links, etc.
+
+  // Revisão
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  reviewNotes String?
+  resolution  String? // Ação tomada
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  campaign Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clipPost ClipPost? @relation(fields: [clipPostId], references: [id], onDelete: SetNull)
+  reviewer User?     @relation("FraudReviewer", fields: [reviewedBy], references: [id])
+
+  @@index([campaignId])
+  @@index([clipPostId])
+  @@index([status])
+  @@index([severity])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// AUDITORIA
+// ============================================================================
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  REJECT
+  ENABLE
+  DISABLE
+  EXPORT
+  LOGIN
+  LOGOUT
+}
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  userId     String?
+  action     AuditAction
+  entityType String // "Campaign", "Submission", "RankingRule", etc.
+  entityId   String?
+  campaignId String? // Para filtros rápidos
+
+  // Dados da ação
+  changes   Json? // Before/after
+  metadata  Json? // Contexto adicional
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  // Relações
+  user     User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([campaignId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// WEBHOOKS
+// ============================================================================
+
+model WebhookEndpoint {
+  id             String   @id @default(cuid())
+  organizationId String
+  url            String
+  secret         String // Para HMAC
+  events         String[] // Eventos que escuta
+  isActive       Boolean  @default(true)
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relações
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId])
+  @@index([isActive])
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+}
+
+model WebhookDelivery {
+  id          String                @id @default(cuid())
+  endpointId  String
+  event       String
+  payload     Json
+  status      WebhookDeliveryStatus @default(PENDING)
+  attempts    Int                   @default(0)
+  maxAttempts Int                   @default(3)
+
+  // Resposta
+  responseStatus Int?
+  responseBody   String?
+  errorMessage   String?
+
+  // Timing
+  nextRetryAt DateTime?
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relações
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([nextRetryAt])
+}
+
+model AsaasWebhookEvent {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  eventType   String?
+  transferId  String?
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([transferId])
+  @@index([eventType])
+  @@index([processedAt])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// NOTIFICAÇÕES
+// ============================================================================
+
+enum NotificationType {
+  APPLICATION_APPROVED
+  APPLICATION_REJECTED
+  CLIP_POST_INELIGIBLE
+  CLIP_POST_DISQUALIFIED
+  RANKING_CHANGED
+  CAMPAIGN_STARTED
+  CAMPAIGN_ENDING
+  CAMPAIGN_ENDED
+  FRAUD_FLAG_OPENED
+  FRAUD_FLAG_RESOLVED
+  METRICS_MILESTONE
+  SYSTEM_ALERT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+model Notification {
+  id      String              @id @default(cuid())
+  userId  String
+  type    NotificationType
+  channel NotificationChannel @default(IN_APP)
+
+  // Conteúdo
+  title     String
+  message   String
+  actionUrl String?
+  metadata  Json?
+
+  // Status
+  isRead Boolean   @default(false)
+  readAt DateTime?
+  sentAt DateTime?
+
+  // Referências
+  campaignId String?
+  clipPostId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// QUOTAS E USAGE
+// ============================================================================
+
+model QuotaUsage {
+  id             String   @id @default(cuid())
+  organizationId String
+  resourceType   String // "INGEST", "ACTIVE_CAMPAIGNS", "CREATORS"
+  period         String // "2025-01", formato YYYY-MM
+  used           Int      @default(0)
+  limit          Int
+  lastResetAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relações
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, resourceType, period])
+  @@index([organizationId])
+  @@index([period])
+}
+
+// ============================================================================
+// JOBS E PROCESSAMENTO
+// ============================================================================
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Job {
+  id         String    @id @default(cuid())
+  type       String // "INGEST_METRICS", "CALCULATE_RANKING", "FRAUD_DETECTION"
+  campaignId String?
+  status     JobStatus @default(PENDING)
+  priority   Int       @default(0)
+
+  // Dados do job
+  input  Json?
+  output Json?
+  error  String?
+
+  // Timing
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, priority])
+  @@index([type])
+  @@index([campaignId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// LISTA DE INTERESSE (PRÉ-QUALIFICAÇÃO)
+// ============================================================================
+
+enum InterestListForWhom {
+  MYSELF // Para mim (sou o rosto da competição)
+  REPRESENTING_PERSON // Estou representando uma pessoa (criador/influenciador)
+  REPRESENTING_BRAND // Estou representando uma marca/empresa
+}
+
+enum InterestListUrgency {
+  IMMEDIATE // Preciso para já (≤ 15 dias)
+  SOON // Em breve (15–30 dias)
+  PLANNING // Planejamento (30–60 dias)
+  EXPLORATORY // Exploratório (> 60 dias)
+}
+
+enum InterestListBudget {
+  RANGE_50_80 // R$ 50 mil – 80 mil
+  RANGE_80_200 // R$ 80 mil – 200 mil
+  RANGE_200_500 // R$ 200 mil – 500 mil
+  ABOVE_500 // Acima de R$ 500 mil
+  NOT_DEFINED // Ainda não definido (preciso de orientação)
+}
+
+enum InterestListStatus {
+  PENDING // Aguardando análise
+  CONTACTED // Já foi contatado
+  QUALIFIED // Qualificado
+  DISQUALIFIED // Desqualificado
+  CONVERTED // Convertido em cliente
+}
+
+model InterestList {
+  id String @id @default(cuid())
+
+  // 1. Informações de contato
+  fullName String // Nome completo
+  email    String // E-mail de trabalho
+  whatsapp String // WhatsApp com DDI e DDD
+
+  // 4. Para quem é a competição
+  forWhom InterestListForWhom
+
+  // 5-7. Redes sociais
+  instagramHandle String // Instagram (obrigatório)
+  tiktokHandle    String? // TikTok (opcional)
+  youtubeUrl      String? // YouTube (opcional)
+
+  // 8. Links de performance (até 3)
+  performanceLinks String[] // Array de URLs
+
+  // 9. Objetivos
+  objectives String // Texto 50-400 chars
+
+  // 10. Urgência
+  urgency InterestListUrgency
+
+  // 11. Orçamento
+  budget InterestListBudget
+
+  // 12. Experiência prévia
+  hasExperience      Boolean
+  experienceFeedback String? // O que funcionou/não funcionou
+
+  // 13. Métricas de sucesso (até 3)
+  successMetrics String[] // Array de strings
+
+  // 14. Comentários adicionais
+  additionalComments String? // Opcional, até 800 chars
+
+  // 15. Consentimentos (todos obrigatórios)
+  agreeAuthority       Boolean // Confirmo poderes para contratar
+  agreePublicAnalysis  Boolean // Autorizo análise pública
+  agreePrivacyAndTerms Boolean // Li e concordo com Política/Termos
+
+  // Status e metadados
+  status     InterestListStatus @default(PENDING)
+  metadata   Json? // Dados adicionais
+  notes      String? // Notas internas da equipe comercial
+  assignedTo String? // ID do membro da equipe que está analisando
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+  @@index([urgency])
+  @@index([budget])
+}
+
+// ============================================================================
+// CARTEIRA E TRANSAÇÕES FINANCEIRAS
+// ============================================================================
+
+model Wallet {
+  id               String @id @default(cuid())
+  clipperProfileId String @unique
+
+  // Saldos
+  balance         Float @default(0) // Saldo disponível atual
+  totalEarned     Float @default(0) // Total ganho histórico
+  totalWithdrawn  Float @default(0) // Total sacado histórico
+  pendingWithdraw Float @default(0) // Total em saques pendentes
+
+  // Configurações
+  currency    String    @default("BRL")
+  isActive    Boolean   @default(true)
+  blockedAt   DateTime? // Data de bloqueio (se aplicável)
+  blockReason String? // Motivo do bloqueio
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  clipperProfile ClipperProfile @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+
+  @@index([clipperProfileId])
+  @@index([isActive])
+}
+
+enum TransactionType {
+  PRIZE_CREDIT // Crédito de prêmio
+  BONUS // Bônus adicional
+  ADJUSTMENT // Ajuste manual (positivo ou negativo)
+  WITHDRAWAL_REQUEST // Solicitação de saque
+  WITHDRAWAL_APPROVED // Saque aprovado
+  WITHDRAWAL_REJECTED // Saque rejeitado (estorna valor)
+  WITHDRAWAL_COMPLETED // Saque concluído
+  WITHDRAWAL_CANCELLED // Saque cancelado pelo clipador
+  REFUND // Estorno
+  FEE // Taxa
+}
+
+enum TransactionStatus {
+  PENDING // Pendente
+  PROCESSING // Processando
+  COMPLETED // Concluída
+  REJECTED // Rejeitada
+  CANCELLED // Cancelada
+  FAILED // Falhou
+}
+
+enum WithdrawalMethod {
+  PIX
+  BANK_TRANSFER
+  PAYPAL
+  OTHER
+}
+
+model Transaction {
+  id       String            @id @default(cuid())
+  walletId String
+  type     TransactionType
+  status   TransactionStatus @default(PENDING)
+
+  // Valores
+  amount        Float // Valor da transação (positivo para crédito, negativo para débito)
+  balanceBefore Float // Saldo antes da transação
+  balanceAfter  Float // Saldo depois da transação
+  currency      String @default("BRL")
+
+  // Descrição e referências
+  description     String
+  campaignId      String? // Campanha relacionada (se aplicável)
+  clipPostId      String? // Post relacionado (se aplicável)
+  rankingPosition Int? // Posição no ranking (se prêmio)
+
+  // Dados de saque (quando aplicável)
+  withdrawalMethod  WithdrawalMethod?
+  withdrawalDetails Json? // Dados da conta: PIX key, banco, agência, conta, etc.
+
+  // Processamento
+  processedBy     String? // ID do usuário que processou
+  processedAt     DateTime?
+  rejectionReason String? // Motivo de rejeição
+  failureReason   String? // Motivo de falha
+
+  // Comprovantes e evidências
+  proofUrls String[] // URLs de comprovantes (ex: comprovante de transferência)
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([type])
+  @@index([status])
+  @@index([campaignId])
+  @@index([createdAt])
+  @@index([processedAt])
+}
+
+// ============================================================================
+// LINKS DE RASTREAMENTO
+// ============================================================================
+
+model Link {
+  id               String   @id @default(cuid())
+  campaignId       String
+  clipperProfileId String?
+  originalUrl      String   @db.Text
+  shortId          String   @unique
+  clicks           Int      @default(0)
+  sales            Int      @default(0)
+  successUrl       String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clipperProfile ClipperProfile? @relation(fields: [clipperProfileId], references: [id], onDelete: SetNull)
+
+  @@index([shortId])
+  @@index([campaignId])
+  @@index([clipperProfileId])
+}
+
+// ============================================================================
+// KIWIFY SALES
+// ============================================================================
+
+model KiwifySale {
+  id                String           @id @default(cuid())
+  kiwifyId          String           @unique
+  reference         String?
+  status            KiwifySaleStatus
+  currency          String           @default("BRL")
+  netAmount         Int              @default(0)
+  productId         String?
+  productName       String?
+  customerEmail     String?
+  affiliateDocument String?
+  affiliateAmount   Int?
+  clipperProfileId  String?
+  clipperProfile    ClipperProfile?  @relation(fields: [clipperProfileId], references: [id], onDelete: SetNull)
+  approvedDate      DateTime?
+  kiwifyCreatedAt   DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([status])
+  @@index([customerEmail])
+  @@index([productId])
+  @@index([kiwifyCreatedAt])
+  @@index([createdAt])
+  @@index([clipperProfileId])
+  @@index([affiliateDocument])
+}
+
+enum KiwifySaleStatus {
+  PAID
+  REFUNDED
+  CHARGEDBACK
+  WAITING_PAYMENT
+  EXPIRED
+  REFUSED
+}
+
+// ============================================================================
+// ACADEMIA - MÓDULOS E AULAS
+// ============================================================================
+
+model AcademyModule {
+  id            String  @id @default(cuid())
+  title         String // Título do módulo
+  slug          String  @unique // Slug para URL amigável
+  description   String? @db.Text // Descrição do módulo
+  coverImageUrl String? // Imagem de capa do módulo
+
+  // Ordenação e visibilidade
+  order       Int     @default(0) // Ordem de exibição
+  isPublished Boolean @default(false) // Se está publicado/visível
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  lessons AcademyLesson[] // Aulas do módulo
+
+  @@index([isPublished])
+  @@index([order])
+}
+
+model AcademyLesson {
+  id          String  @id @default(cuid())
+  moduleId    String
+  title       String // Título da aula
+  slug        String  @unique // Slug para URL amigável
+  description String? @db.Text // Descrição da aula
+
+  // Conteúdo
+  videoUrl     String // URL do vídeo (YouTube, Vimeo, etc.)
+  thumbnailUrl String? // Thumbnail do vídeo
+  duration     Int? // Duração em segundos
+
+  // Ordenação e visibilidade
+  order       Int     @default(0) // Ordem dentro do módulo
+  isPublished Boolean @default(false) // Se está publicado/visível
+  isFree      Boolean @default(false) // Se é aula gratuita (preview)
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  module   AcademyModule           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress AcademyLessonProgress[] // Progresso dos usuários
+  likes    AcademyLessonLike[] // Curtidas
+
+  @@index([moduleId])
+  @@index([isPublished])
+  @@index([order])
+  @@index([isFree])
+}
+
+// Progresso do usuário nas aulas (marcar como visto)
+model AcademyLessonProgress {
+  id       String @id @default(cuid())
+  lessonId String
+  userId   String
+
+  // Progresso
+  completed       Boolean   @default(false) // Se completou a aula
+  watchedAt       DateTime? // Quando marcou como visto
+  progressPercent Int       @default(0) // Percentual de progresso (0-100)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  lesson AcademyLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, userId]) // Um progresso por usuário por aula
+  @@index([lessonId])
+  @@index([userId])
+  @@index([completed])
+}
+
+// Curtidas nas aulas
+model AcademyLessonLike {
+  id       String @id @default(cuid())
+  lessonId String
+  userId   String
+
+  createdAt DateTime @default(now())
+
+  // Relações
+  lesson AcademyLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, userId]) // Uma curtida por usuário por aula
+  @@index([lessonId])
+  @@index([userId])
+}
+
+model TikTokConnection {
+  id               String           @id @default(cuid())
+  clipperProfileId String
+  socialAccountId  String?          @unique
+  openId           String           @unique
+  accessToken      String
+  refreshToken     String
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  tokenType        String           @default("Bearer")
+  scope            String?
+  username         String?
+  displayName      String?
+  avatarUrl        String?
+  status           TikTokAuthStatus @default(ACTIVE)
+  lastSyncAt       DateTime?
+  errorMessage     String?
+  metadata         Json?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  clipperProfile   ClipperProfile   @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  socialAccount    SocialAccount?   @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  syncLogs         TikTokSyncLog[]
+
+  @@unique([clipperProfileId, openId])
+  @@index([clipperProfileId])
+  @@index([socialAccountId])
+  @@index([openId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+enum TikTokAuthStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+enum TikTokSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+model TikTokSyncLog {
+  id                 String           @id @default(cuid())
+  tiktokConnectionId String
+  status             TikTokSyncStatus @default(PENDING)
+  videosProcessed    Int              @default(0)
+  videosUpdated      Int              @default(0)
+  videosFailed       Int              @default(0)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  duration           Int?
+  errorMessage       String?
+  errorDetails       Json?
+  logs               Json?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  tiktokConnection TikTokConnection @relation(fields: [tiktokConnectionId], references: [id], onDelete: Cascade)
+
+  @@index([tiktokConnectionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ClipPostBucketVideo {
+  id                    String                                 @id @default(cuid())
+  clipPostId            String                                 @unique
+  campaignId            String
+  submittedUrl          String
+  status                ClipPostBucketVideoStatus              @default(QUEUED)
+  gcsUri                String?
+  publicUrl             String?
+  bucketName            String?
+  destinationPath       String?
+  fileName              String?
+  transcriptionStatus   ClipPostBucketVideoTranscriptionStatus @default(PENDING)
+  transcription         String?                                @db.Text
+  transcriptionLanguage String?
+  transcriptionModel    String?
+  transcriptionError    String?                                @db.Text
+  transcribedAt         DateTime?
+  attempts              Int                                    @default(0)
+  errorMessage          String?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime                               @default(now())
+  updatedAt             DateTime                               @updatedAt
+  clipPost              ClipPost                               @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  campaign              Campaign                               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([clipPostId])
+  @@index([status])
+  @@index([transcriptionStatus])
+}
+
+// ============================================================================
+// BLOG - CATEGORIAS, POSTS, COMENTÁRIOS, LIKES E VIEWS
+// ============================================================================
+
+enum BlogPostStatus {
+  DRAFT // Rascunho
+  SCHEDULED // Agendado para publicação futura
+  PUBLISHED // Publicado e visível
+  ARCHIVED // Arquivado (não aparece mais no blog)
+}
+
+enum BlogCommentStatus {
+  PENDING // Aguardando moderação
+  APPROVED // Aprovado e visível
+  REJECTED // Rejeitado pelo admin
+  SPAM // Marcado como spam
+}
+
+// Categorias do blog (ex: "Dicas de Clipping", "Tutoriais", "Novidades")
+model BlogCategory {
+  id            String  @id @default(cuid())
+  title         String // Nome da categoria
+  slug          String  @unique // URL amigável (ex: dicas-de-clipping)
+  description   String? @db.Text // Descrição da categoria
+  coverImageUrl String? // Imagem de capa
+  color         String? // Cor hex para UI (badges, ícones, gradientes)
+
+  // Ordenação e visibilidade
+  order    Int     @default(0) // Ordem de exibição
+  isActive Boolean @default(true) // Se está visível no blog
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  posts BlogPost[] // Posts desta categoria
+
+  @@index([isActive])
+  @@index([order])
+  @@index([slug])
+}
+
+// Post do blog (conteúdo em Markdown, com imagem de capa e SEO)
+model BlogPost {
+  id         String  @id @default(cuid())
+  authorId   String // Relação com User (quem escreveu)
+  categoryId String? // Relação com BlogCategory (opcional)
+
+  // Conteúdo
+  title         String // Título do post
+  slug          String   @unique // URL amigável
+  excerpt       String?  @db.Text // Resumo/preview curto para cards e listagens
+  content       String   @db.Text // Conteúdo completo em Markdown
+  coverImageUrl String? // Imagem de capa principal do post
+  tags          String[] // Tags (ex: ["clipfy", "tutorial", "tiktok"])
+
+  // Status e publicação
+  status      BlogPostStatus @default(DRAFT) // Status do post
+  publishedAt DateTime? // Data/hora efetiva da publicação
+  scheduledAt DateTime? // Data/hora agendada (quando status = SCHEDULED)
+
+  // Destaques
+  isFeatured Boolean @default(false) // Post em destaque (banner, home)
+  isPinned   Boolean @default(false) // Fixado no topo da listagem
+
+  // SEO
+  metaTitle       String? // Título personalizado para <title> (Google)
+  metaDescription String? // Meta description para SEO
+  metaKeywords    String[] // Keywords de SEO
+
+  // Métricas desnormalizadas (contadores rápidos, atualizados via trigger/incremento)
+  viewsCount      Int  @default(0) // Total de visualizações (logados + anônimos)
+  likesCount      Int  @default(0) // Total de curtidas (apenas logados)
+  commentsCount   Int  @default(0) // Total de comentários aprovados
+  sharesCount     Int  @default(0) // Total de compartilhamentos
+  readTimeMinutes Int? // Tempo estimado de leitura (calculado pelo tamanho do content)
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  author   User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  category BlogCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  comments BlogComment[] // Comentários do post
+  likes    BlogPostLike[] // Curtidas do post
+  views    BlogPostView[] // Visualizações detalhadas (para métricas)
+
+  @@index([authorId])
+  @@index([categoryId])
+  @@index([slug])
+  @@index([status])
+  @@index([publishedAt])
+  @@index([isFeatured])
+  @@index([isPinned])
+  @@index([createdAt])
+  @@index([status, publishedAt]) // Posts publicados ordenados por data
+}
+
+// Comentários dos posts (suporte a respostas aninhadas via parentId)
+// Apenas usuários LOGADOS podem comentar
+model BlogComment {
+  id       String  @id @default(cuid())
+  postId   String // Relação com BlogPost
+  authorId String // Relação com User (obrigatório - precisa estar logado)
+  parentId String? // ID do comentário pai (para respostas/threads)
+
+  // Conteúdo
+  content String @db.Text // Texto do comentário
+
+  // Moderação
+  status BlogCommentStatus @default(PENDING) // Status de moderação
+
+  // Destaques
+  isPinned   Boolean   @default(false) // Comentário fixado pelo admin
+  likesCount Int       @default(0) // Likes desnormalizados (para ordenação rápida)
+  editedAt   DateTime? // Data da última edição (null = nunca editado)
+
+  // Metadados
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  post    BlogPost          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author  User              @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent  BlogComment?      @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  replies BlogComment[]     @relation("CommentReplies") // Respostas a este comentário
+  likes   BlogCommentLike[] // Curtidas no comentário
+
+  @@index([postId])
+  @@index([authorId])
+  @@index([parentId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([postId, status]) // Comentários aprovados de um post
+}
+
+// Curtida no post (apenas usuários LOGADOS)
+model BlogPostLike {
+  id     String @id @default(cuid())
+  postId String // Relação com BlogPost
+  userId String // Relação com User (obrigatório - precisa estar logado)
+
+  createdAt DateTime @default(now())
+
+  // Relações
+  post BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId]) // Uma curtida por usuário por post
+  @@index([postId])
+  @@index([userId])
+}
+
+// Curtida no comentário (apenas usuários LOGADOS)
+model BlogCommentLike {
+  id        String @id @default(cuid())
+  commentId String // Relação com BlogComment
+  userId    String // Relação com User (obrigatório - precisa estar logado)
+
+  createdAt DateTime @default(now())
+
+  // Relações
+  comment BlogComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId]) // Uma curtida por usuário por comentário
+  @@index([commentId])
+  @@index([userId])
+}
+
+// Visualização de post (logados E anônimos — para métricas detalhadas)
+// userId é OPCIONAL: null = visitante anônimo, preenchido = usuário logado
+model BlogPostView {
+  id     String @id @default(cuid())
+  postId String // Relação com BlogPost
+
+  // Identificação do visitante
+  userId    String? // Usuário logado (null = anônimo)
+  sessionId String? // ID de sessão para agrupar views do mesmo visitante anônimo
+  ipHash    String? // Hash do IP (privacidade - não salva IP raw)
+
+  // Origem e contexto
+  referrer  String? // De onde veio (ex: "google", "instagram", "direct", URL completa)
+  utmSource String? // UTM source (ex: "newsletter", "instagram")
+  utmMedium String? // UTM medium (ex: "email", "social")
+
+  // Dispositivo e localização
+  userAgent String? // User-Agent do navegador
+  device    String? // "mobile", "desktop", "tablet"
+  browser   String? // "Chrome", "Safari", "Firefox"
+  os        String? // "iOS", "Android", "Windows", "macOS"
+  country   String? // País do visitante (ex: "BR", "US")
+  region    String? // Estado/região (ex: "SP", "RJ")
+
+  // Engajamento
+  readPercent   Int? // Percentual de leitura do post (0-100, via scroll tracking)
+  timeOnPageSec Int? // Tempo na página em segundos
+
+  viewedAt DateTime @default(now()) // Quando visualizou
+
+  // Relações
+  post BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([userId])
+  @@index([viewedAt])
+  @@index([postId, viewedAt]) // Views de um post por período
+  @@index([device])
+  @@index([country])
+  @@index([referrer])
+}
+
+// ============================================================================
+// NICHOS DE VÍDEO (mesmos valores de AccountNiche)
+// ============================================================================
+
+enum VideoNiche {
+  MOTIVATIONAL
+  GOSSIP
+  MEME
+  ENTREPRENEURSHIP
+  HUMOR
+  GAMING
+  SPORTS
+  MUSIC
+  EDUCATION
+  NEWS
+  POLITICS
+  LIFESTYLE
+  FITNESS
+  FASHION
+  BEAUTY
+  FOOD
+  TRAVEL
+  TECH
+  FINANCE
+  RELIGION
+  ENTERTAINMENT
+  HOT
+  FAMILY
+  MATERNITY
+  PATERNITY
+  MARRIAGE
+  BODYBUILDING
+  WOMEN
+  MEN
+  COUPLE
+  PETS
+  CARS
+  MOTORCYCLES
+  ANIME
+  KPOP
+  DANCE
+  COMEDY
+  DRAMA
+  ASTROLOGY
+  PSYCHOLOGY
+  SELF_HELP
+  PRODUCTIVITY
+  MARKETING
+  SALES
+  REAL_ESTATE
+  CRYPTO
+  INVESTING
+  DIY
+  ART
+  PHOTOGRAPHY
+  CINEMA
+  SERIES
+  BOOKS
+  PODCAST
+  ASMR
+  NATURE
+  SUSTAINABILITY
+  HEALTH
+  MENTAL_HEALTH
+  NUTRITION
+  VEGAN
+  WINE
+  COFFEE
+  BEER
+  COOKING
+  CONFECTIONERY
+  DECORATION
+  ARCHITECTURE
+  GARDEN
+  CLEANING
+  ORGANIZATION
+  PARENTING
+  BABY
+  KIDS
+  TEENS
+  SCHOOL
+  UNIVERSITY
+  LANGUAGES
+  LAW
+  MEDICINE
+  ENGINEERING
+  SCIENCE
+  HISTORY
+  PHILOSOPHY
+  SOCIOLOGY
+  ECONOMY
+  MILITARY
+  POLICE
+  FIREFIGHTER
+  TRUCKER
+  RURAL
+  AGRIBUSINESS
+  FISHING
+  HUNTING
+  SURF
+  SKATE
+  CROSSFIT
+  YOGA
+  PILATES
+  RUNNING
+  CYCLING
+  SWIMMING
+  MARTIAL_ARTS
+  BOXING
+  SOCCER
+  BASKETBALL
+  VOLLEYBALL
+  TENNIS
+  GOLF
+  ESPORTS
+  STREAMER
+  COSPLAY
+  TATTOO
+  PIERCING
+  NAILS
+  HAIR
+  SKINCARE
+  MAKEUP
+  PLUS_SIZE
+  LUXURY
+  MINIMALISM
+  VINTAGE
+  STREETWEAR
+  SNEAKERS
+  JEWELRY
+  WATCHES
+  HANDBAGS
+  WEDDING
+  PARTY
+  EVENTS
+  CARNIVAL
+  FUNK
+  SERTANEJO
+  RAP
+  ROCK
+  POP
+  ELECTRONIC
+  GOSPEL
+  PAGODE
+  FORRO
+  MPB
+  REGGAE
+  JAZZ
+  CLASSICAL
+  COUNTRY
+  TRAP
+  LGBTQ
+  DIVERSITY
+  FEMINISM
+  ACTIVISM
+  CHARITY
+  VOLUNTEERING
+  SPIRITUAL
+  MEDITATION
+  TAROT
+  NUMEROLOGY
+  CONSPIRACY
+  TRUE_CRIME
+  HORROR
+  PARANORMAL
+  RIDDLES
+  TRIVIA
+  CHALLENGES
+  PRANKS
+  REACTIONS
+  UNBOXING
+  REVIEWS
+  TUTORIALS
+  TIPS
+  HACKS
+  STORYTIME
+  CONFESSIONS
+  RELATIONSHIPS
+  DATING
+  BREAKUP
+  FRIENDSHIP
+  BULLYING
+  MENTAL_WELLNESS
+  THERAPY
+  ADHD
+  AUTISM
+  DISABILITY
+  ACCESSIBILITY
+  SIGN_LANGUAGE
+  IMMIGRATION
+  EXPAT
+  NOMAD
+  BACKPACKING
+  CAMPING
+  HIKING
+  BEACH
+  MOUNTAIN
+  FARM
+  CITY
+  INTERIOR
+  FAVELA
+  PERIFERIAS
+  NORDESTE
+  AMAZONIA
+  OTHER
+}
+
+// ============================================================================
+// VÍDEOS BRUTOS & CORTES POR COMPETIÇÃO
+// ============================================================================
+
+model RawVideo {
+  id         String @id @default(cuid())
+  campaignId String
+
+  title       String?
+  description String?
+
+  // URL do arquivo bruto armazenado no Google Cloud Storage
+  storageUrl String
+
+  // URL original da rede social onde o vídeo foi publicado (opcional)
+  originalUrl String?
+
+  // Metadados do arquivo
+  fileSize  BigInt? // Tamanho em bytes
+  duration  Int? // Duração em segundos
+  mimeType  String? // ex: "video/mp4"
+  thumbnail String? // URL da thumbnail no GCS
+
+  // ── Análise qualitativa (preenchido por AI) ──
+  transcription String?      @db.Text
+  language      String? // Idioma detectado, ex: "pt-BR", "en-US"
+  niches        VideoNiche[] // Lista de nichos padronizada
+  tags          String[] // Tags / palavras-chave relevantes
+  sentiment     String? // Sentimento geral: "positive", "negative", "neutral", "mixed"
+  topics        String[] // Tópicos / assuntos abordados
+  summary       String?      @db.Text // Resumo gerado por AI
+
+  // Métricas qualitativas (0–100)
+  qualityScore    Float? // Nota geral de qualidade do conteúdo
+  engagementScore Float? // Potencial de engajamento estimado
+  viralityScore   Float? // Potencial de viralização estimado
+
+  // Metadados da análise
+  aiModel       String? // Modelo de AI utilizado, ex: "gpt-4o", "gemini-1.5"
+  analyzedAt    DateTime? // Data/hora em que a análise foi feita
+  analysisNotes String?   @db.Text // Observações extras da análise
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  campaign Campaign       @relation("CampaignRawVideos", fields: [campaignId], references: [id], onDelete: Cascade)
+  clips    RawVideoClip[]
+
+  @@index([campaignId])
+}
+
+enum OriginalVideoSearchStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model OriginalVideoCandidate {
+  id           String  @id
+  searchId     String
+  transcriptId String?
+
+  url      String
+  platform Platform
+  videoId  String?
+
+  title        String?
+  channelTitle String?
+  duration     Int?
+
+  rank           Int
+  searchProvider String
+  query          String
+
+  textScore     Float @default(0)
+  fuzzyScore    Float @default(0)
+  durationScore Float @default(0)
+  metadataScore Float @default(0)
+  finalScore    Float @default(0)
+
+  matchedStart Float?
+  matchedEnd   Float?
+  matchedText  String?
+  method       String?
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  originalVideoSearch OriginalVideoSearch @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  videoTranscript     VideoTranscript?    @relation(fields: [transcriptId], references: [id], onDelete: NoAction)
+
+  @@index([finalScore])
+  @@index([searchId])
+  @@index([transcriptId])
+  @@index([videoId])
+}
+
+model OriginalVideoSearch {
+  id               String                    @id
+  clipPostId       String?
+  inputUrl         String
+  status           OriginalVideoSearchStatus @default(QUEUED)
+  clipTranscriptId String?
+
+  queries            String[] @default([])
+  candidatesAnalyzed Int      @default(0)
+
+  matched          Boolean @default(false)
+  originalVideoUrl String?
+  originalVideoId  String?
+  confidence       Float?
+  startTime        Float?
+  endTime          Float?
+  matchedText      String?
+  method           String?
+
+  errorMessage String?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime
+  completedAt  DateTime?
+
+  originalVideoCandidates OriginalVideoCandidate[]
+  clipPost                ClipPost?                @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
+  videoTranscript         VideoTranscript?         @relation(fields: [clipTranscriptId], references: [id], onDelete: NoAction)
+
+  @@index([clipPostId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+model VideoTranscript {
+  id       String   @id
+  platform Platform
+  videoId  String?
+  url      String
+
+  title        String?
+  channelTitle String?
+  channelId    String?
+  duration     Int?
+  language     String?
+
+  segments       Json
+  normalizedText String
+  source         String
+  provider       String
+  textHash       String
+
+  fetchedAt DateTime  @default(now())
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime
+
+  originalVideoCandidates OriginalVideoCandidate[]
+  originalVideoSearches   OriginalVideoSearch[]
+
+  @@unique([platform, videoId, provider])
+  @@index([expiresAt])
+  @@index([textHash])
+  @@index([url])
+  @@index([videoId])
+}
+
+model RawVideoClip {
+  id         String @id @default(cuid())
+  rawVideoId String
+
+  title String?
+
+  // URL do corte armazenado no Google Cloud Storage
+  storageUrl String
+
+  // Timestamps do trecho no vídeo original (em segundos)
+  startTime Float?
+  endTime   Float?
+
+  // Metadados do arquivo
+  fileSize  BigInt? // Tamanho em bytes
+  duration  Int? // Duração em segundos
+  mimeType  String? // ex: "video/mp4"
+  thumbnail String? // URL da thumbnail no GCS
+
+  // ── Análise qualitativa (preenchido por AI) ──
+  transcription String?      @db.Text
+  language      String? // Idioma detectado
+  niches        VideoNiche[] // Lista de nichos padronizada
+  tags          String[] // Tags / palavras-chave relevantes
+  sentiment     String? // Sentimento geral: "positive", "negative", "neutral", "mixed"
+  topics        String[] // Tópicos / assuntos abordados
+  summary       String?      @db.Text // Resumo gerado por AI
+
+  // Métricas qualitativas (0–100)
+  qualityScore    Float? // Nota geral de qualidade do corte
+  engagementScore Float? // Potencial de engajamento estimado
+  viralityScore   Float? // Potencial de viralização estimado
+
+  // Contexto do corte
+  hookType    String? // Tipo de hook usado, ex: "question", "shock", "statement"
+  cta         String? // Call-to-action identificado
+  contentType String? // Tipo de conteúdo, ex: "tutorial", "react", "storytime", "challenge"
+
+  // Metadados da análise
+  aiModel       String? // Modelo de AI utilizado
+  analyzedAt    DateTime? // Data/hora em que a análise foi feita
+  analysisNotes String?   @db.Text // Observações extras da análise
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  rawVideo RawVideo @relation(fields: [rawVideoId], references: [id], onDelete: Cascade)
+
+  @@index([rawVideoId])
+}
+
+enum YouTubeShopAuthStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+model YouTubeShopAuth {
+  id             String @id @default(cuid())
+  organizationId String
+
+  merchantId   String
+  merchantName String?
+
+  accessToken  String
+  refreshToken String?
+  tokenType    String   @default("Bearer")
+  scope        String
+  expiresAt    DateTime
+
+  status       YouTubeShopAuthStatus @default(PENDING)
+  lastSyncAt   DateTime?
+  errorMessage String?
+  metadata     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization        Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creatorPerformances YouTubeShopCreatorPerformance[]
+  videoPerformances   YouTubeShopVideoPerformance[]
+  syncLogs            YouTubeShopSyncLog[]
+
+  @@unique([organizationId, merchantId])
+  @@index([organizationId])
+  @@index([merchantId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model YouTubeShopCreatorPerformance {
+  id                String @id @default(cuid())
+  youtubeShopAuthId String
+
+  date DateTime @db.Date
+
+  channelId    String
+  channelTitle String?
+
+  grossSalesMicros  BigInt @default(0)
+  netSalesMicros    BigInt @default(0)
+  commissionsMicros BigInt @default(0)
+  currencyCode      String @default("BRL")
+
+  orders Int    @default(0)
+  views  BigInt @default(0)
+  clicks Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  youtubeShopAuth YouTubeShopAuth @relation(fields: [youtubeShopAuthId], references: [id], onDelete: Cascade)
+
+  @@unique([youtubeShopAuthId, date, channelId])
+  @@index([youtubeShopAuthId])
+  @@index([channelId])
+  @@index([date])
+}
+
+model YouTubeShopVideoPerformance {
+  id                String @id @default(cuid())
+  youtubeShopAuthId String
+
+  date DateTime @db.Date
+
+  videoId      String
+  videoTitle   String?
+  channelId    String
+  channelTitle String?
+
+  taggedProductIds String[]
+
+  grossSalesMicros  BigInt @default(0)
+  netSalesMicros    BigInt @default(0)
+  commissionsMicros BigInt @default(0)
+  currencyCode      String @default("BRL")
+
+  orders Int    @default(0)
+  views  BigInt @default(0)
+  clicks Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  youtubeShopAuth YouTubeShopAuth @relation(fields: [youtubeShopAuthId], references: [id], onDelete: Cascade)
+
+  @@unique([youtubeShopAuthId, date, videoId])
+  @@index([youtubeShopAuthId])
+  @@index([videoId])
+  @@index([channelId])
+  @@index([date])
+}
+
+enum YouTubeShopSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+model YouTubeShopSyncLog {
+  id                String                @id @default(cuid())
+  youtubeShopAuthId String
+  status            YouTubeShopSyncStatus @default(PENDING)
+  syncType          String
+
+  dateFrom DateTime?
+  dateTo   DateTime?
+
+  recordsProcessed Int @default(0)
+  recordsCreated   Int @default(0)
+  recordsUpdated   Int @default(0)
+  recordsFailed    Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  duration    Int?
+
+  errorMessage String?
+  errorDetails Json?
+  logs         Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  youtubeShopAuth YouTubeShopAuth @relation(fields: [youtubeShopAuthId], references: [id], onDelete: Cascade)
+
+  @@index([youtubeShopAuthId])
+  @@index([status])
+  @@index([syncType])
+  @@index([createdAt])
+}
+
+model InstagramAuth {
+  id              String @id @default(cuid())
+  socialAccountId String @unique
+
+  accessToken String   @db.Text
+  tokenType   String   @default("Bearer")
+  scope       String?
+  expiresAt   DateTime
+
+  igUserId          String
+  username          String
+  accountType       String
+  profilePictureUrl String?
+  followersCount    Int?
+  mediaCount        Int?
+  biography         String?
+  website           String?
+
+  isActive   Boolean             @default(true)
+  status     InstagramAuthStatus @default(PENDING)
+  lastSyncAt DateTime?
+  lastError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  socialAccount       SocialAccount                  @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  hashtagTracking     InstagramHashtagTracking[]
+  mediaAnalytics      InstagramMediaAnalytics[]
+  accountDemographics InstagramAccountDemographics[]
+  comments            InstagramComment[]
+  syncLogs            InstagramSyncLog[]
+
+  @@index([socialAccountId])
+  @@index([igUserId])
+  @@index([isActive])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([username])
+}
+
+model InstagramSyncLog {
+  id              String              @id @default(cuid())
+  instagramAuthId String
+  status          InstagramSyncStatus @default(PENDING)
+
+  videosProcessed Int @default(0)
+  videosUpdated   Int @default(0)
+  videosFailed    Int @default(0)
+  commentsFetched Int @default(0)
+  commentsNew     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  duration    Int?
+
+  errorMessage String?
+  errorDetails Json?
+  logs         Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instagramAuth InstagramAuth @relation(fields: [instagramAuthId], references: [id], onDelete: Cascade)
+
+  @@index([instagramAuthId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InstagramHashtagTracking {
+  id              String @id @default(cuid())
+  instagramAuthId String
+
+  hashtag   String
+  hashtagId String?
+
+  isActive    Boolean @default(true)
+  trackRecent Boolean @default(true)
+  trackTop    Boolean @default(false)
+
+  lastCheckedAt   DateTime?
+  totalMediaFound Int       @default(0)
+  lastMediaId     String?
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instagramAuth  InstagramAuth             @relation(fields: [instagramAuthId], references: [id], onDelete: Cascade)
+  mediaAnalytics InstagramMediaAnalytics[]
+
+  @@unique([instagramAuthId, hashtag])
+  @@index([instagramAuthId])
+  @@index([hashtag])
+  @@index([isActive])
+  @@index([lastCheckedAt])
+}
+
+model InstagramMediaAnalytics {
+  id                String  @id @default(cuid())
+  instagramAuthId   String
+  hashtagTrackingId String?
+
+  igMediaId        String
+  mediaType        String
+  mediaProductType String?
+  permalink        String
+  caption          String?  @db.Text
+  timestamp        DateTime
+
+  date       DateTime @db.Date
+  views      Int      @default(0)
+  likes      Int      @default(0)
+  comments   Int      @default(0)
+  saved      Int      @default(0)
+  shares     Int      @default(0)
+  engagement Int      @default(0)
+  reach      Int      @default(0)
+  plays      Int      @default(0)
+
+  engagementRate Float?
+
+  profileActivity Int?
+  profileVisits   Int?
+  follows         Int?
+
+  thumbnailUrl  String?
+  mediaUrl      String?
+  videoDuration Int?
+  isVideo       Boolean @default(false)
+
+  isActive   Boolean   @default(true)
+  lastSyncAt DateTime?
+  syncError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instagramAuth   InstagramAuth             @relation(fields: [instagramAuthId], references: [id], onDelete: Cascade)
+  hashtagTracking InstagramHashtagTracking? @relation(fields: [hashtagTrackingId], references: [id], onDelete: SetNull)
+
+  @@unique([igMediaId, date])
+  @@index([instagramAuthId])
+  @@index([hashtagTrackingId])
+  @@index([date])
+  @@index([igMediaId])
+  @@index([timestamp])
+  @@index([mediaType])
+}
+
+model InstagramAccountDemographics {
+  id              String @id @default(cuid())
+  instagramAuthId String
+
+  date       DateTime @db.Date
+  timeframe  String
+  metricType String
+
+  countryData   Json
+  cityData      Json
+  ageGenderData Json
+
+  totalValue Int?
+
+  createdAt DateTime @default(now())
+
+  instagramAuth InstagramAuth @relation(fields: [instagramAuthId], references: [id], onDelete: Cascade)
+
+  @@unique([instagramAuthId, date, timeframe, metricType])
+  @@index([instagramAuthId])
+  @@index([date])
+  @@index([timeframe])
+}
+
+model InstagramComment {
+  id              String @id @default(cuid())
+  instagramAuthId String
+
+  igCommentId String @unique
+  igMediaId   String
+
+  text      String   @db.Text
+  timestamp DateTime
+  username  String?
+  likeCount Int      @default(0)
+  hidden    Boolean  @default(false)
+
+  parentCommentId String?
+  parentComment   InstagramComment?  @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         InstagramComment[] @relation("CommentReplies")
+
+  sentimentScore Float?
+  sentimentLabel String?
+  analyzedAt     DateTime?
+
+  mediaPermalink String?
+  isActive       Boolean   @default(true)
+  lastSyncAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  instagramAuth InstagramAuth @relation(fields: [instagramAuthId], references: [id], onDelete: Cascade)
+
+  @@index([instagramAuthId])
+  @@index([igMediaId])
+  @@index([igCommentId])
+  @@index([parentCommentId])
+  @@index([timestamp])
+  @@index([sentimentLabel])
+  @@index([username])
+}
