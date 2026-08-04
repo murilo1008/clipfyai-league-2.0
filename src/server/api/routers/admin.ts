@@ -10,11 +10,14 @@ import {
   type RankingMetricType as RankingMetricTypeForScore,
 } from "@/lib/ranking-helpers";
 import {
+  computeDailyPixPayoutSettledGate,
   computeDailyRankWalletPaidGate,
   getPrizeForPosition,
   getTotalViewsAtRankingCutoff,
+  getUtcRankingDayBounds,
   loadDailyRankingDateContext,
   parsePrizeTable,
+  PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
 } from "@/lib/daily-ranking-preview";
 import {
   getClipperDailyReferenceDateYmd,
@@ -26,6 +29,7 @@ import {
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
 import {
   DailyPayoutConfigError,
+  fetchDailyPixReconciliation,
   fetchDailyPayoutPay,
   fetchDailyPayoutPreview,
 } from "@/lib/daily-payout-client";
@@ -2895,19 +2899,24 @@ export const adminRouter = createTRPCRouter({
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     // Buscar total de views somando views de todos os posts
-    const totalViewsResult = await ctx.db.clipPost.aggregate({
-      _sum: { views: true },
+    const totalMetricsResult = await ctx.db.clipPost.aggregate({
+      _sum: {
+        views: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        saves: true,
+      },
     });
-    const totalViews = Number(totalViewsResult._sum.views || 0);
-
-    // Buscar total de likes
-    const totalLikesResult = await ctx.db.clipPost.aggregate({
-      _sum: { likes: true },
-    });
-    const totalLikes = totalLikesResult._sum.likes || 0;
-
-    // Calcular engagement rate médio (likes / views * 100)
-    const engagementRate = totalViews > 0 ? (totalLikes / totalViews) * 100 : 0;
+    const totalViews = Number(totalMetricsResult._sum.views || 0);
+    const totalLikes = totalMetricsResult._sum.likes || 0;
+    const engagementRate = calculateEngagementRate(
+      totalViews,
+      totalLikes,
+      totalMetricsResult._sum.comments || 0,
+      totalMetricsResult._sum.shares || 0,
+      totalMetricsResult._sum.saves || 0,
+    );
 
     // Buscar views do mês anterior para calcular crescimento
     const previousMonth = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
@@ -3002,7 +3011,7 @@ export const adminRouter = createTRPCRouter({
         pendingFrauds,
         totalViews,
         totalLikes,
-        engagementRate: Number(engagementRate.toFixed(1)),
+        engagementRate,
         viewsGrowth: Number(viewsGrowth.toFixed(1)),
         newClippersThisMonth,
         newCampaignsThisMonth,
@@ -3143,7 +3152,13 @@ export const adminRouter = createTRPCRouter({
     const platforms = await ctx.db.clipPost.groupBy({
       by: ["platform"],
       _count: { id: true },
-      _sum: { views: true, likes: true },
+      _sum: {
+        views: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        saves: true,
+      },
     });
 
     const platformData = await Promise.all(
@@ -3157,15 +3172,25 @@ export const adminRouter = createTRPCRouter({
 
         const totalViews = Number(p._sum.views || 0);
         const totalLikes = p._sum.likes || 0;
-        const engagementRate =
-          totalViews > 0 ? (totalLikes / totalViews) * 100 : 0;
+        const totalComments = p._sum.comments || 0;
+        const totalShares = p._sum.shares || 0;
+        const totalSaves = p._sum.saves || 0;
+        const engagementRate = calculateEngagementRate(
+          totalViews,
+          totalLikes,
+          totalComments,
+          totalShares,
+          totalSaves,
+        );
 
         return {
           platform: p.platform,
           posts: p._count.id,
           clippers: clippers.length,
           views: totalViews,
-          engagementRate: Number(engagementRate.toFixed(1)),
+          totalInteractions:
+            totalLikes + totalComments + totalShares + totalSaves,
+          engagementRate,
         };
       }),
     );
@@ -3278,10 +3303,13 @@ export const adminRouter = createTRPCRouter({
 
         if (!profile) return null;
 
-        const totalInteractions =
-          stats.likes + stats.comments + stats.shares + stats.saves;
-        const engagementRate =
-          stats.views > 0 ? (totalInteractions / stats.views) * 100 : 0;
+        const engagementRate = calculateEngagementRate(
+          stats.views,
+          stats.likes,
+          stats.comments,
+          stats.shares,
+          stats.saves,
+        );
 
         const username =
           profile.socialAccounts[0]?.username ||
@@ -3453,12 +3481,13 @@ export const adminRouter = createTRPCRouter({
     const savesScore = Math.min(savesRate * 20, 100); // Taxa de 5% = score 100
 
     // Engagement Rate: (likes + comments + shares + saves) / views
-    const engagementRate =
-      totalViews > 0
-        ? ((totalLikes + totalComments + totalShares + totalSaves) /
-            totalViews) *
-          100
-        : 0;
+    const engagementRate = calculateEngagementRate(
+      totalViews,
+      totalLikes,
+      totalComments,
+      totalShares,
+      totalSaves,
+    );
     const erScore = Math.min(engagementRate * 5, 100); // ER de 20% = score 100
 
     const metrics = [
@@ -3500,6 +3529,7 @@ export const adminRouter = createTRPCRouter({
           isLeaderboardPublic: true,
           isPrivate: true,
           coverImageUrl: true,
+          spotifyMetricsEnabled: true,
         },
         orderBy: {
           createdAt: "desc",
@@ -3542,12 +3572,13 @@ export const adminRouter = createTRPCRouter({
           const totalSaves = postsStats._sum.saves || 0;
           const totalPosts = postsStats._count.id;
 
-          const engagementRate =
-            totalViews > 0
-              ? ((totalLikes + totalComments + totalShares + totalSaves) /
-                  totalViews) *
-                100
-              : 0;
+          const engagementRate = calculateEngagementRate(
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalShares,
+            totalSaves,
+          );
 
           // Formatar prêmio
           const prize =
@@ -5110,12 +5141,13 @@ export const adminRouter = createTRPCRouter({
         const totalComments = totalStats._sum.comments || 0;
         const totalShares = totalStats._sum.shares || 0;
         const totalSaves = totalStats._sum.saves || 0;
-        const engagementRate =
-          totalViews > 0
-            ? ((totalLikes + totalComments + totalShares + totalSaves) /
-                totalViews) *
-              100
-            : 0;
+        const engagementRate = calculateEngagementRate(
+          totalViews,
+          totalLikes,
+          totalComments,
+          totalShares,
+          totalSaves,
+        );
 
         const topAccountsRanking = topAccountsGrouped
           .map((row) => {
@@ -5227,10 +5259,9 @@ export const adminRouter = createTRPCRouter({
           thumbnail: post.thumbnailUrl,
           platform: post.platform,
           username: post.username || "",
-          clipperName:
-            post.application?.clipperProfile?.artisticName ||
-            post.application?.clipperProfile?.fullName ||
-            "Clipador",
+          clipperName: post.application?.clipperProfile
+            ? getClipperRankingDisplayName(post.application.clipperProfile)
+            : "Clipador",
           views: Number(post.views),
           likes: post.likes,
           comments: post.comments,
@@ -8106,6 +8137,7 @@ export const adminRouter = createTRPCRouter({
             likes: true,
             comments: true,
             shares: true,
+            saves: true,
             postedAt: true,
             status: true,
             createdAt: true,
@@ -8162,6 +8194,7 @@ export const adminRouter = createTRPCRouter({
         likes: post.likes,
         comments: post.comments,
         shares: post.shares,
+        saves: post.saves ?? 0,
         postedAt: post.postedAt?.toISOString(),
         status: post.status,
         createdAt: post.createdAt.toISOString(),
@@ -9191,6 +9224,8 @@ export const adminRouter = createTRPCRouter({
             id: true,
             dailyPrizeStatus: true,
             dailyPrizeAmount: true,
+            dailyPrizePaid: true,
+            dailyPixStatus: true,
             isDisqualified: true,
           },
         });
@@ -9213,8 +9248,8 @@ export const adminRouter = createTRPCRouter({
             clipPostId: row.clipPostId,
             applicationId: row.applicationId,
             clipperProfileId: row.clipperProfileId,
-            clipperName: row.artisticName || row.fullName,
-            fullName: row.fullName,
+            clipperName: getClipperRankingDisplayName(row),
+            fullName: getFirstName(row.fullName) || "Clipador",
             views: Number(row.views),
             likes: row.likes,
             comments: row.comments,
@@ -9228,6 +9263,8 @@ export const adminRouter = createTRPCRouter({
             prize,
             dailyPrizeStatus: dre?.dailyPrizeStatus ?? "PENDING",
             dailyPrizeAmount: dre?.dailyPrizeAmount ?? 0,
+            dailyPrizePaid: dre?.dailyPrizePaid ?? false,
+            dailyPixStatus: dre?.dailyPixStatus ?? "PENDING",
             isDisqualified,
             postedAt: row.postedAt?.toISOString() ?? null,
             username: row.username,
@@ -9245,9 +9282,54 @@ export const adminRouter = createTRPCRouter({
         const withExpectedPrize = activeForPayment.filter(
           (e) => e.effectivePrize > 0,
         );
+        const withPixExpectedPrize = withExpectedPrize.filter(
+          (e) =>
+            e.clipperProfileId !== PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
+        );
         const canUndoRankPayments =
           withExpectedPrize.length > 0 &&
           withExpectedPrize.every((e) => e.dailyPrizeStatus === "PAID");
+        const processingPixTransactions = await ctx.db.transaction.findMany({
+          where: {
+            status: "PROCESSING",
+            metadata: { path: ["source"], equals: "daily_ranking_pix" },
+            AND: [
+              {
+                metadata: {
+                  path: ["dailyRankingId"],
+                  equals: core.dailyRankingId,
+                },
+              },
+            ],
+          },
+          select: { metadata: true },
+        });
+        const isPixEntrySettled = (e: (typeof withPixExpectedPrize)[number]) =>
+          e.dailyPrizeStatus === "PAID" &&
+          Math.abs(e.dailyPrizeAmount - e.effectivePrize) < 0.01 &&
+          e.dailyPrizePaid &&
+          e.dailyPixStatus === "PAID";
+        const expectedPixEntryIds = new Set(
+          withPixExpectedPrize.map((e) => e.dailyRankingEntryId),
+        );
+        const settledPixEntryIds = new Set(
+          withPixExpectedPrize
+            .filter((e) => isPixEntrySettled(e))
+            .map((e) => e.dailyRankingEntryId),
+        );
+        const blockingProcessingPixTransactions =
+          processingPixTransactions.filter((tx) => {
+            const metadata = tx.metadata as {
+              dailyRankingEntryId?: string;
+            } | null;
+            const entryId = metadata?.dailyRankingEntryId;
+            if (!entryId || !expectedPixEntryIds.has(entryId)) return true;
+            return !settledPixEntryIds.has(entryId);
+          });
+        const effectiveDailyPixPayoutCompleted =
+          withPixExpectedPrize.length > 0 &&
+          blockingProcessingPixTransactions.length === 0 &&
+          withPixExpectedPrize.every((e) => isPixEntrySettled(e));
 
         const dateStart = new Date(`${input.date}T00:00:00.000Z`);
         const dateEnd = new Date(`${input.date}T23:59:59.999Z`);
@@ -9275,8 +9357,7 @@ export const adminRouter = createTRPCRouter({
           entries,
           canUndoRankPayments,
           announced: dailyRankingRecord?.announced ?? false,
-          dailyPixPayoutCompleted:
-            dailyRankingRecord?.dailyPixPayoutCompleted ?? false,
+          dailyPixPayoutCompleted: effectiveDailyPixPayoutCompleted,
         };
       } catch (error: unknown) {
         if (error instanceof TRPCError) {
@@ -10205,8 +10286,8 @@ export const adminRouter = createTRPCRouter({
           const row = topRows[index]!;
           const position = index + 1;
           const amount = getPrizeForPosition(prizeTable, position);
-          const clipperName = row.artisticName || row.fullName;
-          const fullName = row.fullName || "";
+          const clipperName = getClipperRankingDisplayName(row);
+          const fullName = getFirstName(row.fullName);
           const dre = dreStatusMap.get(row.dailyRankingEntryId)!;
 
           if (dre.clipPostId !== row.clipPostId) {
@@ -10546,7 +10627,10 @@ export const adminRouter = createTRPCRouter({
                 },
               })
               .catch((auditError: unknown) => {
-                console.error("payDailyRankByDate failure audit:", auditError);
+                console.error(
+                  "payDailyRankByDate failure audit:",
+                  auditError,
+                );
               });
             console.error("payDailyRankByDate item:", err);
           }
@@ -11069,11 +11153,12 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        const drPix = await ctx.db.dailyRanking.findUnique({
-          where: { id: core.dailyRankingId },
-          select: { dailyPixPayoutCompleted: true },
-        });
-        if (drPix?.dailyPixPayoutCompleted) {
+        const pixGate = await computeDailyPixPayoutSettledGate(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
+        if (pixGate?.isSettled) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "O pagamento PIX deste ranking diário já foi concluído.",
@@ -11166,11 +11251,12 @@ export const adminRouter = createTRPCRouter({
         }
 
         const { core } = gate;
-        const drPixState = await ctx.db.dailyRanking.findUnique({
-          where: { id: core.dailyRankingId },
-          select: { dailyPixPayoutCompleted: true },
-        });
-        if (drPixState?.dailyPixPayoutCompleted) {
+        const pixGateBeforePay = await computeDailyPixPayoutSettledGate(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
+        if (pixGateBeforePay?.isSettled) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "O pagamento PIX deste ranking diário já foi concluído.",
@@ -11239,6 +11325,30 @@ export const adminRouter = createTRPCRouter({
               position: line.position,
               status: line.status,
               skipped: "Serviço indicou já pago; ledger local não alterado.",
+            });
+            continue;
+          }
+
+          if (line.status === "SKIPPED_PIX_IGNORED") {
+            ledgerLines.push({
+              entryId: line.entryId,
+              position: line.position,
+              status: line.status,
+              prizeAmount: line.prizeAmount,
+              skipped: "Serviço indicou PIX ignorado para este perfil; ledger local não alterado.",
+            });
+            continue;
+          }
+
+          if (line.status === "PROCESSING") {
+            ledgerLines.push({
+              entryId: line.entryId,
+              position: line.position,
+              status: line.status,
+              prizeAmount: line.prizeAmount,
+              asaasTransferId: line.asaasTransferId,
+              asaasPayoutReceiptUrl: line.asaasPayoutReceiptUrl ?? null,
+              skipped: "Transferência criada na Asaas; aguardando confirmação via webhook.",
             });
             continue;
           }
@@ -11445,13 +11555,20 @@ export const adminRouter = createTRPCRouter({
           }
         }
 
-        const pixServiceOk = pay.lines.every(
-          (l) => l.status === "SUCCESS" || l.status === "SKIPPED_ALREADY_PAID",
+        const pixGateAfterPay = await computeDailyPixPayoutSettledGate(
+          ctx.db,
+          input.campaignId,
+          input.date,
         );
-        if (pixServiceOk) {
+        if (pixGateAfterPay?.isSettled) {
           await ctx.db.dailyRanking.update({
             where: { id: core.dailyRankingId },
             data: { dailyPixPayoutCompleted: true },
+          });
+        } else {
+          await ctx.db.dailyRanking.update({
+            where: { id: core.dailyRankingId },
+            data: { dailyPixPayoutCompleted: false },
           });
         }
 
@@ -11474,6 +11591,116 @@ export const adminRouter = createTRPCRouter({
             ? error.message
             : "Erro ao executar payout PIX do ranking diário";
         console.error("executeDailyPixPayout:", error);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
+      }
+    }),
+
+  reconcileDailyPixPayout: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const reconciliationSchema = z
+        .object({
+          dryRun: z.boolean(),
+          totals: z.object({
+            transfers: z.number(),
+            dailyRankings: z.number(),
+            entriesUpdated: z.number(),
+            transactionsUpdated: z.number(),
+            dailyRankingsUpdated: z.number(),
+          }),
+          completionResults: z.array(
+            z.object({
+              dailyRankingId: z.string(),
+              completed: z.boolean(),
+              expectedPrizeEntries: z.number(),
+              unsettledEntries: z.number(),
+              blockingProcessingTransactions: z.number(),
+              dailyRankingUpdated: z.boolean(),
+            }),
+          ),
+        })
+        .passthrough();
+
+      try {
+        const campaign = await ctx.db.campaign.findUnique({
+          where: { id: input.campaignId },
+          select: { id: true, dailyPix: true },
+        });
+        if (!campaign) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Campanha não encontrada",
+          });
+        }
+        if (!campaign.dailyPix) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Esta competição não está configurada para pagamento PIX do rank diário.",
+          });
+        }
+
+        const core = await loadDailyRankingDateContext(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
+        if (!core) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: `Nenhum ranking diário para a data UTC ${input.date}`,
+          });
+        }
+
+        const raw = await fetchDailyPixReconciliation({
+          dailyRankingId: core.dailyRankingId,
+          dryRun: false,
+        });
+        const parsed = reconciliationSchema.safeParse(raw);
+        if (!parsed.success) {
+          console.error(
+            "reconcileDailyPixPayout: resposta inválida",
+            parsed.error.flatten(),
+          );
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Resposta inválida do reconciliador PIX.",
+          });
+        }
+
+        const pixGateAfterReconcile = await computeDailyPixPayoutSettledGate(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
+        await ctx.db.dailyRanking.update({
+          where: { id: core.dailyRankingId },
+          data: { dailyPixPayoutCompleted: pixGateAfterReconcile?.isSettled ?? false },
+        });
+
+        return {
+          ...parsed.data,
+          dailyRankingId: core.dailyRankingId,
+          dailyPixPayoutCompleted: pixGateAfterReconcile?.isSettled ?? false,
+        };
+      } catch (error: unknown) {
+        if (error instanceof TRPCError) throw error;
+        if (error instanceof DailyPayoutConfigError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao reconciliar PIX do ranking diário";
+        console.error("reconcileDailyPixPayout:", error);
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
       }
     }),
@@ -11534,20 +11761,33 @@ export const adminRouter = createTRPCRouter({
         };
 
         const toReverse: ReverseLine[] = [];
+        const entryIds = core.rawRows.map((row) => row.dailyRankingEntryId);
+        const entryRows = await ctx.db.dailyRankingEntry.findMany({
+          where: { id: { in: entryIds } },
+          select: {
+            id: true,
+            dailyPrizeStatus: true,
+            dailyPrizeAmount: true,
+            isDisqualified: true,
+            dailyPrizePaid: true,
+            dailyPixStatus: true,
+          },
+        });
+        const entryMap = new Map(entryRows.map((entry) => [entry.id, entry]));
+        const activeRows = core.rawRows
+          .filter((row) => {
+            const entry = entryMap.get(row.dailyRankingEntryId);
+            return entry && !entry.isDisqualified;
+          })
+          .slice(0, core.topCount);
 
-        for (let index = 0; index < core.rawRows.length; index++) {
-          const row = core.rawRows[index]!;
+        for (let index = 0; index < activeRows.length; index++) {
+          const row = activeRows[index]!;
           const position = index + 1;
           const expectedPrize = getPrizeForPosition(prizeTable, position);
           if (expectedPrize <= 0) continue;
 
-          const dre = await ctx.db.dailyRankingEntry.findUnique({
-            where: { id: row.dailyRankingEntryId },
-            select: {
-              dailyPrizeStatus: true,
-              dailyPrizeAmount: true,
-            },
-          });
+          const dre = entryMap.get(row.dailyRankingEntryId);
 
           if (!dre || dre.dailyPrizeStatus !== "PAID") {
             throw new TRPCError({
@@ -11564,16 +11804,33 @@ export const adminRouter = createTRPCRouter({
             });
           }
 
-          const prizeTx = await ctx.db.transaction.findFirst({
+          const exactPrizeTx = await ctx.db.transaction.findFirst({
             where: {
               campaignId: input.campaignId,
               clipPostId: row.clipPostId,
-              rankingPosition: position,
               type: "PRIZE_CREDIT",
               status: "COMPLETED",
+              metadata: {
+                path: ["dailyRankingEntryId"],
+                equals: row.dailyRankingEntryId,
+              },
             },
             orderBy: { createdAt: "desc" },
           });
+          const prizeTx =
+            exactPrizeTx ??
+            (await ctx.db.transaction.findFirst({
+              where: {
+                campaignId: input.campaignId,
+                clipPostId: row.clipPostId,
+                rankingPosition: position,
+                type: "PRIZE_CREDIT",
+                status: "COMPLETED",
+                wallet: { clipperProfileId: row.clipperProfileId },
+                description: { contains: `Ranking Diário ${dateFormatted}` },
+              },
+              orderBy: { createdAt: "desc" },
+            }));
 
           if (!prizeTx || !amountsClose(prizeTx.amount, amount)) {
             throw new TRPCError({
@@ -11582,7 +11839,7 @@ export const adminRouter = createTRPCRouter({
             });
           }
 
-          const clipperName = row.artisticName || row.fullName;
+          const clipperName = getClipperRankingDisplayName(row);
           toReverse.push({
             position,
             dailyRankingEntryId: row.dailyRankingEntryId,
@@ -11602,24 +11859,71 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
+        const pixIssues = toReverse
+          .filter((line) => {
+            const entry = entryMap.get(line.dailyRankingEntryId);
+            return (
+              entry?.dailyPrizePaid ||
+              entry?.dailyPixStatus === "PAID" ||
+              entry?.dailyPixStatus === "PROCESSING"
+            );
+          })
+          .map((line) => ({
+            position: line.position,
+            clipperName: line.clipperName,
+            status:
+              entryMap.get(line.dailyRankingEntryId)?.dailyPixStatus ?? "—",
+          }));
+        const dailyRankingState = await ctx.db.dailyRanking.findUnique({
+          where: { id: core.dailyRankingId },
+          select: { dailyPixPayoutCompleted: true },
+        });
+        if (
+          dailyRankingState?.dailyPixPayoutCompleted &&
+          pixIssues.length === 0
+        ) {
+          pixIssues.push({
+            position: 0,
+            clipperName: "Lote diário",
+            status: "PAID",
+          });
+        }
+
         const balanceIssues: {
           position: number;
           clipperName: string;
           needed: number;
           balance: number;
         }[] = [];
-
+        const requiredByClipper = new Map<
+          string,
+          { amount: number; positions: number[]; clipperName: string }
+        >();
         for (const line of toReverse) {
+          const current = requiredByClipper.get(line.clipperProfileId);
+          if (current) {
+            current.amount += line.amount;
+            current.positions.push(line.position);
+          } else {
+            requiredByClipper.set(line.clipperProfileId, {
+              amount: line.amount,
+              positions: [line.position],
+              clipperName: line.clipperName,
+            });
+          }
+        }
+
+        for (const [clipperProfileId, required] of requiredByClipper) {
           const w = await ctx.db.wallet.findUnique({
-            where: { clipperProfileId: line.clipperProfileId },
+            where: { clipperProfileId },
             select: { balance: true },
           });
           const balance = w?.balance ?? 0;
-          if (balance + 1e-9 < line.amount) {
+          if (balance + 1e-9 < required.amount) {
             balanceIssues.push({
-              position: line.position,
-              clipperName: line.clipperName,
-              needed: line.amount,
+              position: required.positions[0]!,
+              clipperName: required.clipperName,
+              needed: required.amount,
               balance,
             });
           }
@@ -11641,8 +11945,17 @@ export const adminRouter = createTRPCRouter({
               amount: l.amount,
             })),
             balanceIssues,
-            canExecute: balanceIssues.length === 0,
+            pixIssues,
+            canExecute: balanceIssues.length === 0 && pixIssues.length === 0,
           };
+        }
+
+        if (pixIssues.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "O estorno não pode ser executado porque o PIX deste ranking está em processamento ou já foi enviado.",
+          });
         }
 
         if (balanceIssues.length > 0) {
@@ -11659,111 +11972,177 @@ export const adminRouter = createTRPCRouter({
           adjustmentTransactionId: string;
         }[] = [];
 
-        for (const line of toReverse) {
-          try {
-            let adjustmentId = "";
-            await ctx.db.$transaction(async (tx) => {
-              const entry = await tx.dailyRankingEntry.findUnique({
-                where: { id: line.dailyRankingEntryId },
-                select: { dailyPrizePaid: true, dailyPixStatus: true },
+        try {
+          const transactionResult = await ctx.db.$transaction(
+            async (tx) => {
+              const currentDailyRanking = await tx.dailyRanking.findUnique({
+                where: { id: core.dailyRankingId },
+                select: { dailyPixPayoutCompleted: true },
               });
-              if (
-                entry?.dailyPrizePaid ||
-                entry?.dailyPixStatus === "PAID" ||
-                entry?.dailyPixStatus === "PROCESSING"
-              ) {
-                throw new Error(
-                  `PIX em andamento ou já enviado para a entrada ${line.dailyRankingEntryId} (posição ${line.position}, status: ${entry?.dailyPixStatus ?? "—"}). Não é possível reverter.`,
-                );
+              if (currentDailyRanking?.dailyPixPayoutCompleted) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message:
+                    "O PIX deste ranking já foi concluído. Não é possível estornar a carteira.",
+                });
               }
 
-              const wallet = await tx.wallet.findUnique({
-                where: { clipperProfileId: line.clipperProfileId },
-              });
-              if (!wallet) {
-                throw new Error("Carteira não encontrada");
+              const wallets = new Map<
+                string,
+                { id: string; remainingBalance: number }
+              >();
+              for (const [clipperProfileId, required] of requiredByClipper) {
+                const wallet = await tx.wallet.findUnique({
+                  where: { clipperProfileId },
+                  select: { id: true, balance: true },
+                });
+                if (!wallet || wallet.balance + 1e-9 < required.amount) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Saldo insuficiente para estornar ${required.clipperName}. Saldo atual: R$ ${(wallet?.balance ?? 0).toFixed(2)}; necessário: R$ ${required.amount.toFixed(2)}.`,
+                  });
+                }
+                wallets.set(clipperProfileId, {
+                  id: wallet.id,
+                  remainingBalance: wallet.balance,
+                });
               }
 
-              const adj = await tx.transaction.create({
-                data: {
-                  walletId: wallet.id,
-                  type: "ADJUSTMENT",
-                  status: "COMPLETED",
-                  amount: -line.amount,
-                  balanceBefore: wallet.balance,
-                  balanceAfter: wallet.balance - line.amount,
-                  description: `Estorno prêmio ranking diário ${dateFormatted} (${line.position}º) — reverso do lote admin`,
-                  campaignId: input.campaignId,
-                  clipPostId: line.clipPostId,
-                  rankingPosition: line.position,
-                  processedBy: ctx.userId,
-                  processedAt: new Date(),
-                  proofUrls: [],
-                  metadata: {
-                    action: "undo_daily_rank_batch",
-                    reversedPrizeCreditId: line.prizeCreditTransactionId,
+              const result: typeof reversed = [];
+              for (const line of toReverse) {
+                const entry = await tx.dailyRankingEntry.findUnique({
+                  where: { id: line.dailyRankingEntryId },
+                  select: {
+                    dailyPrizeStatus: true,
+                    dailyPrizeAmount: true,
+                    dailyPrizePaid: true,
+                    dailyPixStatus: true,
                   },
-                },
-              });
-              adjustmentId = adj.id;
+                });
+                if (
+                  !entry ||
+                  entry.dailyPrizeStatus !== "PAID" ||
+                  !amountsClose(entry.dailyPrizeAmount, line.amount)
+                ) {
+                  throw new TRPCError({
+                    code: "CONFLICT",
+                    message: `A posição ${line.position} mudou desde a prévia. Recarregue o ranking antes de tentar novamente.`,
+                  });
+                }
+                if (
+                  entry.dailyPrizePaid ||
+                  entry.dailyPixStatus === "PAID" ||
+                  entry.dailyPixStatus === "PROCESSING"
+                ) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `PIX em andamento ou já enviado para a posição ${line.position} (status: ${entry.dailyPixStatus}). Não é possível reverter.`,
+                  });
+                }
 
-              await tx.wallet.update({
-                where: { id: wallet.id },
-                data: {
-                  balance: { decrement: line.amount },
-                  totalEarned: { decrement: line.amount },
-                },
-              });
+                const wallet = wallets.get(line.clipperProfileId);
+                if (!wallet) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: "Carteira não encontrada",
+                  });
+                }
+                const balanceBefore = wallet.remainingBalance;
+                const balanceAfter = balanceBefore - line.amount;
 
-              await tx.dailyRankingEntry.update({
-                where: { id: line.dailyRankingEntryId },
-                data: {
-                  dailyPrizeStatus: "PENDING",
-                  dailyPrizeAmount: 0,
-                },
-              });
-
-              await tx.auditLog.create({
-                data: {
-                  userId: ctx.userId,
-                  action: "CREATE",
-                  entityType: "Transaction",
-                  entityId: adj.id,
-                  campaignId: input.campaignId,
-                  changes: {
-                    action: "undo_daily_ranking_prize_payment",
-                    clipperProfileId: line.clipperProfileId,
-                    amount: line.amount,
-                    position: line.position,
-                    dailyRankingEntryId: line.dailyRankingEntryId,
+                const adj = await tx.transaction.create({
+                  data: {
+                    walletId: wallet.id,
+                    type: "ADJUSTMENT",
+                    status: "COMPLETED",
+                    amount: -line.amount,
+                    balanceBefore,
+                    balanceAfter,
+                    description: `Estorno prêmio ranking diário ${dateFormatted} (${line.position}º) — reverso do lote admin`,
+                    campaignId: input.campaignId,
                     clipPostId: line.clipPostId,
-                    reversedPrizeCreditId: line.prizeCreditTransactionId,
+                    rankingPosition: line.position,
+                    processedBy: ctx.userId,
+                    processedAt: new Date(),
+                    proofUrls: [],
+                    metadata: {
+                      action: "undo_daily_rank_batch",
+                      reversedPrizeCreditId: line.prizeCreditTransactionId,
+                      date: input.date,
+                      dailyRankingId: core.dailyRankingId,
+                      dailyRankingEntryId: line.dailyRankingEntryId,
+                    },
                   },
-                },
+                });
+                wallet.remainingBalance = balanceAfter;
+
+                await tx.wallet.update({
+                  where: { id: wallet.id },
+                  data: {
+                    balance: { decrement: line.amount },
+                    totalEarned: { decrement: line.amount },
+                  },
+                });
+
+                await tx.dailyRankingEntry.update({
+                  where: { id: line.dailyRankingEntryId },
+                  data: {
+                    dailyPrizeStatus: "PENDING",
+                    dailyPrizeAmount: 0,
+                  },
+                });
+
+                await tx.auditLog.create({
+                  data: {
+                    userId: ctx.userId,
+                    action: "CREATE",
+                    entityType: "Transaction",
+                    entityId: adj.id,
+                    campaignId: input.campaignId,
+                    changes: {
+                      action: "undo_daily_ranking_prize_payment",
+                      clipperProfileId: line.clipperProfileId,
+                      amount: line.amount,
+                      position: line.position,
+                      dailyRankingEntryId: line.dailyRankingEntryId,
+                      clipPostId: line.clipPostId,
+                      reversedPrizeCreditId: line.prizeCreditTransactionId,
+                    },
+                  },
+                });
+
+                result.push({
+                  position: line.position,
+                  clipperName: line.clipperName,
+                  amount: line.amount,
+                  adjustmentTransactionId: adj.id,
+                });
+              }
+
+              await tx.dailyRanking.update({
+                where: { id: core.dailyRankingId },
+                data: { dailyPixPayoutCompleted: false },
               });
-            });
 
-            reversed.push({
-              position: line.position,
-              clipperName: line.clipperName,
-              amount: line.amount,
-              adjustmentTransactionId: adjustmentId,
-            });
-          } catch (err: unknown) {
-            const msg =
-              err instanceof Error ? err.message : "Erro ao estornar linha";
-            console.error("undoDailyRankPayments item:", err);
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: `Estorno parcial: falhou na posição ${line.position} (${line.clipperName}): ${msg}. As linhas anteriores podem já ter sido estornadas — verifique o financeiro.`,
-            });
+              return result;
+            },
+            {
+              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            },
+          );
+          reversed.push(...transactionResult);
+        } catch (err: unknown) {
+          if (err instanceof TRPCError) {
+            throw err;
           }
+          const msg =
+            err instanceof Error ? err.message : "Erro ao estornar linha";
+          console.error("undoDailyRankPayments item:", err);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `O estorno não foi aplicado: ${msg}`,
+          });
         }
-
-        await ctx.db.dailyRanking.update({
-          where: { id: core.dailyRankingId },
-          data: { dailyPixPayoutCompleted: false },
-        });
 
         return {
           dryRun: false as const,
@@ -12886,9 +13265,12 @@ export const adminRouter = createTRPCRouter({
           entries: {
             select: {
               id: true,
+              clipperProfileId: true,
               position: true,
               dailyPrizeStatus: true,
               dailyPrizeAmount: true,
+              dailyPrizePaid: true,
+              dailyPixStatus: true,
               isDisqualified: true,
             },
             orderBy: { position: "asc" },
@@ -12896,6 +13278,26 @@ export const adminRouter = createTRPCRouter({
         },
         orderBy: { rankingDate: "asc" },
       });
+      const processingPixTransactions = await ctx.db.transaction.findMany({
+        where: {
+          campaignId: input.campaignId,
+          status: "PROCESSING",
+          metadata: { path: ["source"], equals: "daily_ranking_pix" },
+        },
+        select: { metadata: true },
+      });
+      const processingPixByDailyRankingId = new Map<
+        string,
+        typeof processingPixTransactions
+      >();
+      for (const tx of processingPixTransactions) {
+        const metadata = tx.metadata as { dailyRankingId?: string } | null;
+        const dailyRankingId = metadata?.dailyRankingId;
+        if (!dailyRankingId) continue;
+        const current = processingPixByDailyRankingId.get(dailyRankingId) ?? [];
+        current.push(tx);
+        processingPixByDailyRankingId.set(dailyRankingId, current);
+      }
 
       const days = dailyRankings.map((dr) => {
         const activeEntries = dr.entries.filter((e) => !e.isDisqualified);
@@ -12937,7 +13339,32 @@ export const adminRouter = createTRPCRouter({
           paidPrizeAmount,
           paymentStatus,
           announced: dr.announced,
-          dailyPixPayoutCompleted: dr.dailyPixPayoutCompleted,
+          dailyPixPayoutCompleted: (() => {
+            const pixRequiredEntries = prizeEntries.filter(
+              (e) =>
+                e.clipperProfileId !== PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
+            );
+            return (
+              pixRequiredEntries.length > 0 &&
+              (processingPixByDailyRankingId.get(dr.id) ?? []).filter((tx) => {
+                const metadata = tx.metadata as {
+                  dailyRankingEntryId?: string;
+                } | null;
+                const entryId = metadata?.dailyRankingEntryId;
+                const entry = entryId
+                  ? pixRequiredEntries.find((e) => e.id === entryId)
+                  : null;
+                if (!entry) return true;
+                return !(
+                  entry.dailyPixStatus === "PAID" &&
+                  entry.dailyPrizePaid
+                );
+              }).length === 0 &&
+              pixRequiredEntries.every(
+                (e) => e.dailyPixStatus === "PAID" && e.dailyPrizePaid,
+              )
+            );
+          })(),
         };
       });
 
@@ -13012,6 +13439,7 @@ export const adminRouter = createTRPCRouter({
           likes: true,
           comments: true,
           shares: true,
+          saves: true,
           platform: true,
           username: true,
           thumbnailUrl: true,
@@ -13044,19 +13472,25 @@ export const adminRouter = createTRPCRouter({
         const matching = posts.filter((p) => Number(p.views) >= t);
 
         const withER = matching.filter((p) => {
-          const v = Number(p.views);
-          const eng = p.likes + p.comments + p.shares;
-          return v > 0 && (eng / v) * 100 > 1;
+          return (
+            calculateEngagementRate(
+              Number(p.views),
+              p.likes,
+              p.comments,
+              p.shares,
+              p.saves ?? 0,
+            ) > 1
+          );
         });
 
-        const erValues = withER.map((p) => {
-          const v = Number(p.views);
-          return ((p.likes + p.comments + p.shares) / v) * 100;
-        });
-        const avgER =
-          erValues.length > 0
-            ? erValues.reduce((a, b) => a + b, 0) / erValues.length
-            : 0;
+        const tierViews = withER.reduce((sum, p) => sum + Number(p.views), 0);
+        const avgER = calculateEngagementRate(
+          tierViews,
+          withER.reduce((sum, p) => sum + p.likes, 0),
+          withER.reduce((sum, p) => sum + p.comments, 0),
+          withER.reduce((sum, p) => sum + p.shares, 0),
+          withER.reduce((sum, p) => sum + (p.saves ?? 0), 0),
+        );
         const avgViews =
           withER.length > 0
             ? withER.reduce((a, p) => a + Number(p.views), 0) / withER.length
@@ -13082,10 +13516,16 @@ export const adminRouter = createTRPCRouter({
       const totalPosts = posts.length;
       const totalViews = posts.reduce((s, p) => s + Number(p.views), 0);
       const totalEngagement = posts.reduce(
-        (s, p) => s + p.likes + p.comments + p.shares,
+        (sum, p) => sum + p.likes + p.comments + p.shares + (p.saves ?? 0),
         0,
       );
-      const avgER = totalViews > 0 ? (totalEngagement / totalViews) * 100 : 0;
+      const avgER = calculateEngagementRate(
+        totalViews,
+        posts.reduce((sum, p) => sum + p.likes, 0),
+        posts.reduce((sum, p) => sum + p.comments, 0),
+        posts.reduce((sum, p) => sum + p.shares, 0),
+        posts.reduce((sum, p) => sum + (p.saves ?? 0), 0),
+      );
 
       const platformStats: Record<string, { count: number; views: number }> =
         {};
@@ -13099,8 +13539,16 @@ export const adminRouter = createTRPCRouter({
       const topVideos = posts
         .filter((p) => {
           const v = Number(p.views);
-          const eng = p.likes + p.comments + p.shares;
-          return v >= 10_000 && v > 0 && (eng / v) * 100 > 1;
+          return (
+            v >= 10_000 &&
+            calculateEngagementRate(
+              v,
+              p.likes,
+              p.comments,
+              p.shares,
+              p.saves ?? 0,
+            ) > 1
+          );
         })
         .sort((a, b) => Number(b.views) - Number(a.views))
         .slice(0, 20)
@@ -13111,10 +13559,14 @@ export const adminRouter = createTRPCRouter({
           likes: p.likes,
           comments: p.comments,
           shares: p.shares,
-          er:
-            Number(p.views) > 0
-              ? ((p.likes + p.comments + p.shares) / Number(p.views)) * 100
-              : 0,
+          saves: p.saves ?? 0,
+          er: calculateEngagementRate(
+            Number(p.views),
+            p.likes,
+            p.comments,
+            p.shares,
+            p.saves ?? 0,
+          ),
           platform: p.platform,
           thumbnailUrl: p.thumbnailUrl,
           submittedUrl: p.submittedUrl,

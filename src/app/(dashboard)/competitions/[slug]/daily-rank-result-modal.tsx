@@ -7,6 +7,7 @@ import {
   ArrowSquareOut,
   CalendarBlank,
   ChatCircle,
+  ArrowsClockwise,
   Check,
   CheckCircle,
   Clock,
@@ -396,6 +397,43 @@ export function DailyRankResultModal({
     },
     onError: (err) => {
       toast.error(err.message || "Erro ao executar pagamento PIX")
+    },
+  })
+
+  /**
+   * Reconciliação PIX: não envia pagamento novo — apenas alinha status locais
+   * (entradas, transações e o flag do ranking) com o que o serviço de payout
+   * já liquidou. Necessária quando uma transferência fica PROCESSING e o
+   * webhook de confirmação se perde.
+   */
+  const reconcileDailyPixPayout = api.admin.reconcileDailyPixPayout.useMutation({
+    onSuccess: async (result) => {
+      const updates =
+        result.totals.entriesUpdated +
+        result.totals.transactionsUpdated +
+        result.totals.dailyRankingsUpdated
+      toast.success(
+        result.dailyPixPayoutCompleted
+          ? "PIX reconciliado e marcado como concluído."
+          : "Reconciliação PIX executada.",
+        {
+          description:
+            updates > 0
+              ? `${updates} ajuste(s) aplicado(s) no status/ledger.`
+              : "Nenhuma inconsistência nova encontrada.",
+        },
+      )
+      refreshPreviewSilently()
+      await utils.admin.getDailyRankPaymentTransactions.invalidate({
+        campaignId,
+        date: preview?.date ?? "",
+      })
+      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId })
+      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
+      refetch()
+    },
+    onError: (err) => {
+      toast.error(err.message || "Erro ao reconciliar PIX")
     },
   })
 
@@ -1233,6 +1271,63 @@ export function DailyRankResultModal({
                       </Tooltip>
                     </TooltipProvider>
                   )}
+                  {data.campaign.dailyPix &&
+                    preview.canUndoRankPayments &&
+                    !preview.dailyPixPayoutCompleted && (
+                      <TooltipProvider delayDuration={200}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="w-full sm:w-auto">
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => {
+                                  if (!campaignId || !preview?.date) return
+                                  const ok = window.confirm(
+                                    "Reconciliar este PIX? Essa ação não envia novo pagamento; ela apenas corrige status locais quando o Pix já está liquidado.",
+                                  )
+                                  if (!ok) return
+                                  reconcileDailyPixPayout.mutate({
+                                    campaignId,
+                                    date: preview.date,
+                                  })
+                                }}
+                                disabled={
+                                  reconcileDailyPixPayout.isPending ||
+                                  previewDailyPixPayout.isPending ||
+                                  executeDailyPixPayout.isPending
+                                }
+                                className={cn(
+                                  "h-9 w-full cursor-pointer gap-2 rounded-xl font-semibold",
+                                  "border border-sky-500/45 bg-sky-600/20 text-sky-600 dark:text-sky-200",
+                                  "hover:border-sky-400 hover:bg-sky-600/30",
+                                  "disabled:cursor-not-allowed disabled:opacity-40",
+                                )}
+                              >
+                                {reconcileDailyPixPayout.isPending ? (
+                                  <Spinner className="size-3.5 shrink-0 animate-spin" />
+                                ) : (
+                                  <ArrowsClockwise
+                                    className="size-3.5 shrink-0"
+                                    weight="bold"
+                                  />
+                                )}
+                                Reconciliar PIX
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="bottom"
+                            className="max-w-[260px] text-center"
+                          >
+                            <p className="text-xs">
+                              Corrige divergências entre comprovante, ledger e
+                              status do ranking quando o Pix já foi pago.
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                   {preview.canUndoRankPayments && (
                     <Button
                       type="button"
