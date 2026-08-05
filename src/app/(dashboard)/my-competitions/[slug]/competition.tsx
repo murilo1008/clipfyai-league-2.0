@@ -1372,8 +1372,11 @@ export default function Competition({ slug }: { slug: string }) {
         </div>
       </Reveal>
 
-      {/* ===== Tabs ===== */}
-      <Reveal delayMs={60}>
+      {/* ===== Tabs =====
+          `immediate`: é o conteúdo principal da página (ranking, posts,
+          contas) e não pode depender de scroll para aparecer — mesmo
+          padrão das demais telas do dashboard. */}
+      <Reveal immediate delayMs={60}>
         <Tabs defaultValue="posts" className="gap-4 sm:gap-5">
           <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
             <TabsList className="bg-muted/40 flex h-auto w-max gap-1 rounded-2xl p-1 sm:w-full">

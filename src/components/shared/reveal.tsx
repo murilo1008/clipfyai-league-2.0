@@ -2,6 +2,7 @@
 
 import * as React from "react"
 
+import { REVEAL_OBSERVER_OPTIONS } from "@/components/shared/reveal-options"
 import { cn } from "@/lib/utils"
 
 interface RevealProps {
@@ -34,15 +35,22 @@ export function Reveal({
       const frame = requestAnimationFrame(() => setVisible(true))
       return () => cancelAnimationFrame(frame)
     }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisible(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: "0px 0px -6% 0px", threshold: 0.15 },
-    )
+
+    // Sem IntersectionObserver (browser antigo, ambiente de teste), o
+    // conteúdo tem que aparecer mesmo assim — nunca ficar em opacity-0.
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true)
+      return
+    }
+
+    // threshold 0 = basta 1px visível. Ver reveal-options.ts: com valor
+    // fracionário, bloco mais alto que a viewport nunca atinge a fração.
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVisible(true)
+        observer.disconnect()
+      }
+    }, REVEAL_OBSERVER_OPTIONS)
     observer.observe(el)
     return () => observer.disconnect()
   }, [immediate])
