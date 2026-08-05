@@ -6,7 +6,7 @@ import {
   FilmSlate,
   GearSix,
   GraduationCap,
-  Handshake,
+  // Handshake, // volta junto com o item "Indicações"
   House,
   Newspaper,
   Shield,
@@ -189,12 +189,16 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
       icon: Wallet,
       items: [],
     },
-    {
-      title: "Indicações",
-      url: "/affiliates",
-      icon: Handshake,
-      items: [],
-    },
+    // Indicações desativada por enquanto — a rota também saiu do ar:
+    // src/app/(dashboard)/affiliates virou _affiliates (private folder do
+    // App Router). Para reativar, renomeie a pasta de volta, descomente o
+    // page.tsx de lá e descomente o item abaixo.
+    // {
+    //   title: "Indicações",
+    //   url: "/affiliates",
+    //   icon: Handshake,
+    //   items: [],
+    // },
     {
       title: "Discord",
       url: "https://discord.gg/f2eNVbYnzn",
