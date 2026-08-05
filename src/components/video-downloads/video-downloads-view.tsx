@@ -39,10 +39,9 @@ import {
 } from "@/components/video-downloads/downloads-tray-hero-viz";
 import { SectionHeading } from "@/components/home/section-heading";
 import { StatTile } from "@/components/home/stat-tile";
-import { CountUp } from "@/components/shared/count-up";
+import { CountUp, formatCompact } from "@/components/shared/count-up";
 import { Reveal } from "@/components/shared/reveal";
 import {
-  CardGridSkeleton,
   ListRowsSkeleton,
   StatTilesGridSkeleton,
 } from "@/components/shared/skeletons";
@@ -129,12 +128,15 @@ const STATUS_CONFIG: Record<
     progress: 28,
   },
   FAILED: {
-    label: "Falhou ao baixar",
-    short: "Com erro",
-    icon: WarningCircle,
-    className: "border-red-500/30 bg-red-500/15 text-red-600 dark:text-red-400",
-    overlay: "text-red-300",
-    bar: "bg-red-500",
+    // Tom brando de propósito: para o cliente isso é "tenta de novo", não
+    // um erro grave — âmbar em vez de vermelho, e sem palavra "falhou".
+    label: "Não deu para baixar",
+    short: "Tentar de novo",
+    icon: ArrowsClockwise,
+    className:
+      "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    overlay: "text-amber-200",
+    bar: "bg-amber-400",
     progress: 100,
   },
   NONE: {
@@ -938,18 +940,25 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
 
                   {/* Grid */}
                   {postsLoading ? (
-                    <CardGridSkeleton
-                      count={6}
-                      aspectClass="aspect-video"
-                      withStats={false}
-                    />
+                    <VideoGridSkeleton count={isAdmin ? 6 : 12} />
                   ) : filteredPosts.length ? (
                     <>
-                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                      <div
+                        className={cn(
+                          // Mesma malha da página de posts: cartão 9:16 e
+                          // duas colunas já no celular. No admin o grid vive
+                          // dentro de uma coluna estreita, então para antes.
+                          "grid grid-cols-2 gap-3 sm:gap-4",
+                          isAdmin
+                            ? "sm:grid-cols-3"
+                            : "sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6",
+                        )}
+                      >
                         {filteredPosts.map((post, index) => (
                           <Reveal
                             key={post.id}
-                            delayMs={Math.min(index, 8) * 60}
+                            immediate
+                            delayMs={Math.min(index * 45, 620)}
                             className="h-full"
                           >
                             <VideoCard
@@ -1058,7 +1067,12 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
   );
 }
 
-/* ── Card de vídeo ─────────────────────────────────────────────────────── */
+/* ── Card de vídeo ─────────────────────────────────────────────────────── *//**
+ * Cartão do vídeo — mesmo formato do cartão da página de posts: retrato
+ * 9:16, miniatura sangrando no cartão inteiro, informações sobre a imagem
+ * e realce no hover pelo ring. O que muda é o miolo: aqui entram o estado
+ * do download, a barra de progresso e a ação de baixar/enfileirar.
+ */
 function VideoCard({
   post,
   isDownloading,
@@ -1082,65 +1096,155 @@ function VideoCard({
   const isReady =
     status === "SUCCEEDED" && Boolean(post.bucketVideo?.publicUrl);
   const isBusy = status === "QUEUED" || status === "PROCESSING";
+  const isFailed = status === "FAILED";
 
   return (
-    <div className="glass-card glass-card-hover group flex h-full flex-col overflow-hidden rounded-3xl">
+    <div className="group ring-border/60 hover:ring-brand-cyan/60 not-dark:hover:ring-primary/50 relative block aspect-[9/16] overflow-hidden rounded-2xl ring-1 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-[color-mix(in_oklab,var(--brand-cyan)_22%,transparent)] motion-reduce:transition-none motion-reduce:hover:translate-y-0">
       {/* Miniatura */}
-      <div className="bg-muted/50 relative aspect-video w-full overflow-hidden">
-        {post.thumbnailUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={post.thumbnailUrl}
-            alt={`Miniatura do vídeo de @${username}`}
-            loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.05] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+      {post.thumbnailUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={post.thumbnailUrl}
+          alt={`Miniatura do vídeo de @${username}`}
+          loading="lazy"
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.06] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center bg-[#071321]">
+          <span className="animate-float flex size-12 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/20 backdrop-blur-sm">
+            <Video className="size-5 text-white/70" weight="fill" />
+          </span>
+        </div>
+      )}
+
+      {/* Overlay que intensifica no hover */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/5 transition-opacity duration-500" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/25 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+
+      {/* Brilho varrendo no hover */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-10 -translate-x-full bg-gradient-to-r from-transparent via-white/10 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full motion-reduce:hidden"
+      />
+
+      {/* Estado do download (ocupa o lugar do selo de ranking dos posts) */}
+      <span
+        className={cn(
+          "absolute top-2 left-2 z-20 inline-flex max-w-[calc(100%-3.25rem)] items-center gap-1 rounded-full bg-black/60 px-1.5 py-1 text-[10px] font-bold ring-1 ring-white/25 backdrop-blur-md transition-transform duration-300 group-hover:scale-105 motion-reduce:transition-none sm:px-2",
+          meta.overlay,
+        )}
+      >
+        <StatusIcon
+          className={cn(
+            "size-2.5 shrink-0",
+            meta.spin && "animate-spin motion-reduce:animate-none",
+          )}
+          weight="fill"
+        />
+        <span className="hidden truncate sm:inline">{meta.short}</span>
+        <span className="sr-only">{meta.label}</span>
+      </span>
+
+      {/* Plataforma */}
+      <span className="absolute top-2 right-2 z-20 flex size-7 items-center justify-center rounded-full bg-black/50 ring-1 ring-white/15 backdrop-blur-md transition-transform duration-300 group-hover:scale-110 motion-reduce:transition-none">
+        {PlatformIcon ? (
+          <PlatformIcon
+            className={cn("size-3.5", platform?.color ?? "text-white")}
           />
         ) : (
-          <div className="text-muted-foreground flex h-full items-center justify-center">
-            <ThumbFallback />
-          </div>
+          <Video className="size-3.5 text-white" />
         )}
+      </span>
 
-        {/* Scrim para os chips ficarem legíveis nos dois temas */}
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/35"
-        />
-
-        <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2 py-1 text-[11px] font-semibold text-white backdrop-blur-sm">
-          {PlatformIcon && <PlatformIcon className="size-3.5" />}
-          {PLATFORM_LABELS[platformKey] ?? post.platform}
-        </span>
-
-        <span
-          className={cn(
-            "absolute top-2.5 right-2.5 inline-flex items-center gap-1 rounded-full border border-white/15 bg-black/55 px-2 py-1 text-[11px] font-semibold backdrop-blur-sm",
-            meta.overlay,
-          )}
-        >
-          <StatusIcon
-            className={cn(
-              "size-3.5",
-              meta.spin && "animate-spin motion-reduce:animate-none",
-            )}
-            weight="fill"
-          />
-          {meta.short}
-        </span>
-
+      {/* Abrir a publicação original — sobe no hover, sempre visível no touch */}
+      <div className="absolute top-11 right-2 z-30 flex flex-col gap-1.5 lg:translate-y-2 lg:opacity-0 lg:transition-all lg:duration-300 lg:group-focus-within:translate-y-0 lg:group-focus-within:opacity-100 lg:group-hover:translate-y-0 lg:group-hover:opacity-100 lg:motion-reduce:transition-none">
         <a
           href={post.submittedUrl}
           target="_blank"
           rel="noopener noreferrer"
+          title="Abrir publicação original"
           aria-label={`Abrir publicação de @${username} em nova aba`}
-          className="absolute right-2.5 bottom-2.5 flex size-9 items-center justify-center rounded-xl bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+          className="flex size-9 cursor-pointer items-center justify-center rounded-xl border border-white/20 bg-black/40 text-white backdrop-blur-md transition-all duration-200 hover:scale-110 hover:border-[color-mix(in_oklab,var(--brand-cyan)_60%,transparent)] hover:bg-white/25 motion-reduce:transition-none"
         >
           <ArrowSquareOut className="size-4" weight="bold" />
         </a>
       </div>
 
-      {/* Barra de progresso do processamento */}
-      <div className="bg-muted h-1 w-full">
+      {/* Infos + ação */}
+      <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-1.5 p-2.5 pb-3.5 sm:p-3 sm:pb-4">
+        <p className="truncate text-xs font-bold text-white">@{username}</p>
+
+        <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] text-white/90">
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <Eye
+              className="size-3 shrink-0 text-[var(--brand-cyan)]"
+              weight="fill"
+            />
+            <span className="truncate font-semibold tabular-nums">
+              {formatCompact(post.views)}
+            </span>
+          </span>
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <ThumbsUp className="size-3 shrink-0 text-rose-400" weight="fill" />
+            <span className="truncate font-semibold tabular-nums">
+              {formatCompact(post.likes)}
+            </span>
+          </span>
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <ChatCircle
+              className="size-3 shrink-0 text-emerald-300"
+              weight="fill"
+            />
+            <span className="truncate font-semibold tabular-nums">
+              {formatCompact(post.comments)}
+            </span>
+          </span>
+        </div>
+
+        {/* Erro em tom brando: recado curto e amigável. O motivo técnico
+            fica no title, para quem precisar reportar ao suporte. */}
+        {isFailed && (
+          <p
+            title={post.bucketVideo?.errorMessage ?? undefined}
+            className="line-clamp-2 rounded-lg bg-amber-400/15 px-2 py-1 text-[10px] leading-snug font-medium text-amber-100 ring-1 ring-amber-300/25 backdrop-blur-sm"
+          >
+            Não deu para baixar. Tente de novo.
+          </p>
+        )}
+
+        {isReady ? (
+          <Button
+            onClick={() => void onDownload(post.bucketVideo!.id)}
+            disabled={isDownloading}
+            className="bg-gradient-custom h-9 w-full cursor-pointer rounded-xl text-xs font-bold text-[#04222A] shadow-lg transition-[filter,transform] hover:brightness-110 active:scale-[0.98] motion-reduce:transition-none"
+          >
+            {isDownloading ? (
+              <CircleNotch className="size-3.5 animate-spin motion-reduce:animate-none" />
+            ) : (
+              <DownloadSimple className="size-3.5" weight="bold" />
+            )}
+            Baixar .mp4
+          </Button>
+        ) : (
+          <Button
+            onClick={() => onEnqueue(post.id)}
+            disabled={isBusy || isEnqueueing}
+            className="h-9 w-full cursor-pointer rounded-xl border border-white/25 bg-white/15 text-xs font-bold text-white shadow-lg backdrop-blur-md transition-colors hover:border-white/40 hover:bg-white/25 disabled:opacity-70 motion-reduce:transition-none"
+          >
+            {isBusy || isEnqueueing ? (
+              <CircleNotch className="size-3.5 animate-spin motion-reduce:animate-none" />
+            ) : isFailed ? (
+              <ArrowsClockwise className="size-3.5" weight="bold" />
+            ) : (
+              <Play className="size-3.5" weight="fill" />
+            )}
+            {isBusy ? meta.short : isFailed ? "Tentar de novo" : "Preparar"}
+          </Button>
+        )}
+      </div>
+
+      {/* Progresso do processamento, rente à borda de baixo */}
+      <div className="absolute inset-x-0 bottom-0 z-30 h-1 bg-black/45">
         <div
           className={cn(
             "h-full transition-[width] duration-700 ease-out motion-reduce:transition-none",
@@ -1150,79 +1254,35 @@ function VideoCard({
         />
       </div>
 
-      {/* Conteúdo */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3 p-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-lg",
-              platform?.bgColor ?? "bg-muted",
-              PLATFORM_TEXT[platformKey],
-            )}
-          >
-            {PlatformIcon ? (
-              <PlatformIcon className="size-4" />
-            ) : (
-              <Video className="size-4" />
-            )}
-          </span>
-          <div className="min-w-0 leading-tight">
-            <p className="truncate text-sm font-bold">@{username}</p>
-            <p className="text-muted-foreground truncate text-[11px]">
-              {meta.label}
-            </p>
+      {/* Link esticado: cobre o cartão, abaixo das ações (z-30) */}
+      <a
+        href={post.submittedUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`Abrir publicação de @${username} em nova aba`}
+        className="absolute inset-0 z-20 rounded-2xl"
+      />
+    </div>
+  );
+}
+
+/** Fantasma do grid — espelha o cartão 9:16 real, sem salto de layout. */
+function VideoGridSkeleton({ count = 12 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 xl:grid-cols-6">
+      {Array.from({ length: count }).map((_, index) => (
+        <div
+          key={index}
+          className="ring-border/60 relative aspect-[9/16] overflow-hidden rounded-2xl ring-1"
+        >
+          <Skeleton className="h-full w-full rounded-none" />
+          <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2.5 sm:p-3">
+            <Skeleton className="h-3 w-2/3 rounded-full" />
+            <Skeleton className="h-2.5 w-full rounded-full" />
+            <Skeleton className="h-9 w-full rounded-xl" />
           </div>
         </div>
-
-        <div className="grid grid-cols-3 gap-1.5">
-          <MetricCell icon={Eye} label="Views" value={post.views} />
-          <MetricCell icon={ThumbsUp} label="Likes" value={post.likes} />
-          <MetricCell icon={ChatCircle} label="Coment." value={post.comments} />
-        </div>
-
-        {post.bucketVideo?.errorMessage && status === "FAILED" && (
-          <p className="line-clamp-2 rounded-lg bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600 dark:text-red-400">
-            {post.bucketVideo.errorMessage}
-          </p>
-        )}
-
-        <div className="mt-auto pt-1">
-          {isReady ? (
-            <Button
-              onClick={() => void onDownload(post.bucketVideo!.id)}
-              disabled={isDownloading}
-              className="bg-gradient-custom h-10 w-full cursor-pointer rounded-xl font-semibold text-[#04222A] transition-[filter,transform] hover:brightness-110 active:scale-[0.98] motion-reduce:transition-none"
-            >
-              {isDownloading ? (
-                <CircleNotch className="size-4 animate-spin motion-reduce:animate-none" />
-              ) : (
-                <DownloadSimple className="size-4" weight="bold" />
-              )}
-              Baixar .mp4
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              onClick={() => onEnqueue(post.id)}
-              disabled={isBusy || isEnqueueing}
-              className="h-10 w-full cursor-pointer rounded-xl"
-            >
-              {isBusy || isEnqueueing ? (
-                <CircleNotch className="size-4 animate-spin motion-reduce:animate-none" />
-              ) : status === "FAILED" ? (
-                <ArrowsClockwise className="size-4" weight="bold" />
-              ) : (
-                <Play className="size-4" weight="fill" />
-              )}
-              {isBusy
-                ? meta.short
-                : status === "FAILED"
-                  ? "Tentar novamente"
-                  : "Adicionar à fila"}
-            </Button>
-          )}
-        </div>
-      </div>
+      ))}
     </div>
   );
 }
@@ -1354,31 +1414,6 @@ function DownloadRow({
   );
 }
 
-/* ── Peças auxiliares ──────────────────────────────────────────────────── */
-function MetricCell({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: React.ElementType;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className="border-border/60 bg-muted/30 flex min-w-0 flex-col gap-0.5 rounded-xl border px-2 py-1.5">
-      <span className="text-muted-foreground inline-flex items-center gap-1 truncate text-[10px] font-semibold tracking-[0.08em] uppercase">
-        <Icon className="size-3 shrink-0" weight="fill" />
-        {label}
-      </span>
-      <CountUp
-        value={value}
-        kind="compact"
-        className="truncate text-sm font-bold tabular-nums"
-      />
-    </div>
-  );
-}
-
 function NumberFilter({
   label,
   value,
@@ -1403,17 +1438,6 @@ function NumberFilter({
         className="focus-visible:ring-brand-cyan/40 h-10 rounded-xl"
       />
     </label>
-  );
-}
-
-function ThumbFallback() {
-  return (
-    <span className="flex flex-col items-center gap-1.5">
-      <Video className="size-8" weight="fill" />
-      <span className="text-[10px] font-semibold tracking-[0.12em] uppercase">
-        Sem capa
-      </span>
-    </span>
   );
 }
 
