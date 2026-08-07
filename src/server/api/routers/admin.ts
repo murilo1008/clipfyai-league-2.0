@@ -8427,6 +8427,7 @@ export const adminRouter = createTRPCRouter({
         const creditTransactions = await ctx.db.transaction.findMany({
           where: {
             type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
+            status: "COMPLETED",
             ...dateFilter,
           },
           select: {
@@ -8458,6 +8459,7 @@ export const adminRouter = createTRPCRouter({
         const pixTransactions = await ctx.db.transaction.findMany({
           where: {
             type: "WITHDRAWAL_COMPLETED",
+            status: "COMPLETED",
             ...dateFilter,
           },
           select: {
@@ -8877,6 +8879,7 @@ export const adminRouter = createTRPCRouter({
             type: {
               in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"], // Incluir ajustes no financeiro
             },
+            status: "COMPLETED",
           },
           include: {
             wallet: {
@@ -8903,6 +8906,7 @@ export const adminRouter = createTRPCRouter({
           where: {
             campaignId: campaign.id,
             type: "WITHDRAWAL_COMPLETED",
+            status: "COMPLETED",
           },
           include: {
             wallet: {
