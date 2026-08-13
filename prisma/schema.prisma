@@ -517,8 +517,9 @@ model Clan {
   imageUrl    String? // Imagem do clã (proporção 1:1)
   description String? @db.Text // Descrição do clã
 
-  // Dono do clã (clipador responsável por aprovar/rejeitar inscrições)
+  // Dono e administrador secundário do clã (responsáveis por aprovar/rejeitar inscrições)
   ownerId String?
+  adminId String?
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -526,12 +527,14 @@ model Clan {
 
   // Relações
   owner        ClipperProfile?   @relation("ClanOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  admin        ClipperProfile?   @relation("ClanAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   members      ClipperProfile[]  @relation("ClanMembers")
   applications ClanApplication[]
 
   @@index([tag])
   @@index([isActive])
   @@index([ownerId])
+  @@index([adminId])
 }
 
 enum ClanApplicationStatus {
@@ -637,6 +640,7 @@ model ClipperProfile {
   user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   clan                  Clan?                 @relation("ClanMembers", fields: [clanId], references: [id], onDelete: SetNull)
   ownedClans            Clan[]                @relation("ClanOwner")
+  adminClans            Clan[]                @relation("ClanAdmin")
   clanApplications      ClanApplication[]
   applications          ClipperApplication[]
   wallet                Wallet?

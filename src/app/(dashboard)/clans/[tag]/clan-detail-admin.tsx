@@ -99,8 +99,14 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
   const [sortKey, setSortKey] = React.useState<SortKey>("views")
   const [sortDir, setSortDir] = React.useState<SortDir>("desc")
   const [ownerDialogOpen, setOwnerDialogOpen] = React.useState(false)
+  const [managerDialogRole, setManagerDialogRole] = React.useState<
+    "owner" | "admin"
+  >("owner")
   const [ownerSearch, setOwnerSearch] = React.useState("")
   const [settingOwnerId, setSettingOwnerId] = React.useState<string | null>(
+    null,
+  )
+  const [settingAdminId, setSettingAdminId] = React.useState<string | null>(
     null,
   )
   const [applicationsOpen, setApplicationsOpen] = React.useState(false)
@@ -138,6 +144,20 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
     onError: (err) => {
       toast.error(err.message)
       setSettingOwnerId(null)
+    },
+  })
+
+  const setAdminMutation = api.clan.setAdmin.useMutation({
+    onSuccess: () => {
+      toast.success("Administrador do clã atualizado")
+      setOwnerDialogOpen(false)
+      setOwnerSearch("")
+      setSettingAdminId(null)
+      void utils.clan.getByTag.invalidate({ tag })
+    },
+    onError: (err) => {
+      toast.error(err.message)
+      setSettingAdminId(null)
     },
   })
 
@@ -190,6 +210,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
       applicationDate?: Date
       applicationId?: string
       isOwner: boolean
+      isAdmin: boolean
     }> = []
 
     if (memberStatusFilter !== "pending") {
@@ -207,6 +228,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
           totalLikes: m.totalLikes,
           status: "approved",
           isOwner: !!clan.owner && m.id === clan.owner.id,
+          isAdmin: !!clan.admin && m.id === clan.admin.id,
         })
       }
     }
@@ -229,6 +251,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
           applicationDate: app.createdAt,
           applicationId: app.id,
           isOwner: false,
+          isAdmin: false,
         })
       }
     }
@@ -296,7 +319,11 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
               O clã que você está procurando não existe.
             </p>
           </div>
-          <Button asChild variant="outline" className="cursor-pointer rounded-xl">
+          <Button
+            asChild
+            variant="outline"
+            className="cursor-pointer rounded-xl"
+          >
             <Link href="/clans">
               <ArrowLeft className="size-4" />
               Voltar para Clãs
@@ -321,6 +348,11 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
   const totalCount = approvedCount + pendingCount
   const detailMember =
     unifiedMembers.find((m) => m.id === detailMemberId) ?? null
+  const activeManager = managerDialogRole === "owner" ? clan.owner : clan.admin
+  const activeManagerMutation =
+    managerDialogRole === "owner" ? setOwnerMutation : setAdminMutation
+  const activeSettingId =
+    managerDialogRole === "owner" ? settingOwnerId : settingAdminId
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-7 sm:px-6 sm:py-8">
@@ -362,7 +394,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                   animationDelay: "-6s",
                 }}
               />
-              <div className="hero-grid absolute inset-0 opacity-35 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)]" />
+              <div className="hero-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)] opacity-35" />
               <div className="absolute inset-y-0 left-1/3 w-28 overflow-visible">
                 <span
                   className="hero-sweep block h-full w-full"
@@ -396,9 +428,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                       width: sparkle.size,
                       height: sparkle.size,
                       color:
-                        index % 2 === 0
-                          ? clan.emojiColor
-                          : "var(--brand-cyan)",
+                        index % 2 === 0 ? clan.emojiColor : "var(--brand-cyan)",
                       "--twinkle-delay": `${sparkle.delay}s`,
                       "--twinkle-dur": `${sparkle.dur}s`,
                       "--twinkle-opacity": 0.85,
@@ -417,9 +447,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                       width: particle.size,
                       height: particle.size,
                       backgroundColor:
-                        index % 2 === 0
-                          ? clan.emojiColor
-                          : "var(--brand-cyan)",
+                        index % 2 === 0 ? clan.emojiColor : "var(--brand-cyan)",
                       "--particle-delay": `${particle.delay}s`,
                       "--particle-dur": `${particle.dur}s`,
                       "--particle-x": `${particle.x}px`,
@@ -517,7 +545,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
 
       {/* ===== Dono + Inscrições Pendentes ===== */}
       <Reveal immediate delayMs={60}>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* Dono do Clã */}
           <div className="glass-card glass-card-hover relative overflow-hidden rounded-2xl p-4 sm:p-5">
             <span
@@ -537,7 +565,10 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                 variant="ghost"
                 size="sm"
                 className="h-7 cursor-pointer rounded-lg px-2 text-xs text-violet-500 hover:bg-violet-500/10 hover:text-violet-400 dark:text-violet-400 dark:hover:text-violet-300"
-                onClick={() => setOwnerDialogOpen(true)}
+                onClick={() => {
+                  setManagerDialogRole("owner")
+                  setOwnerDialogOpen(true)
+                }}
               >
                 {clan.owner ? "Alterar" : "Definir"}
               </Button>
@@ -562,6 +593,57 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
             ) : (
               <p className="text-muted-foreground/60 mt-3 text-sm">
                 Nenhum dono definido
+              </p>
+            )}
+          </div>
+
+          {/* Admin Secundário */}
+          <div className="glass-card glass-card-hover relative overflow-hidden rounded-2xl p-4 sm:p-5">
+            <span
+              aria-hidden
+              className="pointer-events-none absolute -top-10 -right-10 size-28 rounded-full bg-cyan-500/10 blur-2xl"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-500 dark:text-cyan-400">
+                  <UserCheck className="size-4" weight="fill" />
+                </span>
+                <span className="text-muted-foreground text-[11px] font-semibold tracking-[0.14em] uppercase">
+                  Admin do Clã
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 cursor-pointer rounded-lg px-2 text-xs text-cyan-500 hover:bg-cyan-500/10 hover:text-cyan-400 dark:text-cyan-400 dark:hover:text-cyan-300"
+                onClick={() => {
+                  setManagerDialogRole("admin")
+                  setOwnerDialogOpen(true)
+                }}
+              >
+                {clan.admin ? "Alterar" : "Definir"}
+              </Button>
+            </div>
+            {clan.admin ? (
+              <div className="mt-3 flex items-center gap-3">
+                <Avatar className="size-10 ring-2 ring-cyan-500/30">
+                  <AvatarImage src={clan.admin.imageUrl ?? undefined} />
+                  <AvatarFallback className="text-xs">
+                    {clan.admin.name.charAt(0)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">
+                    {clan.admin.name}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    Ajuda nas aprovações
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-muted-foreground/60 mt-3 text-sm">
+                Nenhum admin secundário
               </p>
             )}
           </div>
@@ -674,7 +756,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
               <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400">
                 <Crown className="size-4" weight="fill" />
               </span>
-              <span className="text-[11px] font-semibold tracking-[0.14em] uppercase text-amber-600 dark:text-amber-400">
+              <span className="text-[11px] font-semibold tracking-[0.14em] text-amber-600 uppercase dark:text-amber-400">
                 Membro Destaque
               </span>
             </div>
@@ -721,31 +803,29 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
 
             {/* Abas-pílula com contadores */}
             <div className="flex flex-wrap items-center gap-2">
-              {(
-                [
-                  {
-                    key: "all" as StatusFilter,
-                    label: "Todos",
-                    count: totalCount,
-                    activeClass:
-                      "bg-foreground/10 text-foreground ring-1 ring-foreground/20",
-                  },
-                  {
-                    key: "approved" as StatusFilter,
-                    label: "Aprovados",
-                    count: approvedCount,
-                    activeClass:
-                      "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/30",
-                  },
-                  {
-                    key: "pending" as StatusFilter,
-                    label: "Pendentes",
-                    count: pendingCount,
-                    activeClass:
-                      "bg-orange-500/15 text-orange-600 dark:text-orange-400 ring-1 ring-orange-500/30",
-                  },
-                ]
-              ).map((tab) => (
+              {[
+                {
+                  key: "all" as StatusFilter,
+                  label: "Todos",
+                  count: totalCount,
+                  activeClass:
+                    "bg-foreground/10 text-foreground ring-1 ring-foreground/20",
+                },
+                {
+                  key: "approved" as StatusFilter,
+                  label: "Aprovados",
+                  count: approvedCount,
+                  activeClass:
+                    "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/30",
+                },
+                {
+                  key: "pending" as StatusFilter,
+                  label: "Pendentes",
+                  count: pendingCount,
+                  activeClass:
+                    "bg-orange-500/15 text-orange-600 dark:text-orange-400 ring-1 ring-orange-500/30",
+                },
+              ].map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => setMemberStatusFilter(tab.key)}
@@ -870,6 +950,14 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                                 />
                               </span>
                             )}
+                            {member.isAdmin && !member.isOwner && (
+                              <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-cyan-500">
+                                <UserCheck
+                                  className="size-2.5 text-white"
+                                  weight="fill"
+                                />
+                              </span>
+                            )}
                             {member.status === "pending" && (
                               <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-orange-500">
                                 <Clock
@@ -887,6 +975,11 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                               {member.isOwner && (
                                 <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-violet-500 dark:text-violet-400">
                                   DONO
+                                </span>
+                              )}
+                              {member.isAdmin && !member.isOwner && (
+                                <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-500 dark:text-cyan-400">
+                                  ADMIN
                                 </span>
                               )}
                             </div>
@@ -978,6 +1071,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
           if (!open) {
             setOwnerSearch("")
             setSettingOwnerId(null)
+            setSettingAdminId(null)
           }
         }}
       >
@@ -987,24 +1081,27 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
               <span className="flex size-9 items-center justify-center rounded-xl bg-violet-500/15 text-violet-500 dark:text-violet-400">
                 <Crown className="size-4.5" weight="fill" />
               </span>
-              Definir Dono do Clã
+              {managerDialogRole === "owner"
+                ? "Definir Dono do Clã"
+                : "Definir Admin do Clã"}
             </DialogTitle>
             <DialogDescription>
-              O dono será responsável por aprovar ou rejeitar inscrições de
-              clipadores neste clã.
+              {managerDialogRole === "owner"
+                ? "O dono será o responsável principal por aprovar ou rejeitar inscrições neste clã."
+                : "O admin secundário também poderá aprovar/rejeitar inscrições e remover membros."}
             </DialogDescription>
           </DialogHeader>
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
             {/* Dono atual */}
-            {clan.owner && (
+            {activeManager && (
               <div className="relative overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-r from-violet-500/10 to-transparent p-3.5">
                 <div className="flex items-center gap-3.5">
                   <div className="relative">
                     <Avatar className="size-11 ring-2 ring-violet-500/40">
-                      <AvatarImage src={clan.owner.imageUrl ?? undefined} />
+                      <AvatarImage src={activeManager.imageUrl ?? undefined} />
                       <AvatarFallback className="bg-violet-500/10 text-sm text-violet-500 dark:text-violet-400">
-                        {clan.owner.name.charAt(0)}
+                        {activeManager.name.charAt(0)}
                       </AvatarFallback>
                     </Avatar>
                     <span className="ring-background absolute -right-0.5 -bottom-0.5 flex size-4 items-center justify-center rounded-full bg-violet-500 ring-2">
@@ -1013,26 +1110,40 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">
-                      {clan.owner.name}
+                      {activeManager.name}
                     </p>
                     <p className="text-[11px] font-medium text-violet-500 dark:text-violet-400">
-                      Dono atual do clã
+                      {managerDialogRole === "owner"
+                        ? "Dono atual do clã"
+                        : "Admin atual do clã"}
                     </p>
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
                     className="h-8 cursor-pointer gap-1.5 rounded-lg px-3 text-xs text-red-500 hover:bg-red-500/10 hover:text-red-400"
-                    disabled={setOwnerMutation.isPending && settingOwnerId === null}
+                    disabled={
+                      activeManagerMutation.isPending &&
+                      activeSettingId === null
+                    }
                     onClick={() => {
-                      setSettingOwnerId(null)
-                      setOwnerMutation.mutate({
-                        clanId: clan.id,
-                        clipperId: null,
-                      })
+                      if (managerDialogRole === "owner") {
+                        setSettingOwnerId(null)
+                        setOwnerMutation.mutate({
+                          clanId: clan.id,
+                          clipperId: null,
+                        })
+                      } else {
+                        setSettingAdminId(null)
+                        setAdminMutation.mutate({
+                          clanId: clan.id,
+                          clipperId: null,
+                        })
+                      }
                     }}
                   >
-                    {setOwnerMutation.isPending && settingOwnerId === null ? (
+                    {activeManagerMutation.isPending &&
+                    activeSettingId === null ? (
                       <Spinner className="size-3 animate-spin" />
                     ) : (
                       <UserMinus className="size-3" />
@@ -1078,8 +1189,8 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                   <div className="space-y-0.5 p-1.5">
                     {clipperResults.map((clipper) => {
                       const isSettingThis =
-                        setOwnerMutation.isPending &&
-                        settingOwnerId === clipper.id
+                        activeManagerMutation.isPending &&
+                        activeSettingId === clipper.id
                       const isInAnotherClan =
                         clipper.clanId && clipper.clanId !== clan.id
                       return (
@@ -1091,13 +1202,21 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                               ? "border-violet-500/25 bg-violet-500/10"
                               : "hover:bg-muted/50 border-transparent",
                           )}
-                          disabled={setOwnerMutation.isPending}
+                          disabled={activeManagerMutation.isPending}
                           onClick={() => {
-                            setSettingOwnerId(clipper.id)
-                            setOwnerMutation.mutate({
-                              clanId: clan.id,
-                              clipperId: clipper.id,
-                            })
+                            if (managerDialogRole === "owner") {
+                              setSettingOwnerId(clipper.id)
+                              setOwnerMutation.mutate({
+                                clanId: clan.id,
+                                clipperId: clipper.id,
+                              })
+                            } else {
+                              setSettingAdminId(clipper.id)
+                              setAdminMutation.mutate({
+                                clanId: clan.id,
+                                clipperId: clipper.id,
+                              })
+                            }
                           }}
                         >
                           <Avatar
@@ -1110,9 +1229,9 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                               src={clipper.user?.imageUrl ?? undefined}
                             />
                             <AvatarFallback className="text-xs">
-                              {(clipper.artisticName ?? clipper.fullName).charAt(
-                                0,
-                              )}
+                              {(
+                                clipper.artisticName ?? clipper.fullName
+                              ).charAt(0)}
                             </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0 flex-1">
@@ -1157,13 +1276,14 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
             )}
 
             {/* Vazio sem busca */}
-            {ownerSearch.length === 0 && !clan.owner && (
+            {ownerSearch.length === 0 && !activeManager && (
               <div className="flex flex-col items-center justify-center gap-2 py-8">
                 <span className="rounded-full bg-violet-500/10 p-3">
                   <MagnifyingGlass className="size-6 text-violet-500/50" />
                 </span>
                 <p className="text-muted-foreground text-sm">
-                  Busque um clipador para definir como dono
+                  Busque um clipador para definir como{" "}
+                  {managerDialogRole === "owner" ? "dono" : "admin"}
                 </p>
                 <p className="text-muted-foreground/50 text-xs">
                   Digite o nome, nome artístico ou discord
@@ -1366,7 +1486,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                           <div className="relative mt-4">
                             <span className="absolute top-0 bottom-0 left-0 w-[3px] rounded-full bg-gradient-to-b from-orange-500/40 to-amber-500/20" />
                             <div className="border-border/40 bg-muted/30 ml-4 rounded-r-xl border border-l-0 px-4 py-3">
-                              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider uppercase text-orange-600/80 dark:text-orange-400/70">
+                              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider text-orange-600/80 uppercase dark:text-orange-400/70">
                                 <ChatText className="size-3" />
                                 Mensagem de Inscrição
                               </p>
@@ -1571,7 +1691,7 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
                       <div className="relative">
                         <span className="absolute top-0 bottom-0 left-0 w-[3px] rounded-full bg-gradient-to-b from-orange-500/40 to-amber-500/20" />
                         <div className="border-border/40 bg-muted/30 ml-4 rounded-r-xl border border-l-0 px-4 py-3">
-                          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider uppercase text-orange-600/80 dark:text-orange-400/70">
+                          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider text-orange-600/80 uppercase dark:text-orange-400/70">
                             <ChatText className="size-3" />
                             Mensagem de Inscrição
                           </p>
@@ -1744,7 +1864,10 @@ function LoadingSkeleton() {
       </div>
 
       {/* KPIs */}
-      <StatTilesGridSkeleton count={4} className="grid-cols-2 gap-4 lg:grid-cols-4" />
+      <StatTilesGridSkeleton
+        count={4}
+        className="grid-cols-2 gap-4 lg:grid-cols-4"
+      />
 
       {/* Breakdown */}
       <StatTilesGridSkeleton

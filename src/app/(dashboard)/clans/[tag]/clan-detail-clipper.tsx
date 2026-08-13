@@ -201,7 +201,11 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
               O clã que você está procurando não existe ou não está ativo.
             </p>
           </div>
-          <Button asChild variant="outline" className="cursor-pointer rounded-xl">
+          <Button
+            asChild
+            variant="outline"
+            className="cursor-pointer rounded-xl"
+          >
             <Link href="/clans">
               <ArrowLeft className="size-4" />
               Voltar para Clãs
@@ -255,7 +259,7 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                   animationDelay: "-6s",
                 }}
               />
-              <div className="hero-grid absolute inset-0 opacity-35 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)]" />
+              <div className="hero-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)] opacity-35" />
               <div className="absolute inset-y-0 left-1/3 w-28 overflow-visible">
                 <span
                   className="hero-sweep block h-full w-full"
@@ -289,9 +293,7 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                       width: sparkle.size,
                       height: sparkle.size,
                       color:
-                        index % 2 === 0
-                          ? clan.emojiColor
-                          : "var(--brand-cyan)",
+                        index % 2 === 0 ? clan.emojiColor : "var(--brand-cyan)",
                       "--twinkle-delay": `${sparkle.delay}s`,
                       "--twinkle-dur": `${sparkle.dur}s`,
                       "--twinkle-opacity": 0.85,
@@ -310,9 +312,7 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                       width: particle.size,
                       height: particle.size,
                       backgroundColor:
-                        index % 2 === 0
-                          ? clan.emojiColor
-                          : "var(--brand-cyan)",
+                        index % 2 === 0 ? clan.emojiColor : "var(--brand-cyan)",
                       "--particle-delay": `${particle.delay}s`,
                       "--particle-dur": `${particle.dur}s`,
                       "--particle-x": `${particle.x}px`,
@@ -398,19 +398,37 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                 )}
 
                 {clan.owner && (
-                  <div className="mt-1 flex items-center gap-2">
-                    <Avatar className="size-6 ring-1 ring-violet-500/40">
-                      <AvatarImage src={clan.owner.imageUrl ?? undefined} />
-                      <AvatarFallback className="text-[10px]">
-                        {clan.owner.name.charAt(0)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="text-xs text-[#8aa3b3]">
-                      Liderado por{" "}
-                      <span className="font-semibold text-violet-300">
-                        {clan.owner.name}
+                  <div className="mt-1 flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <Avatar className="size-6 ring-1 ring-violet-500/40">
+                        <AvatarImage src={clan.owner.imageUrl ?? undefined} />
+                        <AvatarFallback className="text-[10px]">
+                          {clan.owner.name.charAt(0)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="text-xs text-[#8aa3b3]">
+                        Liderado por{" "}
+                        <span className="font-semibold text-violet-300">
+                          {clan.owner.name}
+                        </span>
                       </span>
-                    </span>
+                    </div>
+                    {clan.admin && (
+                      <div className="flex items-center gap-2">
+                        <Avatar className="size-6 ring-1 ring-cyan-500/40">
+                          <AvatarImage src={clan.admin.imageUrl ?? undefined} />
+                          <AvatarFallback className="text-[10px]">
+                            {clan.admin.name.charAt(0)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-xs text-[#8aa3b3]">
+                          Admin{" "}
+                          <span className="font-semibold text-cyan-300">
+                            {clan.admin.name}
+                          </span>
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -788,7 +806,8 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                       </TableCell>
                       {clan.isOwner && (
                         <TableCell className="pr-5 text-right">
-                          {member.id !== clan.owner?.id ? (
+                          {member.id !== clan.owner?.id &&
+                          member.id !== clan.admin?.id ? (
                             <AlertDialog>
                               <AlertDialogTrigger asChild>
                                 <Button
@@ -855,7 +874,7 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                               variant="outline"
                               className="rounded-full border-violet-500/30 bg-violet-500/10 text-[10px] text-violet-500 dark:text-violet-400"
                             >
-                              Dono
+                              {member.id === clan.owner?.id ? "Dono" : "Admin"}
                             </Badge>
                           )}
                         </TableCell>
@@ -1058,7 +1077,7 @@ export default function ClanDetailClipper({ tag }: ClanDetailClipperProps) {
                           <div className="relative mt-4">
                             <span className="absolute top-0 bottom-0 left-0 w-[3px] rounded-full bg-gradient-to-b from-orange-500/40 to-amber-500/20" />
                             <div className="border-border/40 bg-muted/30 ml-4 rounded-r-xl border border-l-0 px-4 py-3">
-                              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider uppercase text-orange-600/80 dark:text-orange-400/70">
+                              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-wider text-orange-600/80 uppercase dark:text-orange-400/70">
                                 <ChatText className="size-3" />
                                 Mensagem de Inscrição
                               </p>
@@ -1209,7 +1228,10 @@ function LoadingSkeleton() {
       </section>
 
       {/* KPIs */}
-      <StatTilesGridSkeleton count={4} className="grid-cols-2 gap-4 lg:grid-cols-4" />
+      <StatTilesGridSkeleton
+        count={4}
+        className="grid-cols-2 gap-4 lg:grid-cols-4"
+      />
 
       {/* Pódio do dia */}
       <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-6">
@@ -1227,7 +1249,10 @@ function LoadingSkeleton() {
               <div className="flex items-center gap-3">
                 <Bone delay={index * 140} className="size-12 rounded-full" />
                 <div className="flex flex-1 flex-col gap-1.5">
-                  <Bone delay={index * 140 + 60} className="h-3 w-8 rounded-full" />
+                  <Bone
+                    delay={index * 140 + 60}
+                    className="h-3 w-8 rounded-full"
+                  />
                   <Bone delay={index * 140 + 120} className="h-4 w-24" />
                   <Bone
                     delay={index * 140 + 180}

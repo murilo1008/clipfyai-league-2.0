@@ -102,7 +102,7 @@ function HeroBackdrop() {
         className="arena-aurora absolute -bottom-24 left-[18%] size-72 rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--brand-green)_18%,transparent),transparent_66%)] blur-2xl"
         style={{ animationDelay: "-6s" }}
       />
-      <div className="hero-grid absolute inset-0 opacity-35 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)]" />
+      <div className="hero-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)] opacity-35" />
       <div className="absolute inset-y-0 left-1/3 w-28 overflow-visible">
         <span className="hero-sweep block h-full w-full bg-gradient-to-r from-transparent via-[color-mix(in_oklab,var(--brand-cyan)_12%,transparent)] to-transparent" />
       </div>
@@ -282,7 +282,11 @@ export default function Competition({ slug }: { slug: string }) {
                 Ver Competições Disponíveis
               </Link>
             </Button>
-            <Button asChild variant="outline" className="cursor-pointer rounded-xl">
+            <Button
+              asChild
+              variant="outline"
+              className="cursor-pointer rounded-xl"
+            >
               <Link href="/my-competitions">Minhas Competições</Link>
             </Button>
           </div>
@@ -419,7 +423,10 @@ export default function Competition({ slug }: { slug: string }) {
                         <DialogHeader>
                           <DialogTitle className="flex items-center gap-2 text-lg font-bold">
                             <span className="rounded-lg bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 p-1.5">
-                              <Pulse className="size-4 text-white" weight="bold" />
+                              <Pulse
+                                className="size-4 text-white"
+                                weight="bold"
+                              />
                             </span>
                             <span className="bg-gradient-to-r from-purple-400 via-pink-400 to-orange-400 bg-clip-text text-transparent">
                               Como funciona?
@@ -516,6 +523,16 @@ export default function Competition({ slug }: { slug: string }) {
                     </Badge>
                   )}
 
+                  {competition.dailyPix && (
+                    <Badge
+                      variant="outline"
+                      className="gap-1 rounded-full border-emerald-400/45 bg-emerald-500/15 text-emerald-300"
+                    >
+                      <Wallet className="size-3" weight="fill" />
+                      Pix Diário
+                    </Badge>
+                  )}
+
                   {/* Ações */}
                   <div className="ml-auto flex flex-wrap items-center gap-2">
                     <Button
@@ -524,7 +541,10 @@ export default function Competition({ slug }: { slug: string }) {
                       className="h-9 cursor-pointer rounded-xl border-white/12 bg-white/[0.06] text-[#ecf7f9] hover:bg-white/12 hover:text-white"
                       onClick={() => setIsRulesDialogOpen(true)}
                     >
-                      <Trophy className="size-3.5 text-amber-400" weight="fill" />
+                      <Trophy
+                        className="size-3.5 text-amber-400"
+                        weight="fill"
+                      />
                       <span className="hidden sm:inline">Regras & Prêmios</span>
                       <span className="sm:hidden">Regras</span>
                     </Button>
@@ -661,7 +681,10 @@ export default function Competition({ slug }: { slug: string }) {
                     <div className="relative">
                       <div className="absolute inset-0 animate-pulse rounded-xl bg-yellow-400/40 blur-md" />
                       <span className="relative flex size-11 items-center justify-center rounded-xl border border-yellow-400/50 bg-gradient-to-br from-yellow-400/30 to-orange-500/30 shadow-lg shadow-yellow-500/20">
-                        <Trophy className="size-5 text-yellow-500 dark:text-yellow-300" weight="fill" />
+                        <Trophy
+                          className="size-5 text-yellow-500 dark:text-yellow-300"
+                          weight="fill"
+                        />
                       </span>
                     </div>
                     <div>
@@ -674,7 +697,10 @@ export default function Competition({ slug }: { slug: string }) {
                     </div>
                   </div>
                   <Badge className="animate-pulse gap-1.5 border border-yellow-400/50 bg-yellow-500/20 px-3 py-1.5 text-amber-700 shadow-lg shadow-yellow-500/20 dark:text-yellow-200">
-                    <Fire className="size-4 text-amber-500 dark:text-yellow-300" weight="fill" />
+                    <Fire
+                      className="size-4 text-amber-500 dark:text-yellow-300"
+                      weight="fill"
+                    />
                     <span className="font-bold">Meta Atingida!</span>
                   </Badge>
                 </div>
@@ -706,7 +732,10 @@ export default function Competition({ slug }: { slug: string }) {
                       0 views
                     </span>
                     <span className="flex items-center gap-1.5 text-xs font-black text-amber-700 dark:text-yellow-200">
-                      <Trophy className="size-3.5 text-amber-500 dark:text-yellow-300" weight="fill" />
+                      <Trophy
+                        className="size-3.5 text-amber-500 dark:text-yellow-300"
+                        weight="fill"
+                      />
                       {formatNumber(viewsGoal)} views
                     </span>
                   </div>
@@ -787,7 +816,10 @@ export default function Competition({ slug }: { slug: string }) {
                 {/* Header */}
                 <div className="mb-8 flex items-center gap-3 pr-24 sm:pr-32">
                   <span className="flex size-11 items-center justify-center rounded-xl border border-yellow-400/50 bg-gradient-to-br from-yellow-400/30 to-orange-500/30 shadow-lg shadow-yellow-500/20">
-                    <Target className="size-5 text-amber-500 dark:text-yellow-300" weight="fill" />
+                    <Target
+                      className="size-5 text-amber-500 dark:text-yellow-300"
+                      weight="fill"
+                    />
                   </span>
                   <div>
                     <p className="text-base font-black text-amber-700 dark:text-yellow-100">
@@ -832,7 +864,10 @@ export default function Competition({ slug }: { slug: string }) {
                       0 views
                     </span>
                     <span className="flex items-center gap-1.5 text-xs font-black text-amber-700 dark:text-yellow-200">
-                      <Trophy className="size-3.5 text-amber-500 dark:text-yellow-300" weight="fill" />
+                      <Trophy
+                        className="size-3.5 text-amber-500 dark:text-yellow-300"
+                        weight="fill"
+                      />
                       {formatNumber(viewsGoal)} views
                     </span>
                   </div>
@@ -878,7 +913,9 @@ export default function Competition({ slug }: { slug: string }) {
             <div
               className={cn(
                 "grid gap-4 sm:gap-6",
-                isEngagementMetric ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1",
+                isEngagementMetric
+                  ? "grid-cols-1 sm:grid-cols-2"
+                  : "grid-cols-1",
               )}
             >
               {/* Suas Views Totais */}
@@ -903,7 +940,10 @@ export default function Competition({ slug }: { slug: string }) {
               {isEngagementMetric && (
                 <div className="relative flex flex-col items-center gap-3 overflow-hidden rounded-2xl border border-purple-500/30 bg-gradient-to-br from-purple-500/20 via-pink-500/20 to-orange-500/20 p-4 sm:flex-row sm:gap-4 sm:p-5">
                   <span className="relative rounded-xl bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 p-3 shadow-lg shadow-purple-500/40 sm:p-4">
-                    <Pulse className="size-6 text-white sm:size-8" weight="bold" />
+                    <Pulse
+                      className="size-6 text-white sm:size-8"
+                      weight="bold"
+                    />
                   </span>
                   <div className="relative text-center sm:text-left">
                     <p className="mb-0.5 bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 bg-clip-text text-xs font-medium text-transparent sm:text-sm dark:from-purple-300 dark:via-pink-300 dark:to-orange-300">
@@ -956,7 +996,10 @@ export default function Competition({ slug }: { slug: string }) {
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
             <div className="absolute right-0 bottom-0 left-0 p-3 sm:p-4">
               <p className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium text-white/90 sm:text-xs">
-                <Sparkle className="size-3 text-[var(--brand-mint)] sm:size-3.5" weight="fill" />
+                <Sparkle
+                  className="size-3 text-[var(--brand-mint)] sm:size-3.5"
+                  weight="fill"
+                />
                 Competição
               </p>
               <p className="line-clamp-2 text-xs leading-tight font-bold text-white sm:text-sm">
@@ -1157,7 +1200,9 @@ export default function Competition({ slug }: { slug: string }) {
                 <Fire className="size-4" weight="fill" />
               </span>
               <div className="leading-tight">
-                <p className="text-sm font-bold sm:text-base">Post Mais Viral</p>
+                <p className="text-sm font-bold sm:text-base">
+                  Post Mais Viral
+                </p>
                 <p className="text-muted-foreground text-xs">
                   Seu melhor desempenho
                 </p>
@@ -1319,7 +1364,9 @@ export default function Competition({ slug }: { slug: string }) {
                 <Trophy className="size-4" weight="fill" />
               </span>
               <div className="leading-tight">
-                <p className="text-sm font-bold sm:text-base">Suas Conquistas</p>
+                <p className="text-sm font-bold sm:text-base">
+                  Suas Conquistas
+                </p>
                 <p className="text-muted-foreground text-xs">
                   Destaques nesta competição
                 </p>
