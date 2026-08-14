@@ -283,9 +283,15 @@ export default function Financial() {
       { enabled: !!clipperProfileId },
     )
 
+  const { data: walletStats, isLoading: isLoadingWalletStats } =
+    api.clipper.getWalletStats.useQuery(
+      { clipperProfileId: clipperProfileId ?? "" },
+      { enabled: !!clipperProfileId },
+    )
+
   const { data: transactionsData, isLoading: isLoadingTransactions } =
     api.clipper.getTransactions.useQuery(
-      { clipperProfileId: clipperProfileId ?? "", page: 1, pageSize: 100 },
+      { clipperProfileId: clipperProfileId ?? "", page: 1, pageSize: 500 },
       { enabled: !!clipperProfileId },
     )
 
@@ -305,31 +311,11 @@ export default function Financial() {
     [allTransactions],
   )
 
-  const totalIncome = React.useMemo(
-    () => incomeTransactions.reduce((sum, t) => sum + t.amount, 0),
-    [incomeTransactions],
-  )
-
-  const completedWithdrawalsCount = React.useMemo(
-    () => withdrawalTransactions.filter((t) => t.status === "COMPLETED").length,
-    [withdrawalTransactions],
-  )
-
-  const totalWithdrawals = React.useMemo(
-    () =>
-      withdrawalTransactions
-        .filter((t) => t.status === "COMPLETED")
-        .reduce((sum, t) => sum + Math.abs(t.amount), 0),
-    [withdrawalTransactions],
-  )
-
-  const pendingAmount = React.useMemo(
-    () =>
-      withdrawalTransactions
-        .filter((t) => t.status === "PENDING" || t.status === "PROCESSING")
-        .reduce((sum, t) => sum + Math.abs(t.amount), 0),
-    [withdrawalTransactions],
-  )
+  const totalIncome = wallet?.totalEarned ?? 0
+  const completedWithdrawalsCount = walletStats?.completedWithdrawals ?? 0
+  const totalWithdrawals = wallet?.totalWithdrawn ?? 0
+  const pendingAmount = wallet?.pendingWithdraw ?? 0
+  const totalIncomeTransactions = walletStats?.totalCreditsCount ?? 0
 
   // Ganhos por dia — últimos 7 dias
   const chartData = React.useMemo(
@@ -489,7 +475,8 @@ export default function Financial() {
 
   const isLoading =
     isLoadingUser ||
-    (!!clipperProfileId && (isLoadingWallet || isLoadingTransactions))
+    (!!clipperProfileId &&
+      (isLoadingWallet || isLoadingWalletStats || isLoadingTransactions))
 
   // ===== Skeleton espelhando o layout real =====
   if (isLoading) {
@@ -624,7 +611,7 @@ export default function Financial() {
             label="Total Recebido"
             value={totalIncome}
             delayMs={120}
-            sub={`+${incomeTransactions.length} transações`}
+            sub={`+${totalIncomeTransactions} transações`}
             subClass="text-green-600 dark:text-green-400"
           />
           <SummaryCard

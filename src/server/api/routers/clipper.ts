@@ -1035,7 +1035,7 @@ export const clipperRouter = createTRPCRouter({
       z.object({
         clipperProfileId: z.string(),
         page: z.number().optional().default(1),
-        pageSize: z.number().optional().default(10),
+        pageSize: z.number().min(1).max(500).optional().default(10),
         type: z
           .enum([
             "PRIZE_CREDIT",
@@ -1136,10 +1136,16 @@ export const clipperRouter = createTRPCRouter({
     }),
 
   // Estatísticas da wallet
-  // Somente ADMIN: estatísticas da carteira de um clipador qualquer.
-  getWalletStats: adminProcedure
+  // O dono da carteira pode consultar as próprias estatísticas; ADMIN consulta qualquer uma.
+  getWalletStats: privateProcedure
     .input(z.object({ clipperProfileId: z.string() }))
     .query(async ({ ctx, input }) => {
+      await assertCanReadClipperFinancials(
+        ctx.db,
+        ctx.userId,
+        input.clipperProfileId,
+      );
+
       try {
         const wallet = await ctx.db.wallet.findUnique({
           where: { clipperProfileId: input.clipperProfileId },
@@ -1149,6 +1155,7 @@ export const clipperRouter = createTRPCRouter({
           return {
             totalTransactions: 0,
             totalCredits: 0,
+            totalCreditsCount: 0,
             totalWithdrawals: 0,
             pendingWithdrawals: 0,
             completedWithdrawals: 0,
@@ -1178,6 +1185,9 @@ export const clipperRouter = createTRPCRouter({
             },
             _sum: {
               amount: true,
+            },
+            _count: {
+              id: true,
             },
           }),
           ctx.db.transaction.count({
@@ -1219,6 +1229,7 @@ export const clipperRouter = createTRPCRouter({
         return {
           totalTransactions,
           totalCredits: totalCredits._sum.amount || 0,
+          totalCreditsCount: totalCredits._count.id,
           totalWithdrawals,
           pendingWithdrawals,
           completedWithdrawals,
@@ -1229,6 +1240,7 @@ export const clipperRouter = createTRPCRouter({
         return {
           totalTransactions: 0,
           totalCredits: 0,
+          totalCreditsCount: 0,
           totalWithdrawals: 0,
           pendingWithdrawals: 0,
           completedWithdrawals: 0,
