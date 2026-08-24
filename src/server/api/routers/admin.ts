@@ -56,6 +56,52 @@ function getClipperRankingDisplayName(profile: {
   );
 }
 
+/**
+ * Um crédito de Top Postadores que recebeu o ajuste de estorno deixa de
+ * representar uma posição paga. O crédito original é mantido no ledger para
+ * auditoria; por isso não basta verificar somente seu status COMPLETED.
+ */
+async function findUnreversedTopPostersPrize(
+  db: Pick<Prisma.TransactionClient, "transaction">,
+  input: Pick<Prisma.TransactionFindManyArgs, "where">,
+) {
+  const candidates = await db.transaction.findMany({
+    where: input.where,
+    select: { id: true, amount: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  for (const candidate of candidates) {
+    const reversal = await db.transaction.findFirst({
+      where: {
+        type: "ADJUSTMENT",
+        status: "COMPLETED",
+        AND: [
+          {
+            metadata: {
+              path: ["action"],
+              equals: "undo_top_posters_daily_rank",
+            },
+          },
+          {
+            metadata: {
+              path: ["reversedPrizeCreditId"],
+              equals: candidate.id,
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!reversal) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 function isRetryablePrismaTransactionError(error: unknown) {
   if (!(error instanceof Error)) return false;
 
@@ -9498,7 +9544,7 @@ export const adminRouter = createTRPCRouter({
 
         const entries = await Promise.all(
           entriesBase.map(async (entry) => {
-            const priorPrize = await ctx.db.transaction.findFirst({
+            const priorPrize = await findUnreversedTopPostersPrize(ctx.db, {
               where: {
                 campaignId: input.campaignId,
                 type: "PRIZE_CREDIT",
@@ -9523,7 +9569,6 @@ export const adminRouter = createTRPCRouter({
                   },
                 ],
               },
-              select: { id: true, amount: true },
             });
 
             return {
@@ -9745,7 +9790,7 @@ export const adminRouter = createTRPCRouter({
             rankingPosition: position,
           };
 
-          const priorPrize = await ctx.db.transaction.findFirst({
+          const priorPrize = await findUnreversedTopPostersPrize(ctx.db, {
             where: {
               campaignId: input.campaignId,
               type: "PRIZE_CREDIT",
@@ -9866,7 +9911,7 @@ export const adminRouter = createTRPCRouter({
                 });
               }
 
-              const dup = await tx.transaction.findFirst({
+              const dup = await findUnreversedTopPostersPrize(tx, {
                 where: {
                   campaignId: input.campaignId,
                   type: "PRIZE_CREDIT",
