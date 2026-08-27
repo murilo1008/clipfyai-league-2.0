@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import * as React from "react"
+import * as React from "react";
 import {
   type ColumnDef,
   type SortingState,
@@ -10,7 +10,7 @@ import {
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
-} from "@tanstack/react-table"
+} from "@tanstack/react-table";
 import {
   ArrowsDownUp,
   CaretLeft,
@@ -36,16 +36,16 @@ import {
   Warning,
   X,
   XCircle,
-} from "@phosphor-icons/react"
-import { toast } from "sonner"
+} from "@phosphor-icons/react";
+import { toast } from "sonner";
 
-import { ClanTagBadge } from "@/components/clan-tag-badge"
-import { Reveal } from "@/components/shared/reveal"
-import { Bone } from "@/components/shared/skeletons"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { ClanTagBadge } from "@/components/clan-tag-badge";
+import { Reveal } from "@/components/shared/reveal";
+import { Bone } from "@/components/shared/skeletons";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -53,16 +53,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -70,13 +70,13 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { platformConfig, type PlatformKey } from "@/lib/platform-config"
-import { cn } from "@/lib/utils"
-import { api } from "@/trpc/react"
+} from "@/components/ui/table";
+import { platformConfig, type PlatformKey } from "@/lib/platform-config";
+import { cn } from "@/lib/utils";
+import { api } from "@/trpc/react";
 
-import { ApplicationDetailsDialog } from "./application-details-dialog"
-import { ProcessPaymentDialog } from "./process-payment-dialog"
+import { ApplicationDetailsDialog } from "./application-details-dialog";
+import { ProcessPaymentDialog } from "./process-payment-dialog";
 import {
   APPLICATION_STATUS_CONFIG,
   CAMPAIGN_STATUS_CONFIG,
@@ -85,16 +85,21 @@ import {
   useFormatCurrency,
   type AdminApplication,
   type CompetitionTabProps,
-} from "./shared"
+} from "./shared";
 
 /* ============================================================
    Tipos e configs locais
    ============================================================ */
 
-type StatusFilter = "all" | "PENDING" | "APPROVED" | "REJECTED" | "UNDER_REVIEW"
-type ApproveAllStep = "confirm" | "processing" | "done"
-type ApproveClipperStep = "approving" | "ranking" | "email" | "done"
-type CloneStep = "select" | "confirm" | "processing" | "done"
+type StatusFilter =
+  | "all"
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "UNDER_REVIEW";
+type ApproveAllStep = "confirm" | "processing" | "done";
+type ApproveClipperStep = "approving" | "ranking" | "email" | "done";
+type CloneStep = "select" | "confirm" | "processing" | "done";
 
 const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "Todos os Status" },
@@ -102,14 +107,14 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "APPROVED", label: "Aprovados" },
   { value: "REJECTED", label: "Rejeitados" },
   { value: "UNDER_REVIEW", label: "Em Revisão" },
-]
+];
 
 const APPROVE_STEP_SEQUENCE: ApproveClipperStep[] = [
   "approving",
   "ranking",
   "email",
   "done",
-]
+];
 
 const APPROVE_STEP_CARDS = [
   {
@@ -133,17 +138,17 @@ const APPROVE_STEP_CARDS = [
     done: "Email enviado",
     tone: "violet",
   },
-] as const
+] as const;
 
 const STEP_TONES: Record<
   "emerald" | "sky" | "violet",
   {
-    cardActive: string
-    cardDone: string
-    iconActive: string
-    iconDone: string
-    labelActive: string
-    labelDone: string
+    cardActive: string;
+    cardDone: string;
+    iconActive: string;
+    iconDone: string;
+    labelActive: string;
+    labelDone: string;
   }
 > = {
   emerald: {
@@ -170,26 +175,26 @@ const STEP_TONES: Record<
     labelActive: "text-violet-500",
     labelDone: "text-violet-500/70",
   },
-}
+};
 
 /* ============================================================
    Tab de Aplicações
    ============================================================ */
 
 export function ApplicationsTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props
-  const utils = api.useUtils()
-  const formatCurrency = useFormatCurrency()
+  const { slug, campaignId, data, active, refetch } = props;
+  const utils = api.useUtils();
+  const formatCurrency = useFormatCurrency();
 
   /* ===== Filtros ===== */
-  const [search, setSearch] = React.useState("")
-  const [debouncedSearch, setDebouncedSearch] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
+  const [search, setSearch] = React.useState("");
+  const [debouncedSearch, setDebouncedSearch] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all");
 
   React.useEffect(() => {
-    const timeout = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(timeout)
-  }, [search])
+    const timeout = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timeout);
+  }, [search]);
 
   /* ===== Query principal ===== */
   const { data: applicationsData, isLoading: isLoadingApplications } =
@@ -202,119 +207,119 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         pageSize: 200,
       },
       { enabled: active || undefined },
-    )
+    );
 
   /* ===== Dialogs de detalhes/pagamento ===== */
   const [selectedApplication, setSelectedApplication] =
-    React.useState<AdminApplication | null>(null)
-  const [isDetailsOpen, setIsDetailsOpen] = React.useState(false)
+    React.useState<AdminApplication | null>(null);
+  const [isDetailsOpen, setIsDetailsOpen] = React.useState(false);
   const [selectedPaymentApp, setSelectedPaymentApp] =
-    React.useState<AdminApplication | null>(null)
-  const [isPaymentOpen, setIsPaymentOpen] = React.useState(false)
+    React.useState<AdminApplication | null>(null);
+  const [isPaymentOpen, setIsPaymentOpen] = React.useState(false);
 
   /* ===== Aprovar Todos ===== */
   const [isApproveAllDialogOpen, setIsApproveAllDialogOpen] =
-    React.useState(false)
+    React.useState(false);
   const [approveAllStep, setApproveAllStep] =
-    React.useState<ApproveAllStep>("confirm")
+    React.useState<ApproveAllStep>("confirm");
   const [approveAllProgress, setApproveAllProgress] = React.useState({
     current: 0,
     total: 0,
     approved: 0,
     errors: 0,
-  })
+  });
   const [approveAllCurrentClipper, setApproveAllCurrentClipper] =
     React.useState<{
-      name: string
-      imageUrl: string | null
-      step: ApproveClipperStep
-    } | null>(null)
+      name: string;
+      imageUrl: string | null;
+      step: ApproveClipperStep;
+    } | null>(null);
   const [approveAllProcessedClippers, setApproveAllProcessedClippers] =
     React.useState<
       { name: string; imageUrl: string | null; status: "success" | "error" }[]
-    >([])
+    >([]);
 
-  const approveApplicationSingle = api.admin.approveApplication.useMutation()
+  const approveApplicationSingle = api.admin.approveApplication.useMutation();
 
   const resetApproveAllState = () => {
-    setApproveAllStep("confirm")
-    setApproveAllProgress({ current: 0, total: 0, approved: 0, errors: 0 })
-    setApproveAllCurrentClipper(null)
-    setApproveAllProcessedClippers([])
-  }
+    setApproveAllStep("confirm");
+    setApproveAllProgress({ current: 0, total: 0, approved: 0, errors: 0 });
+    setApproveAllCurrentClipper(null);
+    setApproveAllProcessedClippers([]);
+  };
 
   const executeApproveAllWithProgress = async () => {
-    if (!campaignId || !applicationsData?.applications) return
+    if (!campaignId || !applicationsData?.applications) return;
 
     const pendingApps = applicationsData.applications.filter(
       (app) => app.status === "PENDING",
-    )
+    );
 
     if (pendingApps.length === 0) {
-      toast.info("Nenhuma aplicação pendente encontrada")
-      return
+      toast.info("Nenhuma aplicação pendente encontrada");
+      return;
     }
 
-    setApproveAllStep("processing")
+    setApproveAllStep("processing");
     setApproveAllProgress({
       current: 0,
       total: pendingApps.length,
       approved: 0,
       errors: 0,
-    })
-    setApproveAllCurrentClipper(null)
-    setApproveAllProcessedClippers([])
+    });
+    setApproveAllCurrentClipper(null);
+    setApproveAllProcessedClippers([]);
 
-    let approved = 0
-    let errors = 0
+    let approved = 0;
+    let errors = 0;
 
     for (let i = 0; i < pendingApps.length; i++) {
-      const app = pendingApps[i]!
+      const app = pendingApps[i]!;
       const clipperName =
-        app.clipperName || app.clipperArtisticName || "Clipador"
-      const clipperImage = app.clipperImageUrl ?? null
+        app.clipperName || app.clipperArtisticName || "Clipador";
+      const clipperImage = app.clipperImageUrl ?? null;
 
       setApproveAllCurrentClipper({
         name: clipperName,
         imageUrl: clipperImage,
         step: "approving",
-      })
+      });
 
       try {
-        await new Promise((r) => setTimeout(r, 150))
+        await new Promise((r) => setTimeout(r, 150));
         setApproveAllCurrentClipper({
           name: clipperName,
           imageUrl: clipperImage,
           step: "ranking",
-        })
+        });
 
-        await approveApplicationSingle.mutateAsync({ applicationId: app.id })
+        await approveApplicationSingle.mutateAsync({ applicationId: app.id });
 
         setApproveAllCurrentClipper({
           name: clipperName,
           imageUrl: clipperImage,
           step: "email",
-        })
-        await new Promise((r) => setTimeout(r, 200))
+        });
+        await new Promise((r) => setTimeout(r, 200));
 
         setApproveAllCurrentClipper({
           name: clipperName,
           imageUrl: clipperImage,
           step: "done",
-        })
-        await new Promise((r) => setTimeout(r, 100))
+        });
+        await new Promise((r) => setTimeout(r, 100));
 
-        approved++
+        approved++;
         setApproveAllProcessedClippers((prev) => [
           ...prev,
           { name: clipperName, imageUrl: clipperImage, status: "success" },
-        ])
+        ]);
       } catch {
-        errors++
+        errors++;
         setApproveAllProcessedClippers((prev) => [
           ...prev,
           { name: clipperName, imageUrl: clipperImage, status: "error" },
-        ])
+        ]);
       }
 
       setApproveAllProgress((prev) => ({
@@ -322,118 +327,130 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         current: i + 1,
         approved,
         errors,
-      }))
+      }));
     }
 
-    setApproveAllStep("done")
-    setApproveAllCurrentClipper(null)
+    setApproveAllStep("done");
+    setApproveAllCurrentClipper(null);
 
     if (approved > 0) {
-      toast.success(`${approved} clipador(es) aprovado(s) com sucesso!`)
+      toast.success(`${approved} clipador(es) aprovado(s) com sucesso!`);
     }
 
     await Promise.all([
       utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
       utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
-    ])
-    refetch()
-  }
+    ]);
+    refetch();
+  };
 
   /* ===== Puxar Clipadores (clone) ===== */
-  const [isCloneDialogOpen, setIsCloneDialogOpen] = React.useState(false)
-  const [cloneStep, setCloneStep] = React.useState<CloneStep>("select")
-  const [cloneSourceCampaignId, setCloneSourceCampaignId] = React.useState("")
-  const [cloneConfirmText, setCloneConfirmText] = React.useState("")
+  const [isCloneDialogOpen, setIsCloneDialogOpen] = React.useState(false);
+  const [cloneStep, setCloneStep] = React.useState<CloneStep>("select");
+  const [cloneSourceCampaignId, setCloneSourceCampaignId] = React.useState("");
+  const [cloneConfirmText, setCloneConfirmText] = React.useState("");
   const [cloneProgress, setCloneProgress] = React.useState({
     current: 0,
     total: 0,
     cloned: 0,
     errors: 0,
     skipped: 0,
-  })
+  });
   const [cloneCurrentClipper, setCloneCurrentClipper] = React.useState<{
-    name: string
-    imageUrl: string | null
-  } | null>(null)
+    name: string;
+    imageUrl: string | null;
+  } | null>(null);
   const [cloneProcessedClippers, setCloneProcessedClippers] = React.useState<
     {
-      name: string
-      imageUrl: string | null
-      status: "success" | "error" | "skipped"
+      name: string;
+      imageUrl: string | null;
+      status: "success" | "error" | "skipped";
     }[]
-  >([])
+  >([]);
 
   const { data: cloneCampaignsData, isLoading: isLoadingCloneCampaigns } =
     api.admin.listCampaignsForClone.useQuery(
       { excludeCampaignId: campaignId },
       { enabled: isCloneDialogOpen && !!campaignId },
-    )
+    );
 
-  const cloneSingleMutation = api.admin.cloneSingleApplication.useMutation()
-  const logCloneMutation = api.admin.logCloneCompletion.useMutation()
+  const cloneSingleMutation = api.admin.cloneSingleApplication.useMutation();
+  const logCloneMutation = api.admin.logCloneCompletion.useMutation();
 
   const resetCloneState = () => {
-    setCloneSourceCampaignId("")
-    setCloneConfirmText("")
-    setCloneStep("select")
-    setCloneProgress({ current: 0, total: 0, cloned: 0, errors: 0, skipped: 0 })
-    setCloneCurrentClipper(null)
-    setCloneProcessedClippers([])
-  }
+    setCloneSourceCampaignId("");
+    setCloneConfirmText("");
+    setCloneStep("select");
+    setCloneProgress({
+      current: 0,
+      total: 0,
+      cloned: 0,
+      errors: 0,
+      skipped: 0,
+    });
+    setCloneCurrentClipper(null);
+    setCloneProcessedClippers([]);
+  };
 
   const executeCloneWithProgress = async () => {
-    if (!campaignId || !cloneSourceCampaignId) return
+    if (!campaignId || !cloneSourceCampaignId) return;
 
     const sourceCampaignName =
       cloneCampaignsData?.find((c) => c.id === cloneSourceCampaignId)?.name ??
-      ""
+      "";
 
-    setCloneStep("processing")
-    setCloneProgress({ current: 0, total: 0, cloned: 0, errors: 0, skipped: 0 })
-    setCloneCurrentClipper(null)
-    setCloneProcessedClippers([])
+    setCloneStep("processing");
+    setCloneProgress({
+      current: 0,
+      total: 0,
+      cloned: 0,
+      errors: 0,
+      skipped: 0,
+    });
+    setCloneCurrentClipper(null);
+    setCloneProcessedClippers([]);
 
     try {
       // Buscar preview dos clipadores elegíveis
       const preview = await utils.admin.previewCloneApplications.fetch({
         sourceCampaignId: cloneSourceCampaignId,
         targetCampaignId: campaignId,
-      })
+      });
 
       if (preview.eligible.length === 0) {
         toast.info(
           preview.skippedCount > 0
             ? "Todos os clipadores já estão inscritos na competição de destino"
             : "Nenhum clipador elegível encontrado na competição de origem",
-        )
-        setCloneStep("done")
+        );
+        setCloneStep("done");
         setCloneProgress({
           current: 0,
           total: 0,
           cloned: 0,
           errors: 0,
           skipped: preview.skippedCount,
-        })
-        return
+        });
+        return;
       }
 
-      const total = preview.eligible.length
+      const total = preview.eligible.length;
       setCloneProgress((prev) => ({
         ...prev,
         total,
         skipped: preview.skippedCount,
-      }))
+      }));
 
-      let cloned = 0
-      let errors = 0
+      let cloned = 0;
+      let errors = 0;
 
       // Processar um por um
       for (let i = 0; i < preview.eligible.length; i++) {
-        const clipper = preview.eligible[i]!
+        const clipper = preview.eligible[i]!;
         setCloneCurrentClipper({
           name: clipper.fullName,
           imageUrl: clipper.imageUrl,
-        })
+        });
 
         try {
           const result = await cloneSingleMutation.mutateAsync({
@@ -443,7 +460,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
             socialAccountIds: clipper.socialAccountIds,
             autoScore: clipper.autoScore,
             sourceCampaignName,
-          })
+          });
 
           if (result.skipped) {
             setCloneProcessedClippers((prev) => [
@@ -453,9 +470,9 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 imageUrl: clipper.imageUrl,
                 status: "skipped",
               },
-            ])
+            ]);
           } else {
-            cloned++
+            cloned++;
             setCloneProcessedClippers((prev) => [
               ...prev,
               {
@@ -463,10 +480,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 imageUrl: clipper.imageUrl,
                 status: "success",
               },
-            ])
+            ]);
           }
         } catch {
-          errors++
+          errors++;
           setCloneProcessedClippers((prev) => [
             ...prev,
             {
@@ -474,7 +491,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               imageUrl: clipper.imageUrl,
               status: "error",
             },
-          ])
+          ]);
         }
 
         setCloneProgress((prev) => ({
@@ -482,7 +499,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           current: i + 1,
           cloned,
           errors,
-        }))
+        }));
       }
 
       // Log de auditoria
@@ -495,41 +512,44 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         clonedCount: cloned,
         skippedCount: preview.skippedCount,
         errorsCount: errors,
-      })
+      });
 
-      setCloneStep("done")
+      setCloneStep("done");
 
       if (cloned > 0) {
-        toast.success(`${cloned} clipador(es) puxado(s) com sucesso!`)
+        toast.success(`${cloned} clipador(es) puxado(s) com sucesso!`);
       }
 
       // Invalidar queries
       await Promise.all([
         utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
         utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
-      ])
-      refetch()
+      ]);
+      refetch();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Erro ao puxar clipadores",
-      )
-      setCloneStep("done")
+      );
+      setCloneStep("done");
     }
-  }
+  };
 
   /* ===== Convidar Clipadores (competição privada) ===== */
-  const [isInviteClippersOpen, setIsInviteClippersOpen] = React.useState(false)
-  const [inviteSearch, setInviteSearch] = React.useState("")
-  const [inviteSearchDebounced, setInviteSearchDebounced] = React.useState("")
+  const [isInviteClippersOpen, setIsInviteClippersOpen] = React.useState(false);
+  const [inviteSearch, setInviteSearch] = React.useState("");
+  const [inviteSearchDebounced, setInviteSearchDebounced] = React.useState("");
   const [selectedClipperIds, setSelectedClipperIds] = React.useState<
     Set<string>
-  >(new Set())
-  const [invitePage, setInvitePage] = React.useState(1)
+  >(new Set());
+  const [invitePage, setInvitePage] = React.useState(1);
 
   React.useEffect(() => {
-    const timeout = setTimeout(() => setInviteSearchDebounced(inviteSearch), 400)
-    return () => clearTimeout(timeout)
-  }, [inviteSearch])
+    const timeout = setTimeout(
+      () => setInviteSearchDebounced(inviteSearch),
+      400,
+    );
+    return () => clearTimeout(timeout);
+  }, [inviteSearch]);
 
   const { data: availableClippersData, isLoading: isLoadingAvailableClippers } =
     api.admin.listAvailableClippersForCompetition.useQuery(
@@ -540,14 +560,14 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         limit: 50,
       },
       { enabled: isInviteClippersOpen && !!campaignId },
-    )
+    );
 
   const resetInviteState = () => {
-    setSelectedClipperIds(new Set())
-    setInviteSearch("")
-    setInviteSearchDebounced("")
-    setInvitePage(1)
-  }
+    setSelectedClipperIds(new Set());
+    setInviteSearch("");
+    setInviteSearchDebounced("");
+    setInvitePage(1);
+  };
 
   const enrollMultipleClippers =
     api.admin.enrollMultipleClippersInPrivateCompetition.useMutation({
@@ -561,62 +581,62 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                   ? `${result.skippedCount} já estavam inscritos`
                   : undefined,
             },
-          )
+          );
         } else {
-          toast.info(result.message)
+          toast.info(result.message);
         }
-        setIsInviteClippersOpen(false)
-        resetInviteState()
+        setIsInviteClippersOpen(false);
+        resetInviteState();
         await Promise.all([
           utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
           utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
           utils.admin.listAvailableClippersForCompetition.invalidate(),
-        ])
-        refetch()
+        ]);
+        refetch();
       },
       onError: (error) => {
-        toast.error(error.message || "Erro ao inscrever clipadores")
+        toast.error(error.message || "Erro ao inscrever clipadores");
       },
-    })
+    });
 
   const toggleClipperSelection = (clipperId: string) => {
     setSelectedClipperIds((prev) => {
-      const next = new Set(prev)
+      const next = new Set(prev);
       if (next.has(clipperId)) {
-        next.delete(clipperId)
+        next.delete(clipperId);
       } else {
-        next.add(clipperId)
+        next.add(clipperId);
       }
-      return next
-    })
-  }
+      return next;
+    });
+  };
 
   const toggleSelectAllVisible = () => {
-    if (!availableClippersData?.clippers) return
-    const visibleIds = availableClippersData.clippers.map((c) => c.id)
-    const allSelected = visibleIds.every((id) => selectedClipperIds.has(id))
+    if (!availableClippersData?.clippers) return;
+    const visibleIds = availableClippersData.clippers.map((c) => c.id);
+    const allSelected = visibleIds.every((id) => selectedClipperIds.has(id));
     setSelectedClipperIds((prev) => {
-      const next = new Set(prev)
+      const next = new Set(prev);
       if (allSelected) {
-        visibleIds.forEach((id) => next.delete(id))
+        visibleIds.forEach((id) => next.delete(id));
       } else {
-        visibleIds.forEach((id) => next.add(id))
+        visibleIds.forEach((id) => next.add(id));
       }
-      return next
-    })
-  }
+      return next;
+    });
+  };
 
   /* ===== Copiar listas ===== */
   const copyAllClippers = () => {
-    const apps = applicationsData?.applications
+    const apps = applicationsData?.applications;
     if (!apps || apps.length === 0) {
-      toast.error("Nenhum clipador disponível para copiar")
-      return
+      toast.error("Nenhum clipador disponível para copiar");
+      return;
     }
 
-    let text = `📋 LISTA DE CLIPADORES - ${data.campaign.name.toUpperCase()}\n`
-    text += `Total: ${apps.length} clipadores\n\n`
-    text += `${"=".repeat(60)}\n\n`
+    let text = `📋 LISTA DE CLIPADORES - ${data.campaign.name.toUpperCase()}\n`;
+    text += `Total: ${apps.length} clipadores\n\n`;
+    text += `${"=".repeat(60)}\n\n`;
 
     apps.forEach((app, index) => {
       const statusEmoji =
@@ -626,48 +646,48 @@ export function ApplicationsTab(props: CompetitionTabProps) {
             ? "⏳"
             : app.status === "REJECTED"
               ? "❌"
-              : "🔄"
+              : "🔄";
 
-      text += `${index + 1}. ${statusEmoji} ${app.clipperName}\n`
+      text += `${index + 1}. ${statusEmoji} ${app.clipperName}\n`;
       if (app.clipperArtisticName) {
-        text += `   Nome Artístico: ${app.clipperArtisticName}\n`
+        text += `   Nome Artístico: ${app.clipperArtisticName}\n`;
       }
-      text += `   Email: ${app.clipperEmail || "N/A"}\n`
-      text += `   Status: ${app.status}\n`
-      text += `   Posts: ${app.postsCount}\n\n`
-    })
+      text += `   Email: ${app.clipperEmail || "N/A"}\n`;
+      text += `   Status: ${app.status}\n`;
+      text += `   Posts: ${app.postsCount}\n\n`;
+    });
 
-    text += `${"=".repeat(60)}\n`
-    text += `\n📊 RESUMO:\n`
-    text += `Total: ${apps.length} clipadores\n`
-    text += `Aprovados: ${apps.filter((app) => app.status === "APPROVED").length}\n`
-    text += `Pendentes: ${apps.filter((app) => app.status === "PENDING").length}\n`
-    text += `Rejeitados: ${apps.filter((app) => app.status === "REJECTED").length}\n`
+    text += `${"=".repeat(60)}\n`;
+    text += `\n📊 RESUMO:\n`;
+    text += `Total: ${apps.length} clipadores\n`;
+    text += `Aprovados: ${apps.filter((app) => app.status === "APPROVED").length}\n`;
+    text += `Pendentes: ${apps.filter((app) => app.status === "PENDING").length}\n`;
+    text += `Rejeitados: ${apps.filter((app) => app.status === "REJECTED").length}\n`;
 
     navigator.clipboard
       .writeText(text)
       .then(() => {
         toast.success("Lista de clipadores copiada!", {
           description: `${apps.length} clipadores copiados para área de transferência`,
-        })
+        });
       })
       .catch(() => {
-        toast.error("Erro ao copiar para área de transferência")
-      })
-  }
+        toast.error("Erro ao copiar para área de transferência");
+      });
+  };
 
   const copyApprovedClippers = () => {
-    const apps = applicationsData?.applications
+    const apps = applicationsData?.applications;
     if (!apps || apps.length === 0) {
-      toast.error("Nenhum clipador disponível")
-      return
+      toast.error("Nenhum clipador disponível");
+      return;
     }
 
-    const approvedApps = apps.filter((app) => app.status === "APPROVED")
+    const approvedApps = apps.filter((app) => app.status === "APPROVED");
 
     if (approvedApps.length === 0) {
-      toast.error("Nenhum clipador aprovado encontrado")
-      return
+      toast.error("Nenhum clipador aprovado encontrado");
+      return;
     }
 
     const platformEmoji: Record<string, string> = {
@@ -677,76 +697,76 @@ export function ApplicationsTab(props: CompetitionTabProps) {
       TWITTER: "🐦",
       KWAI: "🎬",
       FACEBOOK: "📘",
-    }
+    };
 
-    let text = `✅ CLIPADORES APROVADOS - ${data.campaign.name.toUpperCase()}\n`
-    text += `Total: ${approvedApps.length} clipadores aprovados\n\n`
-    text += `${"=".repeat(60)}\n\n`
+    let text = `✅ CLIPADORES APROVADOS - ${data.campaign.name.toUpperCase()}\n`;
+    text += `Total: ${approvedApps.length} clipadores aprovados\n\n`;
+    text += `${"=".repeat(60)}\n\n`;
 
-    let totalAccountsWithPosts = 0
-    let totalAccountsWithoutPosts = 0
+    let totalAccountsWithPosts = 0;
+    let totalAccountsWithoutPosts = 0;
 
     approvedApps.forEach((app, index) => {
-      text += `${index + 1}. ${app.clipperName}\n`
+      text += `${index + 1}. ${app.clipperName}\n`;
       if (app.clipperArtisticName) {
-        text += `   Nome Artístico: ${app.clipperArtisticName}\n`
+        text += `   Nome Artístico: ${app.clipperArtisticName}\n`;
       }
-      text += `   Email: ${app.clipperEmail || "N/A"}\n`
-      text += `   CPF: ${app.clipperCpf || "N/A"}\n`
-      text += `   Chave PIX: ${app.clipperPixKey || "N/A"}\n`
-      text += `   Posts: ${app.postsCount} | Views: ${formatNumber(app.totalViews)}\n`
+      text += `   Email: ${app.clipperEmail || "N/A"}\n`;
+      text += `   CPF: ${app.clipperCpf || "N/A"}\n`;
+      text += `   Chave PIX: ${app.clipperPixKey || "N/A"}\n`;
+      text += `   Posts: ${app.postsCount} | Views: ${formatNumber(app.totalViews)}\n`;
 
       if (app.socialAccounts && app.socialAccounts.length > 0) {
-        text += `\n   📱 CONTAS VINCULADAS (${app.socialAccounts.length}):\n`
+        text += `\n   📱 CONTAS VINCULADAS (${app.socialAccounts.length}):\n`;
         app.socialAccounts.forEach((acc) => {
-          const emoji = platformEmoji[acc.platform] || "🌐"
-          const hasPostsEmoji = acc.postsCount > 0 ? "✅" : "❌"
-          text += `   ${hasPostsEmoji} ${emoji} ${acc.platform} — @${acc.username}\n`
+          const emoji = platformEmoji[acc.platform] || "🌐";
+          const hasPostsEmoji = acc.postsCount > 0 ? "✅" : "❌";
+          text += `   ${hasPostsEmoji} ${emoji} ${acc.platform} — @${acc.username}\n`;
 
           if (acc.postsCount > 0) {
-            text += `      └─ ${acc.postsCount} post(s) | ${acc.eligiblePostsCount} elegível(is) | ${formatNumber(acc.totalViews)} views\n`
-            totalAccountsWithPosts++
+            text += `      └─ ${acc.postsCount} post(s) | ${acc.eligiblePostsCount} elegível(is) | ${formatNumber(acc.totalViews)} views\n`;
+            totalAccountsWithPosts++;
           } else {
-            text += `      └─ Nenhum vídeo postado\n`
-            totalAccountsWithoutPosts++
+            text += `      └─ Nenhum vídeo postado\n`;
+            totalAccountsWithoutPosts++;
           }
-        })
+        });
       } else {
-        text += `\n   ⚠️ Nenhuma conta social vinculada\n`
+        text += `\n   ⚠️ Nenhuma conta social vinculada\n`;
       }
 
-      text += `\n${"─".repeat(60)}\n\n`
-    })
+      text += `\n${"─".repeat(60)}\n\n`;
+    });
 
-    text += `${"=".repeat(60)}\n`
-    text += `\n📊 RESUMO GERAL:\n`
-    text += `👥 Total de aprovados: ${approvedApps.length}\n`
-    text += `📝 Total de posts: ${approvedApps.reduce((sum, app) => sum + app.postsCount, 0)}\n`
-    text += `👁️ Total de views: ${formatNumber(approvedApps.reduce((sum, app) => sum + app.totalViews, 0))}\n`
-    text += `\n📱 CONTAS:\n`
-    text += `✅ Contas com vídeos: ${totalAccountsWithPosts}\n`
-    text += `❌ Contas sem vídeos: ${totalAccountsWithoutPosts}\n`
-    text += `📊 Total de contas: ${totalAccountsWithPosts + totalAccountsWithoutPosts}\n`
+    text += `${"=".repeat(60)}\n`;
+    text += `\n📊 RESUMO GERAL:\n`;
+    text += `👥 Total de aprovados: ${approvedApps.length}\n`;
+    text += `📝 Total de posts: ${approvedApps.reduce((sum, app) => sum + app.postsCount, 0)}\n`;
+    text += `👁️ Total de views: ${formatNumber(approvedApps.reduce((sum, app) => sum + app.totalViews, 0))}\n`;
+    text += `\n📱 CONTAS:\n`;
+    text += `✅ Contas com vídeos: ${totalAccountsWithPosts}\n`;
+    text += `❌ Contas sem vídeos: ${totalAccountsWithoutPosts}\n`;
+    text += `📊 Total de contas: ${totalAccountsWithPosts + totalAccountsWithoutPosts}\n`;
 
     navigator.clipboard
       .writeText(text)
       .then(() => {
         toast.success("Clipadores aprovados copiados!", {
           description: `${approvedApps.length} clipadores com detalhes de contas copiados`,
-        })
+        });
       })
       .catch(() => {
-        toast.error("Erro ao copiar para área de transferência")
-      })
-  }
+        toast.error("Erro ao copiar para área de transferência");
+      });
+  };
 
   /* ===== Tabela ===== */
   const applications = React.useMemo(
     () => applicationsData?.applications ?? [],
     [applicationsData?.applications],
-  )
+  );
 
-  const [sorting, setSorting] = React.useState<SortingState>([])
+  const [sorting, setSorting] = React.useState<SortingState>([]);
 
   const columns = React.useMemo<ColumnDef<AdminApplication>[]>(
     () => [
@@ -755,14 +775,12 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         header: ({ column }) => (
           <SortHeader
             label="Clipador"
-            onClick={() =>
-              column.toggleSorting(column.getIsSorted() === "asc")
-            }
+            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           />
         ),
         cell: ({ row }) => {
-          const app = row.original
-          const totalEarned = app.totalEarned || 0
+          const app = row.original;
+          const totalEarned = app.totalEarned || 0;
           return (
             <div className="flex min-w-0 items-center gap-3 py-1">
               <Avatar className="size-10 shrink-0 rounded-xl">
@@ -804,28 +822,28 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 </div>
               </div>
             </div>
-          )
+          );
         },
       },
       {
         accessorKey: "socialAccounts",
         header: "Plataformas",
         cell: ({ row }) => {
-          const accounts = row.original.socialAccounts ?? []
+          const accounts = row.original.socialAccounts ?? [];
           if (accounts.length === 0) {
-            return <span className="text-muted-foreground text-xs">—</span>
+            return <span className="text-muted-foreground text-xs">—</span>;
           }
-          const platformCounts: Record<string, number> = {}
+          const platformCounts: Record<string, number> = {};
           accounts.forEach((acc) => {
             platformCounts[acc.platform] =
-              (platformCounts[acc.platform] ?? 0) + 1
-          })
+              (platformCounts[acc.platform] ?? 0) + 1;
+          });
           return (
             <div className="flex flex-wrap gap-1">
               {Object.entries(platformCounts).map(([platform, count]) => {
-                const config = platformConfig[platform as PlatformKey]
-                if (!config) return null
-                const PlatformIcon = config.icon
+                const config = platformConfig[platform as PlatformKey];
+                if (!config) return null;
+                const PlatformIcon = config.icon;
                 return (
                   <Badge
                     key={platform}
@@ -840,10 +858,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                     <PlatformIcon className="size-3" />
                     {count > 1 && <span className="text-[10px]">×{count}</span>}
                   </Badge>
-                )
+                );
               })}
             </div>
-          )
+          );
         },
       },
       {
@@ -852,7 +870,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         cell: ({ row }) => {
           const status =
             APPLICATION_STATUS_CONFIG[row.original.status] ??
-            APPLICATION_STATUS_CONFIG.PENDING!
+            APPLICATION_STATUS_CONFIG.PENDING!;
           return (
             <Badge
               variant="outline"
@@ -866,7 +884,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               />
               {status.label}
             </Badge>
-          )
+          );
         },
       },
       {
@@ -875,14 +893,12 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           <SortHeader
             label="Posts"
             icon={<Play className="size-3" weight="fill" />}
-            onClick={() =>
-              column.toggleSorting(column.getIsSorted() === "asc")
-            }
+            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           />
         ),
         cell: ({ row }) => {
-          const totalPosts = row.original.postsCount || 0
-          const eligiblePosts = row.original.eligiblePostsCount || 0
+          const totalPosts = row.original.postsCount || 0;
+          const eligiblePosts = row.original.eligiblePostsCount || 0;
           return (
             <div className="space-y-0.5 text-center">
               <div className="text-sm font-bold tabular-nums">{totalPosts}</div>
@@ -892,7 +908,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 </div>
               )}
             </div>
-          )
+          );
         },
       },
       {
@@ -901,9 +917,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           <SortHeader
             label="Views"
             icon={<Eye className="size-3" weight="fill" />}
-            onClick={() =>
-              column.toggleSorting(column.getIsSorted() === "asc")
-            }
+            onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           />
         ),
         cell: ({ row }) => (
@@ -918,7 +932,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         id: "actions",
         header: "Ações",
         cell: ({ row }) => {
-          const app = row.original
+          const app = row.original;
           return (
             <div className="flex items-center gap-2">
               <Button
@@ -926,8 +940,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 size="sm"
                 className="h-9 cursor-pointer rounded-xl"
                 onClick={() => {
-                  setSelectedApplication(app)
-                  setIsDetailsOpen(true)
+                  setSelectedApplication(app);
+                  setIsDetailsOpen(true);
                 }}
               >
                 <Eye className="size-3.5" />
@@ -938,8 +952,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                   size="sm"
                   className="h-9 cursor-pointer rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white hover:opacity-90"
                   onClick={() => {
-                    setSelectedPaymentApp(app)
-                    setIsPaymentOpen(true)
+                    setSelectedPaymentApp(app);
+                    setIsPaymentOpen(true);
                   }}
                 >
                   <CurrencyDollar className="size-3.5" weight="bold" />
@@ -947,12 +961,12 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 </Button>
               )}
             </div>
-          )
+          );
         },
       },
     ],
     [formatCurrency],
-  )
+  );
 
   const table = useReactTable({
     data: applications,
@@ -964,17 +978,17 @@ export function ApplicationsTab(props: CompetitionTabProps) {
     onSortingChange: setSorting,
     state: { sorting },
     initialState: { pagination: { pageSize: 10 } },
-  })
+  });
 
   React.useEffect(() => {
-    table.setPageIndex(0)
-  }, [debouncedSearch, statusFilter, table])
+    table.setPageIndex(0);
+  }, [debouncedSearch, statusFilter, table]);
 
-  const pendingCount = applicationsData?.pendingCount ?? 0
-  const approvedCount = applicationsData?.approvedCount ?? 0
+  const pendingCount = applicationsData?.pendingCount ?? 0;
+  const approvedCount = applicationsData?.approvedCount ?? 0;
   const selectedCloneCampaign = cloneCampaignsData?.find(
     (c) => c.id === cloneSourceCampaignId,
-  )
+  );
 
   /* ===== Skeleton ===== */
   if (isLoadingApplications && !applicationsData) {
@@ -1071,7 +1085,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   return (
@@ -1130,8 +1144,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               size="sm"
               className="h-10 cursor-pointer rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white hover:opacity-90"
               onClick={() => {
-                setApproveAllStep("confirm")
-                setIsApproveAllDialogOpen(true)
+                setApproveAllStep("confirm");
+                setIsApproveAllDialogOpen(true);
               }}
               disabled={approveAllStep === "processing" || pendingCount === 0}
             >
@@ -1152,8 +1166,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               size="sm"
               className="h-10 cursor-pointer rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 font-semibold text-white shadow-lg shadow-cyan-500/25 transition-all duration-300 hover:from-cyan-700 hover:to-blue-700 hover:shadow-cyan-500/40"
               onClick={() => {
-                resetCloneState()
-                setIsCloneDialogOpen(true)
+                resetCloneState();
+                setIsCloneDialogOpen(true);
               }}
             >
               <UsersThree className="size-4" weight="fill" />
@@ -1223,8 +1237,108 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           </Select>
         </div>
 
-        {/* ===== Tabela ===== */}
-        <div className="border-border/60 overflow-hidden rounded-2xl border">
+        {/* ===== Cards mobile/tablet ===== */}
+        <div className="space-y-3 lg:hidden">
+          {table.getRowModel().rows.length === 0 ? (
+            <div className="border-border/60 text-muted-foreground rounded-2xl border px-4 py-10 text-center text-sm">
+              Nenhuma aplicação encontrada
+            </div>
+          ) : (
+            table.getRowModel().rows.map((row) => {
+              const app = row.original;
+              const status =
+                APPLICATION_STATUS_CONFIG[app.status] ??
+                APPLICATION_STATUS_CONFIG.PENDING!;
+
+              return (
+                <article
+                  key={row.id}
+                  className="border-border/60 bg-muted/10 flex flex-col gap-3 rounded-2xl border p-3.5"
+                >
+                  <div className="flex min-w-0 items-start gap-3">
+                    <Avatar className="size-10 shrink-0 rounded-xl">
+                      <AvatarImage
+                        src={app.clipperImageUrl ?? undefined}
+                        alt={app.clipperName}
+                      />
+                      <AvatarFallback className="bg-gradient-custom rounded-xl text-xs font-bold text-[#04222A]">
+                        {app.clipperName.charAt(0).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">
+                        {app.clipperName}
+                      </p>
+                      {app.clipperArtisticName && (
+                        <p className="text-muted-foreground truncate text-xs">
+                          @{app.clipperArtisticName}
+                        </p>
+                      )}
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "shrink-0 gap-1.5 rounded-full",
+                        status.badge,
+                      )}
+                    >
+                      <span
+                        className={cn("size-1.5 rounded-full", status.dot)}
+                      />
+                      {status.label}
+                    </Badge>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <ApplicationMobileValue
+                      label="Contas"
+                      value={String(app.socialAccounts?.length ?? 0)}
+                    />
+                    <ApplicationMobileValue
+                      label="Posts"
+                      value={String(app.postsCount ?? 0)}
+                    />
+                    <ApplicationMobileValue
+                      label="Views"
+                      value={formatNumber(app.totalViews ?? 0)}
+                    />
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 flex-1 cursor-pointer rounded-xl"
+                      onClick={() => {
+                        setSelectedApplication(app);
+                        setIsDetailsOpen(true);
+                      }}
+                    >
+                      <Eye className="size-3.5" />
+                      Detalhes
+                    </Button>
+                    {app.status === "APPROVED" && (
+                      <Button
+                        size="sm"
+                        className="h-9 flex-1 cursor-pointer rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white hover:opacity-90"
+                        onClick={() => {
+                          setSelectedPaymentApp(app);
+                          setIsPaymentOpen(true);
+                        }}
+                      >
+                        <CurrencyDollar className="size-3.5" weight="bold" />
+                        Pagar
+                      </Button>
+                    )}
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+
+        {/* ===== Tabela desktop ===== */}
+        <div className="border-border/60 hidden overflow-hidden rounded-2xl border lg:block">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -1331,8 +1445,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           application={selectedApplication}
           open={isDetailsOpen}
           onOpenChange={(open) => {
-            setIsDetailsOpen(open)
-            if (!open) setSelectedApplication(null)
+            setIsDetailsOpen(open);
+            if (!open) setSelectedApplication(null);
           }}
           slug={slug}
           campaignId={campaignId}
@@ -1343,8 +1457,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           application={selectedPaymentApp}
           open={isPaymentOpen}
           onOpenChange={(open) => {
-            setIsPaymentOpen(open)
-            if (!open) setSelectedPaymentApp(null)
+            setIsPaymentOpen(open);
+            if (!open) setSelectedPaymentApp(null);
           }}
           slug={slug}
           campaignId={campaignId}
@@ -1355,10 +1469,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           open={isApproveAllDialogOpen}
           onOpenChange={(open) => {
             if (!open && approveAllStep !== "processing") {
-              resetApproveAllState()
+              resetApproveAllState();
             }
             if (approveAllStep !== "processing") {
-              setIsApproveAllDialogOpen(open)
+              setIsApproveAllDialogOpen(open);
             }
           }}
         >
@@ -1634,20 +1748,20 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                         {APPROVE_STEP_CARDS.map((card, index) => {
                           const currentIndex = APPROVE_STEP_SEQUENCE.indexOf(
                             approveAllCurrentClipper.step,
-                          )
+                          );
                           const state =
                             currentIndex > index
                               ? "done"
                               : currentIndex === index
                                 ? "active"
-                                : "pending"
+                                : "pending";
                           return (
                             <ApproveStepCard
                               key={card.number}
                               card={card}
                               state={state}
                             />
-                          )
+                          );
                         })}
                       </div>
                     </div>
@@ -1698,8 +1812,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                     <Button
                       className="w-full cursor-pointer gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white shadow-lg shadow-emerald-500/25 hover:opacity-90"
                       onClick={() => {
-                        setIsApproveAllDialogOpen(false)
-                        resetApproveAllState()
+                        setIsApproveAllDialogOpen(false);
+                        resetApproveAllState();
                       }}
                     >
                       <Check className="size-4" weight="bold" />
@@ -1717,10 +1831,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           open={isCloneDialogOpen}
           onOpenChange={(open) => {
             if (!open && cloneStep !== "processing") {
-              resetCloneState()
+              resetCloneState();
             }
             if (cloneStep !== "processing") {
-              setIsCloneDialogOpen(open)
+              setIsCloneDialogOpen(open);
             }
           }}
         >
@@ -1754,8 +1868,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                       <ul className="text-muted-foreground flex flex-col gap-1 text-xs">
                         <li className="flex items-center gap-1.5">
                           <span className="size-1 shrink-0 rounded-full bg-cyan-400" />
-                          Todos os clipadores aprovados/pendentes serão
-                          copiados
+                          Todos os clipadores aprovados/pendentes serão copiados
                         </li>
                         <li className="flex flex-wrap items-center gap-1.5">
                           <span className="size-1 shrink-0 rounded-full bg-cyan-400" />
@@ -1814,10 +1927,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                     <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto pr-1">
                       {cloneCampaignsData?.map((campaign) => {
                         const isSelected =
-                          cloneSourceCampaignId === campaign.id
+                          cloneSourceCampaignId === campaign.id;
                         const statusCfg =
                           CAMPAIGN_STATUS_CONFIG[campaign.status] ??
-                          CAMPAIGN_STATUS_CONFIG.DRAFT!
+                          CAMPAIGN_STATUS_CONFIG.DRAFT!;
                         return (
                           <button
                             key={campaign.id}
@@ -1829,7 +1942,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                               "group flex w-full cursor-pointer items-center gap-3 rounded-2xl border-2 p-3 text-left transition-all",
                               isSelected
                                 ? "border-cyan-500/50 bg-cyan-500/10 shadow-lg shadow-cyan-500/10"
-                                : "border-border/50 bg-muted/10 hover:border-cyan-500/30 hover:bg-muted/30",
+                                : "border-border/50 bg-muted/10 hover:bg-muted/30 hover:border-cyan-500/30",
                             )}
                           >
                             <span
@@ -1875,7 +1988,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                               </span>
                             )}
                           </button>
-                        )
+                        );
                       })}
                       {cloneCampaignsData?.length === 0 && (
                         <div className="flex flex-col items-center justify-center py-8 text-center">
@@ -2193,8 +2306,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                     <Button
                       className="w-full cursor-pointer gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white shadow-lg shadow-emerald-500/25 hover:opacity-90"
                       onClick={() => {
-                        setIsCloneDialogOpen(false)
-                        resetCloneState()
+                        setIsCloneDialogOpen(false);
+                        resetCloneState();
                       }}
                     >
                       <Check className="size-4" weight="bold" />
@@ -2211,8 +2324,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         <Dialog
           open={isInviteClippersOpen}
           onOpenChange={(open) => {
-            setIsInviteClippersOpen(open)
-            if (!open) resetInviteState()
+            setIsInviteClippersOpen(open);
+            if (!open) resetInviteState();
           }}
         >
           <DialogContent className="flex max-h-[90vh] w-[96vw] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-2xl">
@@ -2221,7 +2334,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               <DialogHeader className="text-left">
                 <DialogTitle className="flex items-center gap-2.5 text-lg">
                   <span className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-500/20 to-purple-500/20 p-2">
-                    <UserPlus className="size-5 text-violet-500" weight="fill" />
+                    <UserPlus
+                      className="size-5 text-violet-500"
+                      weight="fill"
+                    />
                   </span>
                   Convidar Clipadores
                 </DialogTitle>
@@ -2239,8 +2355,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                   placeholder="Buscar por nome, email, telefone..."
                   value={inviteSearch}
                   onChange={(e) => {
-                    setInviteSearch(e.target.value)
-                    setInvitePage(1)
+                    setInviteSearch(e.target.value);
+                    setInvitePage(1);
                   }}
                   className="h-10 rounded-xl border-violet-500/20 pl-10 focus-visible:border-violet-500/40 focus-visible:ring-violet-500/30"
                 />
@@ -2297,7 +2413,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
             </div>
 
             {/* Lista */}
-            <div className="min-h-0 max-h-[50vh] flex-1 overflow-y-auto">
+            <div className="max-h-[50vh] min-h-0 flex-1 overflow-y-auto">
               <div className="flex flex-col gap-1.5 px-5 py-3">
                 {isLoadingAvailableClippers ? (
                   Array.from({ length: 6 }).map((_, index) => (
@@ -2325,7 +2441,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 ) : availableClippersData?.clippers &&
                   availableClippersData.clippers.length > 0 ? (
                   availableClippersData.clippers.map((clipper) => {
-                    const isSelected = selectedClipperIds.has(clipper.id)
+                    const isSelected = selectedClipperIds.has(clipper.id);
                     return (
                       <button
                         key={clipper.id}
@@ -2411,7 +2527,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                           />
                         </span>
                       </button>
-                    )
+                    );
                   })
                 ) : (
                   <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -2504,7 +2620,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                         enrollMultipleClippers.mutate({
                           campaignId,
                           clipperProfileIds: Array.from(selectedClipperIds),
-                        })
+                        });
                       }
                     }}
                   >
@@ -2530,21 +2646,36 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         </Dialog>
       </div>
     </Reveal>
-  )
+  );
 }
 
 /* ============================================================
    Blocos auxiliares
    ============================================================ */
 
+function ApplicationMobileValue({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="bg-muted/40 min-w-0 rounded-xl px-1.5 py-2">
+      <p className="text-muted-foreground text-[10px] font-medium">{label}</p>
+      <p className="truncate text-xs font-bold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
 function SortHeader({
   label,
   icon,
   onClick,
 }: {
-  label: string
-  icon?: React.ReactNode
-  onClick: () => void
+  label: string;
+  icon?: React.ReactNode;
+  onClick: () => void;
 }) {
   return (
     <button
@@ -2556,7 +2687,7 @@ function SortHeader({
       {label}
       <ArrowsDownUp className="size-3.5" />
     </button>
-  )
+  );
 }
 
 function ProcessedClipperRow({
@@ -2564,9 +2695,9 @@ function ProcessedClipperRow({
   imageUrl,
   badge,
 }: {
-  name: string
-  imageUrl: string | null
-  badge: React.ReactNode
+  name: string;
+  imageUrl: string | null;
+  badge: React.ReactNode;
 }) {
   return (
     <div className="flex items-center gap-3 px-3 py-2.5">
@@ -2581,17 +2712,17 @@ function ProcessedClipperRow({
       </span>
       {badge}
     </div>
-  )
+  );
 }
 
 function ApproveStepCard({
   card,
   state,
 }: {
-  card: (typeof APPROVE_STEP_CARDS)[number]
-  state: "pending" | "active" | "done"
+  card: (typeof APPROVE_STEP_CARDS)[number];
+  state: "pending" | "active" | "done";
 }) {
-  const tone = STEP_TONES[card.tone]
+  const tone = STEP_TONES[card.tone];
   return (
     <div
       className={cn(
@@ -2638,5 +2769,5 @@ function ApproveStepCard({
             : card.base}
       </span>
     </div>
-  )
+  );
 }

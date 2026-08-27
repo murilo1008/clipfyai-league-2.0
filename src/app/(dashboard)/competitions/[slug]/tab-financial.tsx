@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import * as React from "react"
+import * as React from "react";
 import {
   ArrowSquareOut,
   CaretDown,
@@ -33,15 +33,15 @@ import {
   Warning,
   X,
   XCircle,
-} from "@phosphor-icons/react"
-import { format } from "date-fns"
-import { ptBR } from "date-fns/locale"
-import { toast } from "sonner"
+} from "@phosphor-icons/react";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { toast } from "sonner";
 
 import {
   StatTilesGridSkeleton,
   TableSkeleton,
-} from "@/components/shared/skeletons"
+} from "@/components/shared/skeletons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -51,9 +51,9 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -61,17 +61,17 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import {
   Table,
   TableBody,
@@ -79,11 +79,11 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { cn } from "@/lib/utils"
-import { api } from "@/trpc/react"
-import type { RouterOutputs } from "@/trpc/react"
-import { UploadButton } from "@/utils/uploadthing"
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
+import { api } from "@/trpc/react";
+import type { RouterOutputs } from "@/trpc/react";
+import { UploadButton } from "@/utils/uploadthing";
 
 import {
   downloadTextFile,
@@ -91,50 +91,49 @@ import {
   escapeCsvCell,
   formatCurrencyPlain,
   useFormatCurrency,
-} from "./shared"
-import type { CompetitionTabProps } from "./shared"
+} from "./shared";
+import type { CompetitionTabProps } from "./shared";
 
 /* ============================================================
    Tipos
    ============================================================ */
 
-type CompetitionFinancials =
-  RouterOutputs["admin"]["getCompetitionFinancials"]
+type CompetitionFinancials = RouterOutputs["admin"]["getCompetitionFinancials"];
 
-type FinancialClipper = CompetitionFinancials["clippers"][number]
+type FinancialClipper = CompetitionFinancials["clippers"][number];
 
 type FlatTransaction = FinancialClipper["transactions"][number] & {
-  clipperName: string
-  clipperArtisticName: string | null
-  clipperProfileId: string
-}
+  clipperName: string;
+  clipperArtisticName: string | null;
+  clipperProfileId: string;
+};
 
-type FinancialSortKey = "totalEarned" | "totalPaidViaPix" | "remainingToPay"
+type FinancialSortKey = "totalEarned" | "totalPaidViaPix" | "remainingToPay";
 
 /* ============================================================
    Helpers locais
    ============================================================ */
 
 const formatDateTimeLong = (date: Date | string) =>
-  format(new Date(date), "dd 'de' MMMM 'de' yyyy 'às' HH:mm", { locale: ptBR })
+  format(new Date(date), "dd 'de' MMMM 'de' yyyy 'às' HH:mm", { locale: ptBR });
 
 /** JsonValue de tabela de prêmios → entries [posição, valor] numéricas. */
 function toPrizeEntries(value: unknown): Array<[string, number]> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return []
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   return Object.entries(value as Record<string, unknown>).filter(
     (entry): entry is [string, number] => typeof entry[1] === "number",
-  )
+  );
 }
 
 /** Config visual dos tipos de transação (dialog de detalhes do clipador). */
 const TX_DETAIL_TYPES: Record<
   string,
   {
-    label: string
-    icon: React.ElementType
-    color: string
-    bg: string
-    border: string
+    label: string;
+    icon: React.ElementType;
+    color: string;
+    bg: string;
+    border: string;
   }
 > = {
   PRIZE_CREDIT: {
@@ -158,17 +157,17 @@ const TX_DETAIL_TYPES: Record<
     bg: "bg-sky-500/10",
     border: "border-sky-500/25",
   },
-}
+};
 
 /** Config visual dos tipos na tabela "Todas as Transações". */
 const TX_TABLE_TYPES: Record<
   string,
   {
-    label: string
-    icon: React.ElementType
-    color: string
-    bg: string
-    border: string
+    label: string;
+    icon: React.ElementType;
+    color: string;
+    bg: string;
+    border: string;
   }
 > = {
   PRIZE_CREDIT: {
@@ -192,16 +191,16 @@ const TX_TABLE_TYPES: Record<
     bg: "bg-sky-500/10",
     border: "border-sky-500/40",
   },
-}
+};
 
 /* ============================================================
    Tab Financeiro
    ============================================================ */
 
 export function FinancialTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props
-  const formatCurrency = useFormatCurrency()
-  const utils = api.useUtils()
+  const { slug, campaignId, data, active, refetch } = props;
+  const formatCurrency = useFormatCurrency();
+  const utils = api.useUtils();
 
   const { data: financialData, isLoading } =
     api.admin.getCompetitionFinancials.useQuery(
@@ -210,62 +209,62 @@ export function FinancialTab(props: CompetitionTabProps) {
         enabled: active && !!data,
         placeholderData: (prev) => prev,
       },
-    )
+    );
 
   /* ===== Ordenação da tabela ===== */
-  const [sortBy, setSortBy] = React.useState<FinancialSortKey>("totalEarned")
-  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc")
+  const [sortBy, setSortBy] = React.useState<FinancialSortKey>("totalEarned");
+  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
 
   const toggleSort = (column: FinancialSortKey) => {
     if (sortBy === column) {
-      setSortDir((prev) => (prev === "desc" ? "asc" : "desc"))
+      setSortDir((prev) => (prev === "desc" ? "asc" : "desc"));
     } else {
-      setSortBy(column)
-      setSortDir("desc")
+      setSortBy(column);
+      setSortDir("desc");
     }
-  }
+  };
 
   const sortedClippers = React.useMemo(() => {
-    if (!financialData) return []
-    const clippers = [...financialData.clippers]
+    if (!financialData) return [];
+    const clippers = [...financialData.clippers];
     clippers.sort((a, b) => {
-      const aVal = a[sortBy]
-      const bVal = b[sortBy]
-      return sortDir === "desc" ? bVal - aVal : aVal - bVal
-    })
-    return clippers
-  }, [financialData, sortBy, sortDir])
+      const aVal = a[sortBy];
+      const bVal = b[sortBy];
+      return sortDir === "desc" ? bVal - aVal : aVal - bVal;
+    });
+    return clippers;
+  }, [financialData, sortBy, sortDir]);
 
   /* ===== Dialog: detalhes financeiros do clipador ===== */
-  const [isDetailsOpen, setIsDetailsOpen] = React.useState(false)
+  const [isDetailsOpen, setIsDetailsOpen] = React.useState(false);
   const [selectedClipper, setSelectedClipper] =
-    React.useState<FinancialClipper | null>(null)
-  const [isEditingPixKey, setIsEditingPixKey] = React.useState(false)
-  const [editPixKeyValue, setEditPixKeyValue] = React.useState("")
+    React.useState<FinancialClipper | null>(null);
+  const [isEditingPixKey, setIsEditingPixKey] = React.useState(false);
+  const [editPixKeyValue, setEditPixKeyValue] = React.useState("");
 
   /* ===== Dialog: todas as transações ===== */
   const [transactionsDialogOpen, setTransactionsDialogOpen] =
-    React.useState(false)
+    React.useState(false);
   const [selectedClipperFilter, setSelectedClipperFilter] =
-    React.useState<string>("all")
+    React.useState<string>("all");
   const [transactionTypeFilter, setTransactionTypeFilter] =
-    React.useState<string>("all")
+    React.useState<string>("all");
 
   /* ===== Dialog: registrar PIX ===== */
-  const [isPixDialogOpen, setIsPixDialogOpen] = React.useState(false)
-  const [pixAmount, setPixAmount] = React.useState("")
-  const [pixKey, setPixKey] = React.useState("")
-  const [useCustomPixKey, setUseCustomPixKey] = React.useState(false)
-  const [customPixKey, setCustomPixKey] = React.useState("")
-  const [pixProofUrl, setPixProofUrl] = React.useState("")
-  const [isUploadingProof, setIsUploadingProof] = React.useState(false)
+  const [isPixDialogOpen, setIsPixDialogOpen] = React.useState(false);
+  const [pixAmount, setPixAmount] = React.useState("");
+  const [pixKey, setPixKey] = React.useState("");
+  const [useCustomPixKey, setUseCustomPixKey] = React.useState(false);
+  const [customPixKey, setCustomPixKey] = React.useState("");
+  const [pixProofUrl, setPixProofUrl] = React.useState("");
+  const [isUploadingProof, setIsUploadingProof] = React.useState(false);
   const [isPixConfirmDialogOpen, setIsPixConfirmDialogOpen] =
-    React.useState(false)
+    React.useState(false);
 
   /* ===== Transações agregadas (dialog Todas as Transações) ===== */
   const allTransactions = React.useMemo<FlatTransaction[]>(() => {
-    if (!financialData) return []
-    const rows: FlatTransaction[] = []
+    if (!financialData) return [];
+    const rows: FlatTransaction[] = [];
     financialData.clippers.forEach((clipper) => {
       clipper.transactions.forEach((tx) => {
         rows.push({
@@ -273,40 +272,40 @@ export function FinancialTab(props: CompetitionTabProps) {
           clipperName: clipper.clipperName,
           clipperArtisticName: clipper.clipperArtisticName,
           clipperProfileId: clipper.clipperProfileId,
-        })
-      })
-    })
+        });
+      });
+    });
     return rows.sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    )
-  }, [financialData])
+    );
+  }, [financialData]);
 
   const filteredTransactions = React.useMemo(() => {
-    let filtered = allTransactions
+    let filtered = allTransactions;
     if (selectedClipperFilter !== "all") {
       filtered = filtered.filter(
         (tx) => tx.clipperProfileId === selectedClipperFilter,
-      )
+      );
     }
     if (transactionTypeFilter !== "all") {
-      filtered = filtered.filter((tx) => tx.type === transactionTypeFilter)
+      filtered = filtered.filter((tx) => tx.type === transactionTypeFilter);
     }
-    return filtered
-  }, [allTransactions, selectedClipperFilter, transactionTypeFilter])
+    return filtered;
+  }, [allTransactions, selectedClipperFilter, transactionTypeFilter]);
 
   const transactionsStats = React.useMemo(() => {
-    const total = filteredTransactions.reduce((sum, tx) => sum + tx.amount, 0)
-    const count = filteredTransactions.length
+    const total = filteredTransactions.reduce((sum, tx) => sum + tx.amount, 0);
+    const count = filteredTransactions.length;
     const byType = filteredTransactions.reduce<Record<string, number>>(
       (acc, tx) => {
-        acc[tx.type] = (acc[tx.type] ?? 0) + 1
-        return acc
+        acc[tx.type] = (acc[tx.type] ?? 0) + 1;
+        return acc;
       },
       {},
-    )
-    return { total, count, byType }
-  }, [filteredTransactions])
+    );
+    return { total, count, byType };
+  }, [filteredTransactions]);
 
   /* ===== Mutations ===== */
 
@@ -314,37 +313,37 @@ export function FinancialTab(props: CompetitionTabProps) {
     onSuccess: async (result) => {
       toast.success("Chave PIX atualizada!", {
         description: `Nova chave: ${result.clipperProfile.pixKey}`,
-      })
+      });
       setSelectedClipper((prev) =>
         prev ? { ...prev, clipperPixKey: result.clipperProfile.pixKey } : prev,
-      )
-      setIsEditingPixKey(false)
-      setEditPixKeyValue("")
-      await utils.admin.getCompetitionFinancials.invalidate({ slug })
+      );
+      setIsEditingPixKey(false);
+      setEditPixKeyValue("");
+      await utils.admin.getCompetitionFinancials.invalidate({ slug });
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao atualizar chave PIX"),
-  })
+  });
 
   const sendPixPayment = api.admin.sendPixPayment.useMutation({
     onSuccess: async () => {
       toast.success("PIX registrado com sucesso!", {
         description: `${formatCurrency(parseFloat(pixAmount))} foi debitado da conta da competição`,
-      })
+      });
 
       // Fechar todos os dialogs
-      setIsPixConfirmDialogOpen(false)
-      setIsPixDialogOpen(false)
-      setIsDetailsOpen(false)
+      setIsPixConfirmDialogOpen(false);
+      setIsPixDialogOpen(false);
+      setIsDetailsOpen(false);
 
       // Limpar estados
-      setPixAmount("")
-      setPixKey("")
-      setUseCustomPixKey(false)
-      setCustomPixKey("")
-      setPixProofUrl("")
-      setIsUploadingProof(false)
-      setSelectedClipper(null)
+      setPixAmount("");
+      setPixKey("");
+      setUseCustomPixKey(false);
+      setCustomPixKey("");
+      setPixProofUrl("");
+      setIsUploadingProof(false);
+      setSelectedClipper(null);
 
       // Invalidar queries relacionadas
       await Promise.all([
@@ -355,30 +354,30 @@ export function FinancialTab(props: CompetitionTabProps) {
         utils.clipper.getWallet.invalidate(),
         utils.clipper.getTransactions.invalidate(),
         utils.clipper.getWalletStats.invalidate(),
-      ])
-      refetch()
+      ]);
+      refetch();
     },
     onError: (error) => {
-      toast.error(error.message || "Erro ao registrar PIX")
-      setIsPixConfirmDialogOpen(false)
+      toast.error(error.message || "Erro ao registrar PIX");
+      setIsPixConfirmDialogOpen(false);
     },
-  })
+  });
 
   /* ===== Handlers ===== */
 
   const handleCopyMissingPayments = () => {
     if (!financialData || financialData.clippers.length === 0) {
-      toast.error("Nenhum dado financeiro para copiar")
-      return
+      toast.error("Nenhum dado financeiro para copiar");
+      return;
     }
 
     const faltantes = financialData.clippers.filter(
       (c) => c.remainingToPay > 0,
-    )
+    );
 
     if (faltantes.length === 0) {
-      toast.info("Todos os pagamentos já foram realizados! 🎉")
-      return
+      toast.info("Todos os pagamentos já foram realizados! 🎉");
+      return;
     }
 
     // Montar TSV (tab-separated values) compatível com Notion
@@ -389,7 +388,7 @@ export function FinancialTab(props: CompetitionTabProps) {
       "",
       "Pagamento",
       "Comprovante",
-    ].join("\t")
+    ].join("\t");
 
     const rows = faltantes
       .sort((a, b) => a.remainingToPay - b.remainingToPay)
@@ -402,108 +401,108 @@ export function FinancialTab(props: CompetitionTabProps) {
           "Não Iniciado",
           "",
         ].join("\t"),
-      )
+      );
 
-    void navigator.clipboard.writeText([header, ...rows].join("\n"))
+    void navigator.clipboard.writeText([header, ...rows].join("\n"));
     toast.success("Pagamentos faltantes copiados!", {
       description: `${faltantes.length} clipador(es) com pagamento pendente — cole diretamente no Notion`,
-    })
-  }
+    });
+  };
 
   const handleDownloadMissingCsv = () => {
     if (!financialData || financialData.clippers.length === 0) {
-      toast.error("Nenhum dado financeiro disponível")
-      return
+      toast.error("Nenhum dado financeiro disponível");
+      return;
     }
 
     const faltantes = financialData.clippers
       .filter((c) => c.remainingToPay > 0)
-      .sort((a, b) => a.remainingToPay - b.remainingToPay)
+      .sort((a, b) => a.remainingToPay - b.remainingToPay);
 
     if (faltantes.length === 0) {
-      toast.info("Todos os pagamentos já foram realizados! 🎉")
-      return
+      toast.info("Todos os pagamentos já foram realizados! 🎉");
+      return;
     }
 
-    const fileDate = format(new Date(), "dd-MM-yyyy_HH-mm")
+    const fileDate = format(new Date(), "dd-MM-yyyy_HH-mm");
     const header = [
       "Clipador",
       "Chave PIX",
       "Total de Ganhos",
       "Pagamento",
       "Comprovante",
-    ]
+    ];
     const dataRows = faltantes.map((c) => [
       c.clipperName,
       c.clipperPixKey || "",
       formatCurrencyPlain(c.remainingToPay),
       "Não Iniciado",
       "",
-    ])
+    ]);
     const csvLines = [
       header.map(escapeCsvCell).join(","),
       ...dataRows.map((row) =>
         row.map((cell) => escapeCsvCell(String(cell))).join(","),
       ),
-    ]
+    ];
 
     const safeName = financialData.campaign.name
       .replace(/[^a-zA-Z0-9À-ÿ\s-]/g, "")
       .replace(/\s+/g, "_")
-      .slice(0, 50)
+      .slice(0, 50);
 
     downloadTextFile(
       `Pagamentos_Faltantes_${safeName}_${fileDate}.csv`,
       csvLines.join("\n"),
       "text/csv",
       true,
-    )
+    );
 
     toast.success("CSV baixado!", {
       description: `${faltantes.length} pagamento(s) faltante(s) exportado(s)`,
-    })
-  }
+    });
+  };
 
   const openPixDialog = () => {
-    if (!selectedClipper) return
-    setPixAmount("")
-    setPixKey(selectedClipper.clipperPixKey || "")
-    setUseCustomPixKey(false)
-    setCustomPixKey("")
-    setPixProofUrl("")
-    setIsUploadingProof(false)
-    setIsPixDialogOpen(true)
-  }
+    if (!selectedClipper) return;
+    setPixAmount("");
+    setPixKey(selectedClipper.clipperPixKey || "");
+    setUseCustomPixKey(false);
+    setCustomPixKey("");
+    setPixProofUrl("");
+    setIsUploadingProof(false);
+    setIsPixDialogOpen(true);
+  };
 
   const handlePixConfirm = () => {
-    const amount = parseFloat(pixAmount)
+    const amount = parseFloat(pixAmount);
 
     if (!amount || amount <= 0) {
-      toast.error("Informe um valor válido")
-      return
+      toast.error("Informe um valor válido");
+      return;
     }
 
-    const finalPixKey = useCustomPixKey ? customPixKey.trim() : pixKey
+    const finalPixKey = useCustomPixKey ? customPixKey.trim() : pixKey;
 
     if (!finalPixKey) {
-      toast.error("Informe uma chave PIX válida")
-      return
+      toast.error("Informe uma chave PIX válida");
+      return;
     }
 
     if (!pixProofUrl) {
-      toast.error("Faça upload do comprovante de pagamento")
-      return
+      toast.error("Faça upload do comprovante de pagamento");
+      return;
     }
 
     // Fechar dialog inicial e abrir confirmação
-    setIsPixDialogOpen(false)
-    setIsPixConfirmDialogOpen(true)
-  }
+    setIsPixDialogOpen(false);
+    setIsPixConfirmDialogOpen(true);
+  };
 
   const handlePixSend = () => {
-    if (!selectedClipper) return
-    const amount = parseFloat(pixAmount)
-    const finalPixKey = useCustomPixKey ? customPixKey.trim() : pixKey
+    if (!selectedClipper) return;
+    const amount = parseFloat(pixAmount);
+    const finalPixKey = useCustomPixKey ? customPixKey.trim() : pixKey;
 
     sendPixPayment.mutate({
       clipperProfileId: selectedClipper.clipperProfileId,
@@ -511,104 +510,104 @@ export function FinancialTab(props: CompetitionTabProps) {
       pixKey: finalPixKey,
       campaignId,
       proofUrl: pixProofUrl,
-    })
-  }
+    });
+  };
 
   const handleCopyIndividualReport = () => {
-    const clipper = selectedClipper
-    if (!clipper) return
+    const clipper = selectedClipper;
+    if (!clipper) return;
 
-    let text = `💰 RELATÓRIO INDIVIDUAL - ${clipper.clipperName.toUpperCase()}\n`
-    text += `${"=".repeat(70)}\n\n`
+    let text = `💰 RELATÓRIO INDIVIDUAL - ${clipper.clipperName.toUpperCase()}\n`;
+    text += `${"=".repeat(70)}\n\n`;
 
-    text += `👤 DADOS DO CLIPADOR:\n`
-    text += `   Nome: ${clipper.clipperName}\n`
+    text += `👤 DADOS DO CLIPADOR:\n`;
+    text += `   Nome: ${clipper.clipperName}\n`;
     if (clipper.clipperArtisticName) {
-      text += `   Nome Artístico: ${clipper.clipperArtisticName}\n`
+      text += `   Nome Artístico: ${clipper.clipperArtisticName}\n`;
     }
-    text += `   Email: ${clipper.clipperEmail}\n`
-    text += `   Telefone: ${clipper.clipperPhone || "N/A"}\n`
-    text += `   CPF: ${clipper.clipperCpf || "N/A"}\n`
-    text += `   Chave PIX: ${clipper.clipperPixKey || "N/A"}\n\n`
+    text += `   Email: ${clipper.clipperEmail}\n`;
+    text += `   Telefone: ${clipper.clipperPhone || "N/A"}\n`;
+    text += `   CPF: ${clipper.clipperCpf || "N/A"}\n`;
+    text += `   Chave PIX: ${clipper.clipperPixKey || "N/A"}\n\n`;
 
-    text += `💵 RESUMO FINANCEIRO:\n`
-    text += `   Total Ganho: ${formatCurrencyPlain(clipper.totalEarned)}\n`
-    text += `   Total Pago via PIX: ${formatCurrencyPlain(clipper.totalPaidViaPix)}\n`
-    text += `   Falta Pagar: ${formatCurrencyPlain(clipper.remainingToPay)}\n`
-    text += `   Total de Transações: ${clipper.transactions.length}\n`
-    text += `   Total de PIX: ${clipper.pixRecords.length}\n\n`
-    text += `${"=".repeat(70)}\n\n`
+    text += `💵 RESUMO FINANCEIRO:\n`;
+    text += `   Total Ganho: ${formatCurrencyPlain(clipper.totalEarned)}\n`;
+    text += `   Total Pago via PIX: ${formatCurrencyPlain(clipper.totalPaidViaPix)}\n`;
+    text += `   Falta Pagar: ${formatCurrencyPlain(clipper.remainingToPay)}\n`;
+    text += `   Total de Transações: ${clipper.transactions.length}\n`;
+    text += `   Total de PIX: ${clipper.pixRecords.length}\n\n`;
+    text += `${"=".repeat(70)}\n\n`;
 
-    text += `📝 TRANSAÇÕES (CRÉDITOS):\n\n`
+    text += `📝 TRANSAÇÕES (CRÉDITOS):\n\n`;
     clipper.transactions.forEach((tx, txIndex) => {
       const txDate = format(new Date(tx.createdAt), "dd/MM/yyyy HH:mm", {
         locale: ptBR,
-      })
-      text += `${txIndex + 1}. ${tx.description}\n`
-      text += `   Valor: ${formatCurrencyPlain(tx.amount)}\n`
-      text += `   Data: ${txDate}\n`
+      });
+      text += `${txIndex + 1}. ${tx.description}\n`;
+      text += `   Valor: ${formatCurrencyPlain(tx.amount)}\n`;
+      text += `   Data: ${txDate}\n`;
       if (tx.rankingPosition) {
-        text += `   Posição: ${tx.rankingPosition}º\n`
+        text += `   Posição: ${tx.rankingPosition}º\n`;
       }
-      text += `   Status: ${tx.status}\n`
-      text += `   Tipo: ${tx.type === "PRIZE_CREDIT" ? "Prêmio" : tx.type === "BONUS" ? "Bônus" : "Ajuste"}\n\n`
-    })
+      text += `   Status: ${tx.status}\n`;
+      text += `   Tipo: ${tx.type === "PRIZE_CREDIT" ? "Prêmio" : tx.type === "BONUS" ? "Bônus" : "Ajuste"}\n\n`;
+    });
 
     if (clipper.pixRecords.length > 0) {
-      text += `\n📤 REGISTROS DE PIX:\n\n`
+      text += `\n📤 REGISTROS DE PIX:\n\n`;
       clipper.pixRecords.forEach((pix, pixIndex) => {
         const pixDate = format(new Date(pix.createdAt), "dd/MM/yyyy HH:mm", {
           locale: ptBR,
-        })
-        text += `${pixIndex + 1}. ${pix.description}\n`
-        text += `   Valor: ${formatCurrencyPlain(pix.amount)}\n`
-        text += `   Data: ${pixDate}\n`
-        text += `   Chave PIX: ${pix.pixKey || "N/A"}\n`
-        text += `   Status: ${pix.status}\n\n`
-      })
+        });
+        text += `${pixIndex + 1}. ${pix.description}\n`;
+        text += `   Valor: ${formatCurrencyPlain(pix.amount)}\n`;
+        text += `   Data: ${pixDate}\n`;
+        text += `   Chave PIX: ${pix.pixKey || "N/A"}\n`;
+        text += `   Status: ${pix.status}\n\n`;
+      });
     }
 
-    text += `${"=".repeat(70)}\n`
-    text += `\nRelatório gerado em: ${format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}\n`
+    text += `${"=".repeat(70)}\n`;
+    text += `\nRelatório gerado em: ${format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}\n`;
 
-    void navigator.clipboard.writeText(text)
+    void navigator.clipboard.writeText(text);
     toast.success("Relatório copiado!", {
       description: `Dados de ${clipper.clipperName} copiados para a área de transferência`,
-    })
-  }
+    });
+  };
 
   const handleCopyFilteredTransactions = () => {
-    if (!financialData) return
+    if (!financialData) return;
 
-    let text = `📊 TRANSAÇÕES - ${financialData.campaign.name.toUpperCase()}\n`
-    text += `${"=".repeat(80)}\n\n`
-    text += `Total: ${formatCurrencyPlain(transactionsStats.total)}\n`
-    text += `Quantidade: ${transactionsStats.count} transações\n\n`
-    text += `${"=".repeat(80)}\n\n`
+    let text = `📊 TRANSAÇÕES - ${financialData.campaign.name.toUpperCase()}\n`;
+    text += `${"=".repeat(80)}\n\n`;
+    text += `Total: ${formatCurrencyPlain(transactionsStats.total)}\n`;
+    text += `Quantidade: ${transactionsStats.count} transações\n\n`;
+    text += `${"=".repeat(80)}\n\n`;
 
     filteredTransactions.forEach((tx, index) => {
       const txDate = format(new Date(tx.createdAt), "dd/MM/yyyy HH:mm", {
         locale: ptBR,
-      })
-      text += `${index + 1}. ${tx.clipperName}\n`
-      text += `   Descrição: ${tx.description}\n`
-      text += `   Valor: ${formatCurrencyPlain(tx.amount)}\n`
-      text += `   Tipo: ${tx.type}\n`
+      });
+      text += `${index + 1}. ${tx.clipperName}\n`;
+      text += `   Descrição: ${tx.description}\n`;
+      text += `   Valor: ${formatCurrencyPlain(tx.amount)}\n`;
+      text += `   Tipo: ${tx.type}\n`;
       if (tx.rankingPosition) {
-        text += `   Posição: ${tx.rankingPosition}º\n`
+        text += `   Posição: ${tx.rankingPosition}º\n`;
       }
-      text += `   Status: ${tx.status}\n`
-      text += `   Data: ${txDate}\n\n`
-    })
+      text += `   Status: ${tx.status}\n`;
+      text += `   Data: ${txDate}\n\n`;
+    });
 
-    text += `${"=".repeat(80)}\n`
-    text += `Relatório gerado em: ${format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}\n`
+    text += `${"=".repeat(80)}\n`;
+    text += `Relatório gerado em: ${format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}\n`;
 
-    void navigator.clipboard.writeText(text)
+    void navigator.clipboard.writeText(text);
     toast.success("Transações copiadas!", {
       description: `${filteredTransactions.length} transações copiadas para área de transferência`,
-    })
-  }
+    });
+  };
 
   /* ===== Loading ===== */
   if (isLoading) {
@@ -620,7 +619,7 @@ export function FinancialTab(props: CompetitionTabProps) {
         />
         <TableSkeleton rows={6} />
       </div>
-    )
+    );
   }
 
   /* ===== Sem dados ===== */
@@ -631,10 +630,10 @@ export function FinancialTab(props: CompetitionTabProps) {
         title="Dados financeiros não disponíveis"
         subtitle="Não foi possível carregar o financeiro desta competição"
       />
-    )
+    );
   }
 
-  const { summary, rankingRule } = financialData
+  const { summary, rankingRule } = financialData;
 
   const summaryCards = [
     {
@@ -692,26 +691,25 @@ export function FinancialTab(props: CompetitionTabProps) {
       iconBg: "bg-amber-500/15",
       text: "text-amber-600 dark:text-amber-400",
     },
-  ] as const
+  ] as const;
 
-  const dailyPrizeEntries = toPrizeEntries(rankingRule?.dailyPrizeTable)
-  const monthlyPrizeEntries = toPrizeEntries(rankingRule?.monthlyPrizeTable)
+  const dailyPrizeEntries = toPrizeEntries(rankingRule?.dailyPrizeTable);
+  const monthlyPrizeEntries = toPrizeEntries(rankingRule?.monthlyPrizeTable);
 
   const selectedPaidPercent =
     selectedClipper && selectedClipper.totalEarned > 0
       ? Math.min(
           100,
-          (selectedClipper.totalPaidViaPix / selectedClipper.totalEarned) *
-            100,
+          (selectedClipper.totalPaidViaPix / selectedClipper.totalEarned) * 100,
         )
-      : 0
+      : 0;
 
   return (
     <div className="flex flex-col gap-5 sm:gap-6">
       {/* ===== Cards de resumo financeiro ===== */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-5 lg:gap-4">
         {summaryCards.map((card, index) => {
-          const CardIcon = card.icon
+          const CardIcon = card.icon;
           return (
             <div
               key={card.label}
@@ -776,7 +774,7 @@ export function FinancialTab(props: CompetitionTabProps) {
                 </p>
               </div>
             </div>
-          )
+          );
         })}
       </div>
 
@@ -826,7 +824,79 @@ export function FinancialTab(props: CompetitionTabProps) {
           </div>
         </div>
 
-        <div className="border-border/60 overflow-hidden rounded-2xl border">
+        <div className="space-y-3 lg:hidden">
+          {sortedClippers.length === 0 ? (
+            <div className="border-border/60 text-muted-foreground rounded-2xl border px-4 py-10 text-center text-sm">
+              Nenhum pagamento realizado ainda
+            </div>
+          ) : (
+            sortedClippers.map((clipper, index) => (
+              <article
+                key={clipper.clipperProfileId}
+                className="border-border/60 bg-muted/10 flex flex-col gap-3 rounded-2xl border p-3.5"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Badge
+                    variant="outline"
+                    className="flex size-7 shrink-0 items-center justify-center rounded-full p-0 text-xs tabular-nums"
+                  >
+                    {index + 1}
+                  </Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">
+                      {clipper.clipperName}
+                    </p>
+                    {clipper.clipperArtisticName && (
+                      <p className="text-muted-foreground truncate text-xs">
+                        @{clipper.clipperArtisticName}
+                      </p>
+                    )}
+                  </div>
+                  <Badge className="bg-gradient-custom shrink-0 rounded-full border-0 text-xs font-bold text-[#04222A]">
+                    {clipper.transactions.length} trans.
+                  </Badge>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <FinancialMobileValue
+                    label="Total"
+                    value={formatCurrency(clipper.totalEarned)}
+                    className="text-emerald-600 dark:text-emerald-400"
+                  />
+                  <FinancialMobileValue
+                    label="Pago"
+                    value={formatCurrency(clipper.totalPaidViaPix)}
+                    className="text-cyan-600 dark:text-cyan-400"
+                  />
+                  <FinancialMobileValue
+                    label="Falta"
+                    value={formatCurrency(clipper.remainingToPay)}
+                    className={
+                      clipper.remainingToPay > 0
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-emerald-600 dark:text-emerald-400"
+                    }
+                  />
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-9 w-full cursor-pointer rounded-xl"
+                  onClick={() => {
+                    setSelectedClipper(clipper);
+                    setIsDetailsOpen(true);
+                  }}
+                >
+                  <Eye className="size-3.5" weight="fill" />
+                  Ver detalhes
+                </Button>
+              </article>
+            ))
+          )}
+        </div>
+
+        <div className="border-border/60 hidden overflow-hidden rounded-2xl border lg:block">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/30 hover:bg-muted/30">
@@ -881,7 +951,10 @@ export function FinancialTab(props: CompetitionTabProps) {
                 <TableRow>
                   <TableCell colSpan={10} className="h-24 text-center">
                     <div className="text-muted-foreground flex flex-col items-center justify-center gap-1.5 py-8">
-                      <Wallet className="mb-1 size-10 opacity-40" weight="fill" />
+                      <Wallet
+                        className="mb-1 size-10 opacity-40"
+                        weight="fill"
+                      />
                       <p className="text-sm font-medium">
                         Nenhum pagamento realizado ainda
                       </p>
@@ -973,8 +1046,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                         size="sm"
                         className="btn-gradient-auth h-8 shrink-0 cursor-pointer rounded-xl font-semibold"
                         onClick={() => {
-                          setSelectedClipper(clipper)
-                          setIsDetailsOpen(true)
+                          setSelectedClipper(clipper);
+                          setIsDetailsOpen(true);
                         }}
                       >
                         <Eye className="size-3.5" weight="fill" />
@@ -1094,10 +1167,10 @@ export function FinancialTab(props: CompetitionTabProps) {
       <Dialog
         open={isDetailsOpen}
         onOpenChange={(nextOpen) => {
-          setIsDetailsOpen(nextOpen)
+          setIsDetailsOpen(nextOpen);
           if (!nextOpen) {
-            setIsEditingPixKey(false)
-            setEditPixKeyValue("")
+            setIsEditingPixKey(false);
+            setEditPixKeyValue("");
           }
         }}
       >
@@ -1239,8 +1312,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                             className="h-8 cursor-pointer rounded-lg text-xs"
                             disabled={updateClipperPixKey.isPending}
                             onClick={() => {
-                              setIsEditingPixKey(false)
-                              setEditPixKeyValue("")
+                              setIsEditingPixKey(false);
+                              setEditPixKeyValue("");
                             }}
                           >
                             <X className="size-3.5" />
@@ -1269,8 +1342,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                           onClick={() => {
                             setEditPixKeyValue(
                               selectedClipper.clipperPixKey || "",
-                            )
-                            setIsEditingPixKey(true)
+                            );
+                            setIsEditingPixKey(true);
                           }}
                         >
                           <PencilSimple className="size-3.5" />
@@ -1284,7 +1357,12 @@ export function FinancialTab(props: CompetitionTabProps) {
               {/* Resumo financeiro do clipador */}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
                 <StatTileMini
-                  icon={<CurrencyDollar className="size-6 sm:size-7" weight="bold" />}
+                  icon={
+                    <CurrencyDollar
+                      className="size-6 sm:size-7"
+                      weight="bold"
+                    />
+                  }
                   value={formatCurrency(selectedClipper.totalEarned)}
                   label="Total Ganho"
                   border="border-emerald-500/25"
@@ -1425,7 +1503,7 @@ export function FinancialTab(props: CompetitionTabProps) {
                           new Date(a.createdAt).getTime(),
                       )
                       .map((pix) => {
-                        const proofHref = pix.proofUrls[0] ?? pix.proofUrl
+                        const proofHref = pix.proofUrls[0] ?? pix.proofUrl;
                         return (
                           <div
                             key={pix.id}
@@ -1517,7 +1595,7 @@ export function FinancialTab(props: CompetitionTabProps) {
                               </div>
                             </div>
                           </div>
-                        )
+                        );
                       })}
                   </div>
                 )}
@@ -1576,8 +1654,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                           new Date(a.createdAt).getTime(),
                       )
                       .map((transaction) => {
-                        const config = TX_DETAIL_TYPES[transaction.type]
-                        const TypeIcon = config?.icon ?? CurrencyDollar
+                        const config = TX_DETAIL_TYPES[transaction.type];
+                        const TypeIcon = config?.icon ?? CurrencyDollar;
                         return (
                           <div
                             key={transaction.id}
@@ -1680,7 +1758,7 @@ export function FinancialTab(props: CompetitionTabProps) {
                               </div>
                             </div>
                           </div>
-                        )
+                        );
                       })}
                   </div>
                 )}
@@ -1700,8 +1778,8 @@ export function FinancialTab(props: CompetitionTabProps) {
               variant="outline"
               className="cursor-pointer rounded-xl"
               onClick={() => {
-                setIsDetailsOpen(false)
-                setSelectedClipper(null)
+                setIsDetailsOpen(false);
+                setSelectedClipper(null);
               }}
             >
               Fechar
@@ -1750,9 +1828,9 @@ export function FinancialTab(props: CompetitionTabProps) {
                   size="sm"
                   className="text-brand-cyan not-dark:text-primary h-auto cursor-pointer p-0 text-xs font-semibold hover:bg-transparent"
                   onClick={() => {
-                    setUseCustomPixKey(!useCustomPixKey)
+                    setUseCustomPixKey(!useCustomPixKey);
                     if (!useCustomPixKey) {
-                      setCustomPixKey("")
+                      setCustomPixKey("");
                     }
                   }}
                 >
@@ -1789,19 +1867,19 @@ export function FinancialTab(props: CompetitionTabProps) {
                   <UploadButton
                     endpoint="pixProof"
                     onClientUploadComplete={(res) => {
-                      const url = res?.[0]?.ufsUrl ?? res?.[0]?.url
+                      const url = res?.[0]?.ufsUrl ?? res?.[0]?.url;
                       if (url) {
-                        setPixProofUrl(url)
-                        setIsUploadingProof(false)
-                        toast.success("Comprovante enviado com sucesso!")
+                        setPixProofUrl(url);
+                        setIsUploadingProof(false);
+                        toast.success("Comprovante enviado com sucesso!");
                       }
                     }}
                     onUploadError={(error: Error) => {
-                      setIsUploadingProof(false)
-                      toast.error(`Erro ao enviar: ${error.message}`)
+                      setIsUploadingProof(false);
+                      toast.error(`Erro ao enviar: ${error.message}`);
                     }}
                     onUploadBegin={() => {
-                      setIsUploadingProof(true)
+                      setIsUploadingProof(true);
                     }}
                     appearance={{
                       button:
@@ -1864,12 +1942,12 @@ export function FinancialTab(props: CompetitionTabProps) {
               variant="outline"
               className="cursor-pointer rounded-xl"
               onClick={() => {
-                setIsPixDialogOpen(false)
-                setPixAmount("")
-                setUseCustomPixKey(false)
-                setCustomPixKey("")
-                setPixProofUrl("")
-                setIsUploadingProof(false)
+                setIsPixDialogOpen(false);
+                setPixAmount("");
+                setUseCustomPixKey(false);
+                setCustomPixKey("");
+                setPixProofUrl("");
+                setIsUploadingProof(false);
               }}
             >
               Cancelar
@@ -1961,8 +2039,8 @@ export function FinancialTab(props: CompetitionTabProps) {
 
             <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-3">
               <p className="text-xs font-medium text-red-600 dark:text-red-400">
-                ⚠️ Esta ação é irreversível! O valor será debitado
-                imediatamente do saldo da competição.
+                ⚠️ Esta ação é irreversível! O valor será debitado imediatamente
+                do saldo da competição.
               </p>
             </div>
           </div>
@@ -1971,8 +2049,8 @@ export function FinancialTab(props: CompetitionTabProps) {
             <AlertDialogCancel
               className="cursor-pointer rounded-xl"
               onClick={() => {
-                setIsPixConfirmDialogOpen(false)
-                setIsPixDialogOpen(true)
+                setIsPixConfirmDialogOpen(false);
+                setIsPixDialogOpen(true);
               }}
             >
               Voltar
@@ -1981,8 +2059,8 @@ export function FinancialTab(props: CompetitionTabProps) {
               className="cursor-pointer rounded-xl bg-emerald-600 font-semibold text-white hover:bg-emerald-700"
               disabled={sendPixPayment.isPending}
               onClick={(e) => {
-                e.preventDefault()
-                handlePixSend()
+                e.preventDefault();
+                handlePixSend();
               }}
             >
               {sendPixPayment.isPending ? (
@@ -2157,8 +2235,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                       size="sm"
                       className="h-10 cursor-pointer rounded-xl"
                       onClick={() => {
-                        setSelectedClipperFilter("all")
-                        setTransactionTypeFilter("all")
+                        setSelectedClipperFilter("all");
+                        setTransactionTypeFilter("all");
                       }}
                     >
                       <XCircle className="size-4" />
@@ -2172,7 +2250,10 @@ export function FinancialTab(props: CompetitionTabProps) {
               <div className="border-border/60 overflow-hidden rounded-2xl border">
                 {filteredTransactions.length === 0 ? (
                   <div className="text-muted-foreground flex flex-col items-center justify-center py-12">
-                    <Receipt className="mb-4 size-14 opacity-40" weight="fill" />
+                    <Receipt
+                      className="mb-4 size-14 opacity-40"
+                      weight="fill"
+                    />
                     <p className="text-sm font-medium">
                       Nenhuma transação encontrada
                     </p>
@@ -2214,9 +2295,8 @@ export function FinancialTab(props: CompetitionTabProps) {
                     <TableBody>
                       {filteredTransactions.map((tx, index) => {
                         const config =
-                          TX_TABLE_TYPES[tx.type] ??
-                          TX_TABLE_TYPES.ADJUSTMENT!
-                        const TypeIcon = config.icon
+                          TX_TABLE_TYPES[tx.type] ?? TX_TABLE_TYPES.ADJUSTMENT!;
+                        const TypeIcon = config.icon;
                         return (
                           <TableRow key={tx.id} className="hover:bg-muted/40">
                             <TableCell className="text-muted-foreground text-xs font-medium sm:text-sm">
@@ -2317,7 +2397,7 @@ export function FinancialTab(props: CompetitionTabProps) {
                               </Badge>
                             </TableCell>
                           </TableRow>
-                        )
+                        );
                       })}
                     </TableBody>
                   </Table>
@@ -2351,12 +2431,31 @@ export function FinancialTab(props: CompetitionTabProps) {
         </DialogContent>
       </Dialog>
     </div>
-  )
+  );
 }
 
 /* ============================================================
    Blocos auxiliares
    ============================================================ */
+
+function FinancialMobileValue({
+  label,
+  value,
+  className,
+}: {
+  label: string;
+  value: string;
+  className: string;
+}) {
+  return (
+    <div className="bg-muted/40 min-w-0 rounded-xl px-1.5 py-2">
+      <p className="text-muted-foreground text-[10px] font-medium">{label}</p>
+      <p className={cn("truncate text-xs font-bold tabular-nums", className)}>
+        {value}
+      </p>
+    </div>
+  );
+}
 
 function SortableHead({
   label,
@@ -2367,13 +2466,13 @@ function SortableHead({
   onSort,
   activeColor,
 }: {
-  label: string
-  shortLabel: string
-  column: FinancialSortKey
-  sortBy: FinancialSortKey
-  sortDir: "asc" | "desc"
-  onSort: (column: FinancialSortKey) => void
-  activeColor: string
+  label: string;
+  shortLabel: string;
+  column: FinancialSortKey;
+  sortBy: FinancialSortKey;
+  sortDir: "asc" | "desc";
+  onSort: (column: FinancialSortKey) => void;
+  activeColor: string;
 }) {
   return (
     <TableHead
@@ -2405,7 +2504,7 @@ function SortableHead({
         </span>
       </div>
     </TableHead>
-  )
+  );
 }
 
 function ContactTile({
@@ -2415,11 +2514,11 @@ function ContactTile({
   accent,
   mono,
 }: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  accent: string
-  mono?: boolean
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  accent: string;
+  mono?: boolean;
 }) {
   return (
     <div className="border-border/60 bg-muted/20 flex items-center gap-3 rounded-2xl border px-3.5 py-3">
@@ -2435,14 +2534,12 @@ function ContactTile({
         <p className="text-muted-foreground text-[10px] font-semibold tracking-[0.14em] uppercase">
           {label}
         </p>
-        <p
-          className={cn("truncate text-sm font-medium", mono && "font-mono")}
-        >
+        <p className={cn("truncate text-sm font-medium", mono && "font-mono")}>
           {value}
         </p>
       </div>
     </div>
-  )
+  );
 }
 
 function StatTileMini({
@@ -2454,13 +2551,13 @@ function StatTileMini({
   text,
   className,
 }: {
-  icon: React.ReactNode
-  value: string
-  label: string
-  border: string
-  from: string
-  text: string
-  className?: string
+  icon: React.ReactNode;
+  value: string;
+  label: string;
+  border: string;
+  from: string;
+  text: string;
+  className?: string;
 }) {
   return (
     <div
@@ -2484,7 +2581,7 @@ function StatTileMini({
         {label}
       </span>
     </div>
-  )
+  );
 }
 
 function TxStatCard({
@@ -2495,12 +2592,12 @@ function TxStatCard({
   from,
   text,
 }: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  border: string
-  from: string
-  text: string
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  border: string;
+  from: string;
+  text: string;
 }) {
   return (
     <div
@@ -2525,5 +2622,5 @@ function TxStatCard({
         <span className={cn("shrink-0 opacity-50", text)}>{icon}</span>
       </div>
     </div>
-  )
+  );
 }

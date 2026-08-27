@@ -124,7 +124,7 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
       items: [
         { title: "Todas", url: "/competitions" },
         { title: "Relatórios", url: "/competitions/reports" },
-        { title: "Configurações", url: "/competitions/settings" },
+        { title: "Configurações", url: "/settings" },
       ],
     },
     {

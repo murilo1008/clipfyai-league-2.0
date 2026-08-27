@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import * as React from "react"
+import * as React from "react";
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -12,7 +12,7 @@ import {
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
-} from "@tanstack/react-table"
+} from "@tanstack/react-table";
 import {
   ArrowsDownUp,
   CaretDown,
@@ -37,19 +37,22 @@ import {
   UsersThree,
   X,
   XCircle,
-} from "@phosphor-icons/react"
-import { format } from "date-fns"
-import { ptBR } from "date-fns/locale"
-import { toast } from "sonner"
+} from "@phosphor-icons/react";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { toast } from "sonner";
 
-import { ClippersHeroViz, ClippersHeroVizSkeleton } from "@/components/clippers/clippers-hero-viz"
-import { HomeHero } from "@/components/home/home-hero"
-import { StatTile } from "@/components/home/stat-tile"
-import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
-import { Reveal } from "@/components/shared/reveal"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import {
+  ClippersHeroViz,
+  ClippersHeroVizSkeleton,
+} from "@/components/clippers/clippers-hero-viz";
+import { HomeHero } from "@/components/home/home-hero";
+import { StatTile } from "@/components/home/stat-tile";
+import { useMaskedCurrency } from "@/contexts/financial-visibility-context";
+import { Reveal } from "@/components/shared/reveal";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -57,9 +60,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
-import { Bone } from "@/components/shared/skeletons"
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Bone } from "@/components/shared/skeletons";
 import {
   Table,
   TableBody,
@@ -67,29 +70,24 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { platformConfig, type PlatformKey } from "@/lib/platform-config"
-import { cn } from "@/lib/utils"
-import { api } from "@/trpc/react"
-import type { RouterOutputs } from "@/trpc/react"
+} from "@/components/ui/table";
+import { platformConfig, type PlatformKey } from "@/lib/platform-config";
+import { cn } from "@/lib/utils";
+import { api } from "@/trpc/react";
+import type { RouterOutputs } from "@/trpc/react";
 
-import { SeeClipperDialog } from "./see-clipper-dialog"
+import { SeeClipperDialog } from "./see-clipper-dialog";
 
-export type Clipper = RouterOutputs["clipper"]["getAll"][number]
+export type Clipper = RouterOutputs["clipper"]["getAll"][number];
 
 export type ClipperStatus =
   | "VERIFIED"
   | "PENDING"
   | "UNVERIFIED"
   | "REJECTED"
-  | "BANNED"
+  | "BANNED";
 
-type SubscriptionKey =
-  | "ACTIVE"
-  | "TRIAL"
-  | "CANCELLED"
-  | "EXPIRED"
-  | "NONE"
+type SubscriptionKey = "ACTIVE" | "TRIAL" | "CANCELLED" | "EXPIRED" | "NONE";
 
 export const STATUS_CONFIG: Record<
   ClipperStatus,
@@ -127,7 +125,7 @@ export const STATUS_CONFIG: Record<
     badge: "border-red-900/40 bg-red-900/25 text-red-700 dark:text-red-300",
     dot: "bg-red-700",
   },
-}
+};
 
 const SUBSCRIPTION_CONFIG: Record<
   SubscriptionKey,
@@ -159,7 +157,7 @@ const SUBSCRIPTION_CONFIG: Record<
     icon: UserCircle,
     badge: "border-border bg-muted/50 text-muted-foreground",
   },
-}
+};
 
 const COLUMN_LABELS: Record<string, string> = {
   fullName: "Clipador",
@@ -169,10 +167,10 @@ const COLUMN_LABELS: Record<string, string> = {
   totalEarned: "Total Ganho",
   avgEngagementRate: "ER",
   autoScore: "Score",
-}
+};
 
 function displayName(clipper: Clipper) {
-  return clipper.artisticName?.trim() || clipper.fullName
+  return clipper.artisticName?.trim() || clipper.fullName;
 }
 
 function initials(clipper: Clipper) {
@@ -182,31 +180,29 @@ function initials(clipper: Clipper) {
     .filter(Boolean)
     .slice(0, 2)
     .join("")
-    .toUpperCase()
+    .toUpperCase();
 }
 
 /** Célula de ganhos — respeita o olhinho de valores financeiros da topbar. */
 function EarnedCell({ value }: { value: number }) {
-  const { maskBRL } = useMaskedCurrency()
+  const { maskBRL } = useMaskedCurrency();
   if (!value) {
-    return (
-      <span className="text-muted-foreground text-sm">{maskBRL(0)}</span>
-    )
+    return <span className="text-muted-foreground text-sm">{maskBRL(0)}</span>;
   }
   return (
     <span className="inline-flex items-center gap-1 text-sm font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">
       <CurrencyDollar className="size-3.5" weight="bold" />
       {maskBRL(value)}
     </span>
-  )
+  );
 }
 
 function SortHeader({
   label,
   onClick,
 }: {
-  label: string
-  onClick: () => void
+  label: string;
+  onClick: () => void;
 }) {
   return (
     <button
@@ -217,7 +213,7 @@ function SortHeader({
       {label}
       <ArrowsDownUp className="size-3.5" />
     </button>
-  )
+  );
 }
 
 function createColumns(
@@ -235,7 +231,7 @@ function createColumns(
         />
       ),
       cell: ({ row }) => {
-        const clipper = row.original
+        const clipper = row.original;
         return (
           <div className="flex min-w-0 items-center gap-3">
             <Avatar className="size-10 shrink-0 rounded-xl">
@@ -264,7 +260,7 @@ function createColumns(
               </p>
             </div>
           </div>
-        )
+        );
       },
     },
     {
@@ -273,9 +269,9 @@ function createColumns(
         (row.user.subscriptionStatus ?? "NONE") as SubscriptionKey,
       header: "Assinatura",
       cell: ({ getValue }) => {
-        const key = getValue<SubscriptionKey>()
-        const config = SUBSCRIPTION_CONFIG[key] ?? SUBSCRIPTION_CONFIG.NONE
-        const Icon = config.icon
+        const key = getValue<SubscriptionKey>();
+        const config = SUBSCRIPTION_CONFIG[key] ?? SUBSCRIPTION_CONFIG.NONE;
+        const Icon = config.icon;
         return (
           <Badge
             variant="outline"
@@ -284,29 +280,29 @@ function createColumns(
             <Icon className="size-3" weight="fill" />
             {config.label}
           </Badge>
-        )
+        );
       },
     },
     {
       id: "platforms",
       header: "Plataformas / Local",
       cell: ({ row }) => {
-        const clipper = row.original
+        const clipper = row.original;
         const counts = clipper.socialAccounts.reduce<Record<string, number>>(
           (acc, account) => {
-            acc[account.platform] = (acc[account.platform] ?? 0) + 1
-            return acc
+            acc[account.platform] = (acc[account.platform] ?? 0) + 1;
+            return acc;
           },
           {},
-        )
-        const hasLocation = clipper.city || clipper.state
+        );
+        const hasLocation = clipper.city || clipper.state;
         return (
           <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-1">
               {Object.entries(counts).map(([platform, count]) => {
-                const config = platformConfig[platform as PlatformKey]
-                if (!config) return null
-                const PlatformIcon = config.icon
+                const config = platformConfig[platform as PlatformKey];
+                if (!config) return null;
+                const PlatformIcon = config.icon;
                 return (
                   <span
                     key={platform}
@@ -319,7 +315,7 @@ function createColumns(
                     <PlatformIcon className="size-3.5" />
                     {count > 1 && count}
                   </span>
-                )
+                );
               })}
               {clipper.socialAccounts.length === 0 && (
                 <span className="text-muted-foreground text-xs">—</span>
@@ -332,7 +328,7 @@ function createColumns(
               </span>
             )}
           </div>
-        )
+        );
       },
     },
     {
@@ -341,21 +337,18 @@ function createColumns(
       cell: ({ row }) => {
         const status =
           STATUS_CONFIG[row.original.verificationStatus as ClipperStatus] ??
-          STATUS_CONFIG.UNVERIFIED
+          STATUS_CONFIG.UNVERIFIED;
         return (
           <Badge
             variant="outline"
             className={cn("gap-1.5 rounded-full", status.badge)}
           >
             <span
-              className={cn(
-                "size-1.5 animate-pulse rounded-full",
-                status.dot,
-              )}
+              className={cn("size-1.5 animate-pulse rounded-full", status.dot)}
             />
             {status.label}
           </Badge>
-        )
+        );
       },
     },
     {
@@ -378,16 +371,16 @@ function createColumns(
         />
       ),
       cell: ({ row }) => {
-        const er = row.original.avgEngagementRate
+        const er = row.original.avgEngagementRate;
         if (er == null) {
-          return <span className="text-muted-foreground text-xs">N/A</span>
+          return <span className="text-muted-foreground text-xs">N/A</span>;
         }
         return (
           <span className="inline-flex items-center gap-1 text-sm font-semibold text-pink-500 tabular-nums">
             <ChartLineUp className="size-3.5" weight="bold" />
             {er.toFixed(1)}%
           </span>
-        )
+        );
       },
     },
     {
@@ -399,9 +392,9 @@ function createColumns(
         />
       ),
       cell: ({ row }) => {
-        const score = row.original.autoScore
+        const score = row.original.autoScore;
         if (score == null) {
-          return <span className="text-muted-foreground text-xs">N/A</span>
+          return <span className="text-muted-foreground text-xs">N/A</span>;
         }
         return (
           <span
@@ -417,7 +410,7 @@ function createColumns(
             <Sparkle className="size-3.5" weight="fill" />
             {score.toFixed(1)}
           </span>
-        )
+        );
       },
     },
     {
@@ -425,7 +418,7 @@ function createColumns(
       header: () => <span className="sr-only">Ações</span>,
       enableHiding: false,
       cell: ({ row }) => {
-        const clipper = row.original
+        const clipper = row.original;
         return (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -463,10 +456,10 @@ function createColumns(
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        )
+        );
       },
     },
-  ]
+  ];
 }
 
 /**
@@ -479,13 +472,13 @@ function ClipperRowSkeleton({
   columnIds,
   delay,
 }: {
-  columnIds: string[]
-  delay: number
+  columnIds: string[];
+  delay: number;
 }) {
   return (
     <TableRow className="border-border/40 hover:bg-transparent">
       {columnIds.map((columnId, cellIndex) => {
-        const cellDelay = delay + cellIndex * 60
+        const cellDelay = delay + cellIndex * 60;
         return (
           <TableCell key={columnId} className="px-4 py-3.5 align-middle">
             {columnId === "fullName" ? (
@@ -524,88 +517,105 @@ function ClipperRowSkeleton({
               <Bone delay={cellDelay} className="h-4 w-16" />
             )}
           </TableCell>
-        )
+        );
       })}
     </TableRow>
-  )
+  );
+}
+
+function EmptyClippersState() {
+  return (
+    <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+      <span className="bg-gradient-custom flex size-12 items-center justify-center rounded-2xl text-[#04222A]">
+        <UsersThree className="size-6" weight="fill" />
+      </span>
+      <div>
+        <p className="text-sm font-bold">Nenhum clipador encontrado</p>
+        <p className="text-muted-foreground mt-1 text-xs">
+          Tente ajustar seus filtros de busca
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export default function Clippers() {
-  const utils = api.useUtils()
+  const utils = api.useUtils();
 
-  const [search, setSearch] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<
-    ClipperStatus | "ALL"
-  >("ALL")
+  const [search, setSearch] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState<ClipperStatus | "ALL">(
+    "ALL",
+  );
   const [subscriptionFilter, setSubscriptionFilter] = React.useState<
     SubscriptionKey | "ALL"
-  >("ALL")
+  >("ALL");
 
   const { data: clippers, isLoading: loadingClippers } =
-    api.clipper.getAll.useQuery({ status: statusFilter, search })
+    api.clipper.getAll.useQuery({ status: statusFilter, search });
   const { data: stats, isLoading: loadingStats } =
-    api.clipper.getStats.useQuery()
+    api.clipper.getStats.useQuery();
 
   const [selectedClipper, setSelectedClipper] = React.useState<Clipper | null>(
     null,
-  )
-  const [isProfileOpen, setIsProfileOpen] = React.useState(false)
+  );
+  const [isProfileOpen, setIsProfileOpen] = React.useState(false);
 
   const invalidate = () => {
-    void utils.clipper.getAll.invalidate()
-    void utils.clipper.getStats.invalidate()
-  }
+    void utils.clipper.getAll.invalidate();
+    void utils.clipper.getStats.invalidate();
+  };
 
   const verifyMutation = api.clipper.verify.useMutation({
     onSuccess: () => {
-      toast.success("Clipador verificado com sucesso!")
-      invalidate()
+      toast.success("Clipador verificado com sucesso!");
+      invalidate();
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao verificar clipador"),
-  })
+  });
 
   const rejectMutation = api.clipper.reject.useMutation({
     onSuccess: () => {
-      toast.success("Clipador rejeitado")
-      invalidate()
+      toast.success("Clipador rejeitado");
+      invalidate();
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao rejeitar clipador"),
-  })
+  });
 
   const tableData = React.useMemo(() => {
-    const list = clippers ?? []
-    if (subscriptionFilter === "ALL") return list
+    const list = clippers ?? [];
+    if (subscriptionFilter === "ALL") return list;
     return list.filter(
       (clipper) =>
         ((clipper.user.subscriptionStatus ?? "NONE") as SubscriptionKey) ===
         subscriptionFilter,
-    )
-  }, [clippers, subscriptionFilter])
+    );
+  }, [clippers, subscriptionFilter]);
 
   const columns = React.useMemo(
     () =>
       createColumns(
         (clipper) => {
-          setSelectedClipper(clipper)
-          setIsProfileOpen(true)
+          setSelectedClipper(clipper);
+          setIsProfileOpen(true);
         },
         (id) => verifyMutation.mutate({ id }),
         (id) => rejectMutation.mutate({ id }),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
-  )
+  );
 
-  const [sorting, setSorting] = React.useState<SortingState>([])
-  const [columnFilters, setColumnFilters] =
-    React.useState<ColumnFiltersState>([])
+  const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
+    [],
+  );
   const [columnVisibility, setColumnVisibility] =
     React.useState<VisibilityState>({
       avgEngagementRate: false,
       autoScore: false,
-    })
+    });
 
   const table = useReactTable({
     data: tableData,
@@ -619,15 +629,15 @@ export default function Clippers() {
     getFilteredRowModel: getFilteredRowModel(),
     state: { sorting, columnFilters, columnVisibility },
     initialState: { pagination: { pageSize: 10 } },
-  })
+  });
 
   const copyVerifiedClippers = () => {
     const verified = tableData.filter(
       (clipper) => clipper.verificationStatus === "VERIFIED",
-    )
+    );
     if (verified.length === 0) {
-      toast.error("Nenhum clipador aprovado encontrado")
-      return
+      toast.error("Nenhum clipador aprovado encontrado");
+      return;
     }
     const text = verified
       .map((clipper) =>
@@ -639,10 +649,10 @@ export default function Clippers() {
           `Chave PIX: ${clipper.pixKey || "—"}`,
         ].join("\n"),
       )
-      .join("\n\n---\n\n")
-    void navigator.clipboard.writeText(text)
-    toast.success(`${verified.length} clipadores aprovados copiados!`)
-  }
+      .join("\n\n---\n\n");
+    void navigator.clipboard.writeText(text);
+    toast.success(`${verified.length} clipadores aprovados copiados!`);
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8">
@@ -837,8 +847,8 @@ export default function Clippers() {
                 <DropdownMenuSeparator />
                 {(Object.keys(SUBSCRIPTION_CONFIG) as SubscriptionKey[]).map(
                   (key) => {
-                    const config = SUBSCRIPTION_CONFIG[key]
-                    const Icon = config.icon
+                    const config = SUBSCRIPTION_CONFIG[key];
+                    const Icon = config.icon;
                     return (
                       <DropdownMenuItem
                         key={key}
@@ -858,7 +868,7 @@ export default function Clippers() {
                           />
                         )}
                       </DropdownMenuItem>
-                    )
+                    );
                   },
                 )}
               </DropdownMenuContent>
@@ -909,7 +919,125 @@ export default function Clippers() {
       {/* ===== Data Table ===== */}
       <Reveal immediate delayMs={120}>
         <div className="glass-card overflow-hidden rounded-3xl">
-          <div className="overflow-x-auto">
+          <div className="space-y-3 p-3.5 lg:hidden">
+            {loadingClippers ? (
+              Array.from({ length: 4 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="border-border/60 flex flex-col gap-3 rounded-2xl border p-3.5"
+                >
+                  <div className="flex items-center gap-3">
+                    <Bone delay={index * 80} className="size-10 rounded-xl" />
+                    <div className="flex flex-1 flex-col gap-1.5">
+                      <Bone delay={index * 80 + 40} className="h-3.5 w-32" />
+                      <Bone
+                        delay={index * 80 + 80}
+                        className="h-2.5 w-24 rounded-full"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Bone
+                      delay={index * 80 + 120}
+                      className="h-14 rounded-xl"
+                    />
+                    <Bone
+                      delay={index * 80 + 160}
+                      className="h-14 rounded-xl"
+                    />
+                  </div>
+                </div>
+              ))
+            ) : table.getRowModel().rows.length === 0 ? (
+              <EmptyClippersState />
+            ) : (
+              table.getRowModel().rows.map((row) => {
+                const clipper = row.original;
+                const subscription =
+                  SUBSCRIPTION_CONFIG[
+                    (clipper.user.subscriptionStatus ??
+                      "NONE") as SubscriptionKey
+                  ] ?? SUBSCRIPTION_CONFIG.NONE;
+                const status =
+                  STATUS_CONFIG[clipper.verificationStatus as ClipperStatus] ??
+                  STATUS_CONFIG.UNVERIFIED;
+                const SubscriptionIcon = subscription.icon;
+                const actionsCell = row
+                  .getVisibleCells()
+                  .find((cell) => cell.column.id === "actions");
+
+                return (
+                  <article
+                    key={row.id}
+                    className="border-border/60 bg-muted/10 flex flex-col gap-3 rounded-2xl border p-3.5"
+                  >
+                    <div className="flex min-w-0 items-start gap-3">
+                      <Avatar className="size-10 shrink-0 rounded-xl">
+                        <AvatarImage
+                          src={clipper.user.imageUrl ?? undefined}
+                          alt={displayName(clipper)}
+                        />
+                        <AvatarFallback className="bg-gradient-custom rounded-xl text-xs font-bold text-[#04222A]">
+                          {initials(clipper)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold">
+                          {displayName(clipper)}
+                        </p>
+                        <p className="text-muted-foreground truncate text-xs">
+                          {clipper.user.email}
+                        </p>
+                      </div>
+                      {actionsCell &&
+                        flexRender(
+                          actionsCell.column.columnDef.cell,
+                          actionsCell.getContext(),
+                        )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className={cn("gap-1 rounded-full", subscription.badge)}
+                      >
+                        <SubscriptionIcon className="size-3" weight="fill" />
+                        {subscription.label}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className={cn("gap-1.5 rounded-full", status.badge)}
+                      >
+                        <span
+                          className={cn("size-1.5 rounded-full", status.dot)}
+                        />
+                        {status.label}
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-muted/40 rounded-xl px-3 py-2">
+                        <p className="text-muted-foreground text-[10px] font-medium">
+                          Plataformas
+                        </p>
+                        <p className="text-sm font-bold">
+                          {clipper.socialAccounts.length}
+                        </p>
+                      </div>
+                      <div className="bg-muted/40 min-w-0 rounded-xl px-3 py-2">
+                        <p className="text-muted-foreground text-[10px] font-medium">
+                          Total ganho
+                        </p>
+                        <EarnedCell value={clipper.wallet?.totalEarned ?? 0} />
+                      </div>
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
+
+          <div className="hidden overflow-x-auto lg:block">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -968,8 +1096,8 @@ export default function Clippers() {
                       key={row.id}
                       className="border-border/40 hover:bg-muted/30 cursor-pointer transition-colors"
                       onClick={() => {
-                        setSelectedClipper(row.original)
-                        setIsProfileOpen(true)
+                        setSelectedClipper(row.original);
+                        setIsProfileOpen(true);
                       }}
                     >
                       {row.getVisibleCells().map((cell) => (
@@ -998,8 +1126,7 @@ export default function Clippers() {
           {/* Paginação */}
           <div className="border-border/60 flex flex-col items-center justify-between gap-3 border-t px-4 py-3.5 sm:flex-row">
             <p className="text-muted-foreground text-xs">
-              {table.getFilteredRowModel().rows.length} clipadores ·{" "}
-              Página{" "}
+              {table.getFilteredRowModel().rows.length} clipadores · Página{" "}
               <span className="text-foreground font-semibold">
                 {table.getState().pagination.pageIndex + 1}
               </span>{" "}
@@ -1035,10 +1162,10 @@ export default function Clippers() {
         clipper={selectedClipper}
         open={isProfileOpen}
         onOpenChange={(open) => {
-          setIsProfileOpen(open)
-          if (!open) setSelectedClipper(null)
+          setIsProfileOpen(open);
+          if (!open) setSelectedClipper(null);
         }}
       />
     </div>
-  )
+  );
 }
