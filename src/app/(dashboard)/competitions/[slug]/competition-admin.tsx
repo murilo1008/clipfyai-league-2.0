@@ -736,7 +736,7 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
       {/* ===== Tabs ===== */}
       <Reveal immediate delayMs={120}>
         <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
-          <TabsList className="bg-muted/40 grid h-auto w-full grid-cols-3 gap-1 rounded-2xl p-1 lg:grid-cols-6">
+          <TabsList className="bg-muted/40 grid min-h-20 w-full grid-cols-3 gap-1 rounded-2xl p-1 lg:min-h-0 lg:grid-cols-6">
             {TABS.map((tab) => {
               const TabIcon = tab.icon
               return (

@@ -510,25 +510,27 @@ export function SeeClipperDialog({
 
             {/* ===== Tabs ===== */}
             <Tabs defaultValue="overview" className="w-full">
-              <TabsList className="bg-muted/40 flex h-auto w-full flex-wrap justify-start gap-1 rounded-2xl p-1">
-                {[
-                  { value: "overview", label: "Visão Geral" },
-                  { value: "personal", label: "Dados Pessoais" },
-                  { value: "social", label: "Plataformas" },
-                  { value: "performance", label: "Desempenho" },
-                  { value: "portfolio", label: "Portfólio" },
-                  { value: "terms", label: "Termos" },
-                  { value: "wallet", label: "Carteira" },
-                ].map((tab) => (
-                  <TabsTrigger
-                    key={tab.value}
-                    value={tab.value}
-                    className="cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold"
-                  >
-                    {tab.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
+              <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
+                <TabsList className="bg-muted/40 flex h-auto w-max flex-nowrap justify-start gap-1 rounded-2xl p-1">
+                  {[
+                    { value: "overview", label: "Visão Geral" },
+                    { value: "personal", label: "Dados Pessoais" },
+                    { value: "social", label: "Plataformas" },
+                    { value: "performance", label: "Desempenho" },
+                    { value: "portfolio", label: "Portfólio" },
+                    { value: "terms", label: "Termos" },
+                    { value: "wallet", label: "Carteira" },
+                  ].map((tab) => (
+                    <TabsTrigger
+                      key={tab.value}
+                      value={tab.value}
+                      className="flex-none cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold"
+                    >
+                      {tab.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
 
               {/* ===== Visão Geral ===== */}
               <TabsContent value="overview" className="mt-4 flex flex-col gap-4">
