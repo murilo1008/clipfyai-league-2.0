@@ -2027,7 +2027,11 @@ export const clipperRouter = createTRPCRouter({
       return clipperProfile.socialAccounts;
     } catch (error) {
       console.error("Erro ao buscar contas sociais:", error);
-      return [];
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Não foi possível carregar as contas sociais.",
+        cause: error,
+      });
     }
   }),
 

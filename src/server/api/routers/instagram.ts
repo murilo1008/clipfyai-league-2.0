@@ -44,7 +44,14 @@ async function leagueFetch<T>(
   });
 
   const text = await response.text();
-  const data: unknown = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
 
   if (!response.ok) {
     const errorBody = (data ?? {}) as LeagueErrorBody;
@@ -55,6 +62,29 @@ async function leagueFetch<T>(
         errorBody.message ??
         errorBody.error ??
         `Erro ao comunicar com a integração Instagram (${response.status})`,
+    });
+  }
+
+  if (text && data === null) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "A integração Instagram retornou uma resposta inválida",
+    });
+  }
+
+  if (
+    data &&
+    typeof data === "object" &&
+    "success" in data &&
+    data.success === false
+  ) {
+    const errorBody = data as LeagueErrorBody;
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        errorBody.message ??
+        errorBody.error ??
+        "A integração Instagram informou uma falha",
     });
   }
 

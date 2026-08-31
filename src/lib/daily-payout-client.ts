@@ -10,6 +10,16 @@ export class DailyPayoutConfigError extends Error {
   }
 }
 
+export class DailyPayoutHttpError extends Error {
+  constructor(
+    public readonly path: string,
+    public readonly status: number,
+  ) {
+    super(`Serviço de payout indisponível (HTTP ${status}).`);
+    this.name = "DailyPayoutHttpError";
+  }
+}
+
 export function requireDailyPayoutConfig(): {
   baseUrl: string;
   internalKey: string;
@@ -34,15 +44,13 @@ async function postJson<T>(path: string, body: JsonPostBody): Promise<T> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `${internalKey}`,
+      Authorization: `Bearer ${internalKey}`,
     },
     body: JSON.stringify(body),
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(
-      `Daily payout ${path}: HTTP ${res.status} — ${text.slice(0, 500)}`,
-    );
+    throw new DailyPayoutHttpError(path, res.status);
   }
   try {
     return JSON.parse(text) as T;

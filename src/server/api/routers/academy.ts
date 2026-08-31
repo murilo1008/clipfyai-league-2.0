@@ -495,7 +495,7 @@ export const academyRouter = createTRPCRouter({
         });
         const nextOrder = (maxOrder._max.order || 0) + 1;
 
-        const module = await ctx.db.academyModule.create({
+        const createdModule = await ctx.db.academyModule.create({
           data: {
             title: input.title,
             slug,
@@ -507,13 +507,13 @@ export const academyRouter = createTRPCRouter({
         });
 
         return {
-          id: module.id,
-          title: module.title,
-          slug: module.slug,
-          description: module.description,
-          coverImageUrl: module.coverImageUrl,
-          order: module.order,
-          isPublished: module.isPublished,
+          id: createdModule.id,
+          title: createdModule.title,
+          slug: createdModule.slug,
+          description: createdModule.description,
+          coverImageUrl: createdModule.coverImageUrl,
+          order: createdModule.order,
+          isPublished: createdModule.isPublished,
         };
       } catch (error: any) {
         console.error("Erro ao criar módulo:", error);
@@ -541,7 +541,7 @@ export const academyRouter = createTRPCRouter({
         const { id, ...data } = input;
 
         // Se título mudou, atualizar slug
-        let updateData: any = { ...data };
+        const updateData: any = { ...data };
         if (data.title) {
           const baseSlug = data.title
             .toLowerCase()
@@ -564,12 +564,12 @@ export const academyRouter = createTRPCRouter({
           updateData.slug = slug;
         }
 
-        const module = await ctx.db.academyModule.update({
+        const updatedModule = await ctx.db.academyModule.update({
           where: { id },
           data: updateData,
         });
 
-        return module;
+        return updatedModule;
       } catch (error: any) {
         console.error("Erro ao atualizar módulo:", error);
         throw new TRPCError({
@@ -604,11 +604,11 @@ export const academyRouter = createTRPCRouter({
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const module = await ctx.db.academyModule.findUnique({
+        const existingModule = await ctx.db.academyModule.findUnique({
           where: { id: input.id },
         });
 
-        if (!module) {
+        if (!existingModule) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Módulo não encontrado",
@@ -617,7 +617,7 @@ export const academyRouter = createTRPCRouter({
 
         const updated = await ctx.db.academyModule.update({
           where: { id: input.id },
-          data: { isPublished: !module.isPublished },
+          data: { isPublished: !existingModule.isPublished },
         });
 
         return updated;
@@ -802,11 +802,11 @@ export const academyRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       try {
         // Verificar se módulo existe
-        const module = await ctx.db.academyModule.findUnique({
+        const existingModule = await ctx.db.academyModule.findUnique({
           where: { id: input.moduleId },
         });
 
-        if (!module) {
+        if (!existingModule) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Módulo não encontrado",
@@ -889,7 +889,7 @@ export const academyRouter = createTRPCRouter({
       try {
         const { id, ...data } = input;
 
-        let updateData: any = { ...data };
+        const updateData: any = { ...data };
 
         // Se título mudou, atualizar slug
         if (data.title) {
@@ -1338,4 +1338,3 @@ export const academyRouter = createTRPCRouter({
     }
   }),
 });
-

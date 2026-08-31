@@ -1,11 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { RankingMetricType, TransactionStatus } from "@prisma/client";
 
-export const PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID =
-  "cmikjms9b000nlb04d28rwj63";
-
 function amountsClose(a: number, b: number) {
-  return Math.abs(a - b) < 0.01;
+  return Math.round(a * 100) === Math.round(b * 100);
 }
 
 export interface PrizeTableEntry {
@@ -31,6 +28,7 @@ export interface DailyRankPreviewRowRaw {
   fullName: string;
   artisticName: string | null;
   pixKey: string | null;
+  pixPayoutEligible: boolean;
   platform: string | null;
   thumbnailUrl: string | null;
 }
@@ -48,78 +46,84 @@ function getDefaultPrizeTable(): PrizeTableEntry[] {
  * Parseia a tabela de prêmios do RankingRule (JSON string, objeto ou array).
  */
 export function parsePrizeTable(prizeTable: unknown): PrizeTableEntry[] {
-  if (!prizeTable) {
+  if (prizeTable === null || prizeTable === undefined || prizeTable === "") {
     return getDefaultPrizeTable();
   }
 
-  try {
-    let parsed: unknown = prizeTable;
-    if (typeof prizeTable === "string") {
+  let parsed: unknown = prizeTable;
+  if (typeof prizeTable === "string") {
+    try {
       parsed = JSON.parse(prizeTable) as unknown;
+    } catch {
+      throw new Error("Tabela de prêmios não contém JSON válido.");
     }
-
-    if (Array.isArray(parsed)) {
-      return parsed.map((entry: Record<string, unknown>, index: number) => ({
-        position: Number(entry.position ?? entry.pos ?? index + 1),
-        prize: Number(entry.prize ?? entry.value ?? entry.amount ?? 0),
-      }));
-    }
-
-    if (typeof parsed === "object" && parsed !== null) {
-      const result: PrizeTableEntry[] = [];
-
-      for (const [key, value] of Object.entries(parsed)) {
-        const prize = typeof value === "number" ? value : 0;
-
-        if (key.includes("-")) {
-          const parts = key.split("-").map((n) => parseInt(n, 10));
-          const start = parts[0];
-          const end = parts[1];
-          if (
-            start !== undefined &&
-            end !== undefined &&
-            !Number.isNaN(start) &&
-            !Number.isNaN(end) &&
-            start <= end
-          ) {
-            for (let pos = start; pos <= end; pos++) {
-              result.push({ position: pos, prize });
-            }
-          }
-        } else {
-          const position = parseInt(key, 10);
-          if (!isNaN(position)) {
-            result.push({ position, prize });
-          }
-        }
-      }
-
-      return result.sort((a, b) => a.position - b.position);
-    }
-  } catch {
-    // fall through
   }
 
-  return getDefaultPrizeTable();
+  const result: PrizeTableEntry[] = [];
+  const addEntry = (rawPosition: unknown, rawPrize: unknown) => {
+    const position = Number(rawPosition);
+    const prize = Number(rawPrize);
+    if (!Number.isSafeInteger(position) || position <= 0) {
+      throw new Error(`Posição de prêmio inválida: ${String(rawPosition)}`);
+    }
+    if (typeof rawPrize !== "number" || !Number.isFinite(prize) || prize < 0) {
+      throw new Error(`Valor de prêmio inválido para a posição ${position}.`);
+    }
+    if (result.some((entry) => entry.position === position)) {
+      throw new Error(`A posição ${position} está duplicada na tabela de prêmios.`);
+    }
+    result.push({ position, prize: Math.round(prize * 100) / 100 });
+  };
+
+  if (Array.isArray(parsed)) {
+    parsed.forEach((raw, index) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error(`Entrada inválida na posição ${index + 1}.`);
+      }
+      const entry = raw as Record<string, unknown>;
+      addEntry(
+        entry.position ?? entry.pos ?? index + 1,
+        entry.prize ?? entry.value ?? entry.amount,
+      );
+    });
+  } else if (typeof parsed === "object" && parsed !== null) {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (key.includes("-")) {
+        const [rawStart, rawEnd, ...rest] = key.split("-");
+        const start = Number(rawStart);
+        const end = Number(rawEnd);
+        if (
+          rest.length > 0 ||
+          !Number.isSafeInteger(start) ||
+          !Number.isSafeInteger(end) ||
+          start <= 0 ||
+          end <= 0 ||
+          start > end
+        ) {
+          throw new Error(`Faixa de posições inválida: ${key}`);
+        }
+        for (let position = start; position <= end; position += 1) {
+          addEntry(position, value);
+        }
+      } else {
+        addEntry(key, value);
+      }
+    }
+  } else {
+    throw new Error("Formato de tabela de prêmios inválido.");
+  }
+
+  if (result.length === 0) {
+    throw new Error("A tabela de prêmios não pode estar vazia.");
+  }
+  return result.sort((left, right) => left.position - right.position);
 }
 
 export function getPrizeForPosition(
   prizeTable: PrizeTableEntry[],
   position: number,
 ): number {
-  const entry = prizeTable.find((p) => p.position === position);
-  if (entry) {
-    return entry.prize;
-  }
-
-  const sortedTable = [...prizeTable].sort((a, b) => b.position - a.position);
-  const lastEntry = sortedTable[0];
-
-  if (lastEntry && position > lastEntry.position) {
-    return 20;
-  }
-
-  return 0;
+  return prizeTable.find((entry) => entry.position === position)?.prize ?? 0;
 }
 
 /** YYYY-MM-DD como dia civil UTC */
@@ -214,6 +218,7 @@ export async function fetchDailyRankPreviewByViews(
         cp2."fullName",
         cp2."artisticName",
         cp2."pixKey",
+        cp2."pixPayoutEligible",
         CASE
           WHEN e."views" > 0 THEN
             TRUNC(
@@ -260,7 +265,8 @@ export async function fetchDailyRankPreviewByViews(
       "clipperProfileId",
       "fullName",
       "artisticName",
-      "pixKey"
+      "pixKey",
+      "pixPayoutEligible"
     FROM joined
   `;
 }
@@ -313,6 +319,7 @@ export async function fetchDailyRankPreviewByEngagement(
         cp2."fullName",
         cp2."artisticName",
         cp2."pixKey",
+        cp2."pixPayoutEligible",
         CASE
           WHEN e."views" > 0 THEN
             TRUNC(
@@ -359,7 +366,8 @@ export async function fetchDailyRankPreviewByEngagement(
       "clipperProfileId",
       "fullName",
       "artisticName",
-      "pixKey"
+      "pixKey",
+      "pixPayoutEligible"
     FROM joined
   `;
 }
@@ -1012,8 +1020,7 @@ export async function computeDailyPixPayoutSettledGate(
     }))
     .filter(
       (entry) =>
-        entry.expectedPrize > 0 &&
-        entry.row.clipperProfileId !== PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
+        entry.expectedPrize > 0 && entry.row.pixPayoutEligible,
     );
 
   const isSettledEntry = (entry: {

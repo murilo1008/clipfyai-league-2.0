@@ -35,7 +35,14 @@ async function leagueFetch<T>(
   });
 
   const text = await response.text();
-  const data: unknown = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
 
   if (!response.ok) {
     const payload = (data ?? {}) as { message?: string; error?: string };
@@ -46,6 +53,29 @@ async function leagueFetch<T>(
         payload.message ??
         payload.error ??
         `Erro ao comunicar com a integração TikTok (${response.status})`,
+    });
+  }
+
+  if (text && data === null) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "A integração TikTok retornou uma resposta inválida",
+    });
+  }
+
+  if (
+    data &&
+    typeof data === "object" &&
+    "success" in data &&
+    data.success === false
+  ) {
+    const payload = data as { message?: string; error?: string };
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        payload.message ??
+        payload.error ??
+        "A integração TikTok informou uma falha",
     });
   }
 

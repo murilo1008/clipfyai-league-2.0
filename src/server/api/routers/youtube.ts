@@ -67,6 +67,29 @@ async function leagueFetch<T>(
     });
   }
 
+  if (text && data === null) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "A integração YouTube retornou uma resposta inválida",
+    });
+  }
+
+  if (
+    data &&
+    typeof data === "object" &&
+    "success" in data &&
+    data.success === false
+  ) {
+    const errorBody = data as LeagueErrorBody;
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        errorBody.message ??
+        errorBody.error ??
+        "A integração YouTube informou uma falha",
+    });
+  }
+
   return data as T;
 }
 

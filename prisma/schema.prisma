@@ -99,6 +99,9 @@ model User {
   blogPostLikes    BlogPostLike[]
   blogCommentLikes BlogCommentLike[]
 
+  // AI Clips
+  AiClipProject AiClipProject[]
+
   @@index([email])
   @@index([role])
   @@index([referredByClipperId])
@@ -583,16 +586,17 @@ model ClipperProfile {
   affiliateCode String? @unique
 
   // Identificação
-  fullName        String
-  artisticName    String?
-  phone           String  @default("")
-  cpf             String  @default("")
-  pixKey          String  @default("")
-  country         String  @default("Brasil")
-  state           String  @default("")
-  city            String  @default("")
-  discordUsername String  @default("") // Username do Discord (ex: @usuario)
-  discordId       String  @default("") // ID do Discord (números)
+  fullName          String
+  artisticName      String?
+  phone             String  @default("")
+  cpf               String  @default("")
+  pixKey            String  @default("")
+  pixPayoutEligible Boolean @default(true)
+  country           String  @default("Brasil")
+  state             String  @default("")
+  city              String  @default("")
+  discordUsername   String  @default("") // Username do Discord (ex: @usuario)
+  discordId         String  @default("") // ID do Discord (números)
 
   // Clã (opcional)
   clanId String?
@@ -969,6 +973,27 @@ enum YouTubeAuthStatus {
   ERROR
 }
 
+enum OAuthProvider {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+}
+
+/// One-time server-side record for an OAuth authorization attempt. The signed
+/// state carries the nonce, while this record prevents replay across processes.
+model OAuthState {
+  id              String        @id @default(cuid())
+  provider        OAuthProvider
+  nonce           String        @unique
+  socialAccountId String
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@index([provider, expiresAt])
+  @@index([socialAccountId])
+}
+
 model YouTubeAuth {
   id              String @id @default(cuid())
   socialAccountId String @unique
@@ -979,7 +1004,7 @@ model YouTubeAuth {
   scope        String
   expiresAt    DateTime
 
-  channelId    String?
+  channelId    String? @unique
   channelTitle String?
   channelUrl   String?
   thumbnailUrl String?
@@ -2118,14 +2143,17 @@ model WebhookDelivery {
 }
 
 model AsaasWebhookEvent {
-  id          String    @id @default(cuid())
-  eventId     String    @unique
-  eventType   String?
-  transferId  String?
-  payload     Json
-  processedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                  String    @id @default(cuid())
+  eventId             String    @unique
+  eventType           String?
+  transferId          String?
+  payload             Json
+  processingStartedAt DateTime?
+  attempts            Int       @default(0)
+  lastError           String?   @db.Text
+  processedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@index([transferId])
   @@index([eventType])
@@ -2149,6 +2177,7 @@ enum NotificationType {
   FRAUD_FLAG_OPENED
   FRAUD_FLAG_RESOLVED
   METRICS_MILESTONE
+  PIX_PAYMENT_COMPLETED
   SYSTEM_ALERT
 }
 
@@ -2166,10 +2195,13 @@ model Notification {
   channel NotificationChannel @default(IN_APP)
 
   // Conteúdo
-  title     String
-  message   String
-  actionUrl String?
-  metadata  Json?
+  title          String
+  message        String
+  actionUrl      String?
+  metadata       Json?
+  idempotencyKey String?   @unique
+  emailSentAt    DateTime?
+  emailLastError String?   @db.Text
 
   // Status
   isRead Boolean   @default(false)
@@ -2421,6 +2453,7 @@ model Transaction {
   campaignId      String? // Campanha relacionada (se aplicável)
   clipPostId      String? // Post relacionado (se aplicável)
   rankingPosition Int? // Posição no ranking (se prêmio)
+  idempotencyKey  String? @unique // Chave para evitar duplicidade em fluxos externos/reprocessáveis
 
   // Dados de saque (quando aplicável)
   withdrawalMethod  WithdrawalMethod?
@@ -3517,7 +3550,7 @@ model InstagramAuth {
   scope       String?
   expiresAt   DateTime
 
-  igUserId          String
+  igUserId          String  @unique
   username          String
   accountType       String
   profilePictureUrl String?
@@ -3719,4 +3752,200 @@ model InstagramComment {
   @@index([timestamp])
   @@index([sentimentLabel])
   @@index([username])
+}
+
+// ============================================================================
+// AI CLIPS
+// ============================================================================
+
+enum AiClipMomentStatus {
+  SELECTED
+  DISCARDED_DUPLICATE
+  DISCARDED_INVALID
+}
+
+enum AiClipProjectStatus {
+  PENDING_UPLOAD
+  QUEUED
+  INGESTING
+  TRANSCRIBING
+  ANALYZING
+  RENDERING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+  CANCELLED
+}
+
+enum AiClipRenderMode {
+  FACE_TRACK
+  BLUR_BACKGROUND
+}
+
+enum AiClipSourceType {
+  URL
+  UPLOAD
+}
+
+enum AiClipStatus {
+  PENDING
+  QUEUED
+  RENDERING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum AiClipTranscriptProvider {
+  GROQ
+  OPENAI
+}
+
+model AiClipProject {
+  id                   String              @id
+  userId               String
+  sourceType           AiClipSourceType
+  sourceUrl            String?             @db.VarChar(4096)
+  sourcePlatform       String?
+  uploadGcsUri         String?
+  uploadFileName       String?             @db.VarChar(512)
+  uploadContentType    String?
+  uploadExpiresAt      DateTime?
+  sourceGcsUri         String?
+  sourceDurationSec    Int?
+  sourceWidth          Int?
+  sourceHeight         Int?
+  sourceFps            Float?
+  sourceSizeBytes      BigInt?
+  sourceTitle          String?             @db.VarChar(512)
+  requestedClipCount   Int                 @default(5)
+  language             String?
+  captionStyleKey      String              @default("hormozi")
+  acceptedRights       Boolean             @default(false)
+  idempotencyKey       String?
+  status               AiClipProjectStatus @default(QUEUED)
+  progressPct          Int                 @default(0)
+  lastProgressAt       DateTime            @default(now())
+  startedAt            DateTime?
+  completedAt          DateTime?
+  totalClips           Int                 @default(0)
+  queuedClips          Int                 @default(0)
+  renderedClips        Int                 @default(0)
+  failedClips          Int                 @default(0)
+  failedStage          String?
+  errorCode            String?
+  errorMessage         String?
+  transcriptionCostUsd Float?
+  llmInputTokens       Int                 @default(0)
+  llmCachedInputTokens Int                 @default(0)
+  llmOutputTokens      Int                 @default(0)
+  llmCostUsd           Float?
+  totalCostUsd         Float?
+  sourceExpiresAt      DateTime?
+  outputExpiresAt      DateTime?
+  cancelledAt          DateTime?
+  deletedAt            DateTime?
+  metadata             Json?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime
+  AiClip               AiClip[]
+  AiClipMoment         AiClipMoment[]
+  User                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  AiClipTranscript     AiClipTranscript?
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, lastProgressAt])
+  @@index([status, uploadExpiresAt])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, status])
+}
+
+model AiClipMoment {
+  id               String             @id
+  projectId        String
+  rank             Int
+  status           AiClipMomentStatus @default(SELECTED)
+  startSentenceIdx Int
+  endSentenceIdx   Int
+  score            Int
+  title            String             @db.VarChar(200)
+  hookText         String?            @db.VarChar(300)
+  viralityReason   String?
+  categories       String[]           @default([])
+  chunkIndex       Int?
+  llmModel         String?
+  promptVersion    String?
+  rawStartMs       Int
+  rawEndMs         Int
+  refinedStartMs   Int?
+  refinedEndMs     Int?
+  endValidated     Boolean            @default(false)
+  metadata         Json?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime
+  AiClip           AiClip[]
+  AiClipProject    AiClipProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, rank])
+  @@index([projectId, status, score(sort: Desc)])
+}
+
+model AiClipTranscript {
+  id             String                   @id
+  projectId      String                   @unique
+  provider       AiClipTranscriptProvider
+  model          String
+  language       String?
+  durationSec    Int
+  wordCount      Int                      @default(0)
+  sentenceCount  Int                      @default(0)
+  text           String
+  sentences      Json?
+  wordsGcsUri    String
+  segmentsGcsUri String?
+  costUsd        Float?
+  attempts       Int                      @default(0)
+  metadata       Json?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime
+  AiClipProject  AiClipProject            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model AiClip {
+  id               String           @id
+  projectId        String
+  momentId         String
+  status           AiClipStatus     @default(PENDING)
+  queueJobId       String?
+  attemptsMade     Int              @default(0)
+  errorMessage     String?
+  segments         Json
+  captionWords     Json?
+  captionStyleKey  String           @default("hormozi")
+  styleOverrides   Json?
+  captionsEnabled  Boolean          @default(true)
+  version          Int              @default(1)
+  renderMode       AiClipRenderMode @default(FACE_TRACK)
+  renderParamsHash String?
+  cleanGcsUri      String?
+  cleanPadStartMs  Int?
+  cleanPadEndMs    Int?
+  finalGcsUri      String?
+  thumbnailGcsUri  String?
+  subtitleGcsUri   String?
+  cropPlanGcsUri   String?
+  width            Int?             @default(1080)
+  height           Int?             @default(1920)
+  fileSizeBytes    BigInt?
+  renderStartedAt  DateTime?
+  renderedAt       DateTime?
+  renderDurationMs Int?
+  metadata         Json?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime
+  AiClipMoment     AiClipMoment     @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  AiClipProject    AiClipProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([status, updatedAt])
 }

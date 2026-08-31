@@ -17,7 +17,6 @@ import {
   getUtcRankingDayBounds,
   loadDailyRankingDateContext,
   parsePrizeTable,
-  PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
 } from "@/lib/daily-ranking-preview";
 import {
   getClipperDailyReferenceDateYmd,
@@ -54,6 +53,57 @@ function getClipperRankingDisplayName(profile: {
   return (
     profile.artisticName?.trim() || getFirstName(profile.fullName) || "Clipador"
   );
+}
+
+function assertPrizeTableMatchesTotal(input: {
+  label: string;
+  table: unknown;
+  topCount: number;
+  totalPrize: number;
+}) {
+  const entries = parsePrizeTable(input.table);
+  const outOfRange = entries.find(
+    (entry) => entry.position > input.topCount && entry.prize > 0,
+  );
+  if (outOfRange) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${input.label}: a posição ${outOfRange.position} excede o top ${input.topCount}.`,
+    });
+  }
+  const calculatedCents = Array.from(
+    { length: input.topCount },
+    (_, index) => getPrizeForPosition(entries, index + 1),
+  ).reduce((total, value) => total + Math.round(value * 100), 0);
+  const configuredCents = Math.round(input.totalPrize * 100);
+  if (calculatedCents !== configuredCents) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${input.label}: a soma da tabela deve ser igual ao total configurado.`,
+    });
+  }
+}
+
+function assertPrizeConfiguration(input: {
+  dailyTopCount: number;
+  dailyTotalPrize: number;
+  dailyPrizeTable: unknown;
+  monthlyTopCount: number;
+  monthlyTotalPrize: number;
+  monthlyPrizeTable: unknown;
+}) {
+  assertPrizeTableMatchesTotal({
+    label: "Premiação diária",
+    table: input.dailyPrizeTable,
+    topCount: input.dailyTopCount,
+    totalPrize: input.dailyTotalPrize,
+  });
+  assertPrizeTableMatchesTotal({
+    label: "Premiação mensal",
+    table: input.monthlyPrizeTable,
+    topCount: input.monthlyTopCount,
+    totalPrize: input.monthlyTotalPrize,
+  });
 }
 
 /**
@@ -2081,25 +2131,28 @@ export const adminRouter = createTRPCRouter({
             .object({
               // Diária
               dailyEnabled: z.boolean(),
-              dailyTopCount: z.number(),
-              dailyTotalPrize: z.number(),
-              dailyPrizeTable: z.record(z.number()),
+              dailyTopCount: z.number().int().positive().max(100),
+              dailyTotalPrize: z.number().finite().nonnegative(),
+              dailyPrizeTable: z.record(z.number().finite().nonnegative()),
               // Bônus
               bonusEnabled: z.boolean(),
-              bonusMilestone: z.number(),
-              bonusAmount: z.number(),
-              bonusMonthlyBudgetCap: z.number(),
+              bonusMilestone: z.number().int().positive(),
+              bonusAmount: z.number().finite().nonnegative(),
+              bonusMonthlyBudgetCap: z.number().finite().nonnegative(),
               // Mensal
               monthlyEnabled: z.boolean(),
-              monthlyTopCount: z.number(),
-              monthlyTotalPrize: z.number(),
-              monthlyPrizeTable: z.record(z.number()),
+              monthlyTopCount: z.number().int().positive().max(100),
+              monthlyTotalPrize: z.number().finite().nonnegative(),
+              monthlyPrizeTable: z.record(z.number().finite().nonnegative()),
             })
             .optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
         try {
+          if (input.prizeConfig) {
+            assertPrizeConfiguration(input.prizeConfig);
+          }
           if (
             input.topClippersRankingEnabled &&
             !parseTopClippersPrizeTable(input.topClippersPrizeTable).some(
@@ -2456,17 +2509,17 @@ export const adminRouter = createTRPCRouter({
           prizeConfig: z
             .object({
               dailyEnabled: z.boolean().optional(),
-              dailyTopCount: z.number().optional(),
-              dailyTotalPrize: z.number().optional(),
-              dailyPrizeTable: z.record(z.number()).optional(),
+              dailyTopCount: z.number().int().positive().max(100).optional(),
+              dailyTotalPrize: z.number().finite().nonnegative().optional(),
+              dailyPrizeTable: z.record(z.number().finite().nonnegative()).optional(),
               bonusEnabled: z.boolean().optional(),
-              bonusMilestone: z.number().optional(),
-              bonusAmount: z.number().optional(),
-              bonusMonthlyBudgetCap: z.number().optional(),
+              bonusMilestone: z.number().int().positive().optional(),
+              bonusAmount: z.number().finite().nonnegative().optional(),
+              bonusMonthlyBudgetCap: z.number().finite().nonnegative().optional(),
               monthlyEnabled: z.boolean().optional(),
-              monthlyTopCount: z.number().optional(),
-              monthlyTotalPrize: z.number().optional(),
-              monthlyPrizeTable: z.record(z.number()).optional(),
+              monthlyTopCount: z.number().int().positive().max(100).optional(),
+              monthlyTotalPrize: z.number().finite().nonnegative().optional(),
+              monthlyPrizeTable: z.record(z.number().finite().nonnegative()).optional(),
             })
             .optional(),
         }),
@@ -2481,6 +2534,29 @@ export const adminRouter = createTRPCRouter({
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Campaign not found",
+          });
+        }
+
+        if (input.prizeConfig && before.activeRankingRule) {
+          assertPrizeConfiguration({
+            dailyTopCount:
+              input.prizeConfig.dailyTopCount ??
+              before.activeRankingRule.dailyTopCount,
+            dailyTotalPrize:
+              input.prizeConfig.dailyTotalPrize ??
+              before.activeRankingRule.dailyTotalPrize,
+            dailyPrizeTable:
+              input.prizeConfig.dailyPrizeTable ??
+              before.activeRankingRule.dailyPrizeTable,
+            monthlyTopCount:
+              input.prizeConfig.monthlyTopCount ??
+              before.activeRankingRule.monthlyTopCount,
+            monthlyTotalPrize:
+              input.prizeConfig.monthlyTotalPrize ??
+              before.activeRankingRule.monthlyTotalPrize,
+            monthlyPrizeTable:
+              input.prizeConfig.monthlyPrizeTable ??
+              before.activeRankingRule.monthlyPrizeTable,
           });
         }
 
@@ -9319,6 +9395,7 @@ export const adminRouter = createTRPCRouter({
             postedAt: row.postedAt?.toISOString() ?? null,
             username: row.username,
             pixKey: row.pixKey,
+            pixPayoutEligible: row.pixPayoutEligible,
           };
         });
 
@@ -9334,7 +9411,7 @@ export const adminRouter = createTRPCRouter({
         );
         const withPixExpectedPrize = withExpectedPrize.filter(
           (e) =>
-            e.clipperProfileId !== PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
+            e.pixPayoutEligible,
         );
         const canUndoRankPayments =
           withExpectedPrize.length > 0 &&
@@ -10505,6 +10582,7 @@ export const adminRouter = createTRPCRouter({
                       campaignId: input.campaignId,
                       clipPostId: line.clipPostId,
                       rankingPosition: line.position,
+                      idempotencyKey: `daily-ranking-prize:entry:${line.dailyRankingEntryId}`,
                       processedBy: ctx.userId,
                       processedAt: new Date(),
                       metadata: {
@@ -11465,143 +11543,15 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          const clipperProfile = await ctx.db.clipperProfile.findUnique({
-            where: { id: clipperProfileId },
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  email: true,
-                  name: true,
-                },
-              },
-            },
+          alreadyPixEntryIds.add(line.entryId);
+          ledgerLines.push({
+            entryId: line.entryId,
+            position: line.position,
+            status: "SUCCESS",
+            prizeAmount,
+            asaasTransferId: line.asaasTransferId,
+            asaasPayoutReceiptUrl: line.asaasPayoutReceiptUrl ?? null,
           });
-          const pixKeyForLedger = clipperProfile?.pixKey?.trim() || "—";
-          const proofUrlForLedger =
-            line.asaasPayoutReceiptUrl && line.asaasPayoutReceiptUrl.length > 0
-              ? line.asaasPayoutReceiptUrl
-              : null;
-
-          try {
-            alreadyPixEntryIds.add(line.entryId);
-            ledgerLines.push({
-              entryId: line.entryId,
-              position: line.position,
-              status: "SUCCESS",
-              prizeAmount,
-              asaasTransferId: line.asaasTransferId,
-              asaasPayoutReceiptUrl: line.asaasPayoutReceiptUrl ?? null,
-            });
-
-            if (clipperProfile?.user) {
-              await ctx.db.notification.create({
-                data: {
-                  userId: clipperProfile.user.id,
-                  type: "METRICS_MILESTONE",
-                  channel: "IN_APP",
-                  title: "💰 PIX Recebido!",
-                  message: `Você recebeu R$ ${prizeAmount.toFixed(2)} da competição "${campaign.name}" (ranking diário). O valor foi enviado via PIX.`,
-                  actionUrl: proofUrlForLedger ?? undefined,
-                  metadata: {
-                    amount: prizeAmount,
-                    pixKey: pixKeyForLedger,
-                    campaignName: campaign.name,
-                    proofUrl: proofUrlForLedger,
-                    source: "daily_ranking_pix",
-                    dailyRankingEntryId: line.entryId,
-                  },
-                  campaignId: input.campaignId,
-                  sentAt: new Date(),
-                },
-              });
-            }
-
-            if (clipperProfile?.user?.email) {
-              const proofBlock = proofUrlForLedger
-                ? `<p><strong>Comprovante:</strong> <a href="${proofUrlForLedger}" target="_blank" style="color: #667eea;">Ver comprovante</a></p>`
-                : `<p><strong>Comprovante:</strong> em breve no app ou via suporte.</p>`;
-              const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <meta charset="utf-8">
-                <style>
-                  body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                  .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                  .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-                  .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-                  .amount { font-size: 32px; font-weight: bold; color: #22c55e; text-align: center; margin: 20px 0; }
-                  .info-box { background: white; border-left: 4px solid #667eea; padding: 15px; margin: 20px 0; }
-                  .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #666; }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <div class="header">
-                    <h1>💰 PIX Enviado!</h1>
-                  </div>
-                  <div class="content">
-                    <p>Olá, <strong>${clipperProfile.fullName}</strong>!</p>
-                    <p>Acabamos de enviar um PIX referente ao <strong>ranking diário</strong> da competição <strong>${campaign.name}</strong>. 🎉</p>
-                    <div class="amount">
-                      ${new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(prizeAmount)}
-                    </div>
-                    <div class="info-box">
-                      <h3 style="margin-top: 0;">📋 Detalhes do Pagamento</h3>
-                      <p><strong>Chave PIX:</strong> ${pixKeyForLedger}</p>
-                      <p><strong>Competição:</strong> ${campaign.name}</p>
-                      <p><strong>Data:</strong> ${new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
-                      ${proofBlock}
-                    </div>
-                    <p>O valor deve aparecer em sua conta em instantes.</p>
-                    <p style="margin-top: 30px;">Continue mandando bem! 🚀</p>
-                    <div class="footer">
-                      <p>ClipfyAI - Plataforma de Competições de Cortes</p>
-                      <p>Este é um email automático, não responda.</p>
-                    </div>
-                  </div>
-                </div>
-              </body>
-            </html>
-          `;
-
-              resend.emails
-                .send({
-                  from: "ClipfyAI <noreply@league.clipfyai.com>",
-                  to: clipperProfile.user.email,
-                  subject: `💰 PIX Enviado: ${new Intl.NumberFormat("pt-BR", {
-                    style: "currency",
-                    currency: "BRL",
-                  }).format(prizeAmount)}`,
-                  html: emailHtml,
-                })
-                .then(() => {
-                  console.log(
-                    `✅ Email de PIX (rank diário) enviado para ${clipperProfile.user?.email}`,
-                  );
-                })
-                .catch((error: unknown) => {
-                  console.error(
-                    `❌ Erro ao enviar email de PIX (rank diário):`,
-                    error,
-                  );
-                });
-            }
-          } catch (err: unknown) {
-            const msg =
-              err instanceof Error
-                ? err.message
-                : "Erro ao registrar PIX no ledger";
-            ledgerLines.push({
-              entryId: line.entryId,
-              position: line.position,
-              status: "FAILED",
-              prizeAmount,
-              error: msg,
-            });
-            console.error("executeDailyPixPayout ledger line:", err);
-          }
         }
 
         const pixGateAfterPay = await computeDailyPixPayoutSettledGate(
@@ -13321,6 +13271,13 @@ export const adminRouter = createTRPCRouter({
               dailyPrizePaid: true,
               dailyPixStatus: true,
               isDisqualified: true,
+              application: {
+                select: {
+                  clipperProfile: {
+                    select: { pixPayoutEligible: true },
+                  },
+                },
+              },
             },
             orderBy: { position: "asc" },
           },
@@ -13390,8 +13347,7 @@ export const adminRouter = createTRPCRouter({
           announced: dr.announced,
           dailyPixPayoutCompleted: (() => {
             const pixRequiredEntries = prizeEntries.filter(
-              (e) =>
-                e.clipperProfileId !== PIX_PAYOUT_IGNORED_CLIPPER_PROFILE_ID,
+              (e) => e.application.clipperProfile.pixPayoutEligible,
             );
             return (
               pixRequiredEntries.length > 0 &&

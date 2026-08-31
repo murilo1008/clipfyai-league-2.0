@@ -217,6 +217,7 @@ export function validateKiwifyWebhook(
   if (!signature || !secret || !body) return false
   
   // Importar crypto para HMAC
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const crypto = require('crypto')
   
   // Calcular HMAC-SHA1

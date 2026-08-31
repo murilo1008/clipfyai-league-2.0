@@ -1033,4 +1033,3 @@ async function handleRefundOrChargeback(payload: KiwifyWebhookPayload) {
 
   console.log(`💸 Reembolso/Chargeback processado: ${Customer.email}`)
 }
-

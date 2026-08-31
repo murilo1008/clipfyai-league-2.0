@@ -110,6 +110,20 @@ type IntegrationSyncStatus =
   | "FAILED"
   | "PARTIAL"
 
+type IntegrationActionResult = {
+  success?: boolean
+  message?: string | null
+  error?: string | null
+}
+
+function getIntegrationActionError(data: unknown): string | null {
+  if (!data || typeof data !== "object" || !("success" in data)) return null
+
+  const result = data as IntegrationActionResult
+  if (result.success !== false) return null
+  return result.error ?? result.message ?? "A integração informou uma falha"
+}
+
 const INTEGRATION_TONE_CLASS = {
   ok: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   warn: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
@@ -427,6 +441,46 @@ export default function ManageAccounts() {
     platform: IntegrationPlatform
   } | null>(null)
 
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const callbacks = [
+      { key: "instagram", label: "Instagram" },
+      { key: "tiktok", label: "TikTok" },
+      { key: "youtube", label: "YouTube" },
+    ] as const
+    const callback = callbacks.find(({ key }) => params.has(key))
+    if (!callback) return
+
+    const status = params.get(callback.key)
+    if (status === "success") {
+      const username = params.get("username")
+      toast.success(`${callback.label} conectado`, {
+        description: username
+          ? `A conta @${username} foi conectada com sucesso.`
+          : "A conta foi conectada com sucesso.",
+      })
+    } else {
+      toast.error(`Erro ao conectar ${callback.label}`, {
+        description:
+          params.get("message") ??
+          params.get("error") ??
+          "A autorização não foi concluída.",
+      })
+    }
+
+    params.delete(callback.key)
+    params.delete("message")
+    params.delete("error")
+    params.delete("authId")
+    params.delete("username")
+    const query = params.toString()
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    )
+  }, [])
+
   // ===== Query =====
   const {
     data: accounts = [],
@@ -518,8 +572,13 @@ export default function ManageAccounts() {
     onMutate: ({ socialAccountId }: { socialAccountId: string }) => {
       setIntegrationBusyId(socialAccountId)
     },
-    onSuccess: () => {
+    onSuccess: (data: unknown) => {
       setIntegrationBusyId(null)
+      const error = getIntegrationActionError(data)
+      if (error) {
+        toast.error(`Erro ao sincronizar ${label}`, { description: error })
+        return
+      }
       toast.success(`Sincronização do ${label} iniciada`, {
         description: "Os vídeos serão atualizados em instantes.",
       })
@@ -537,8 +596,13 @@ export default function ManageAccounts() {
     onMutate: ({ socialAccountId }: { socialAccountId: string }) => {
       setIntegrationBusyId(socialAccountId)
     },
-    onSuccess: () => {
+    onSuccess: (data: unknown) => {
       setIntegrationBusyId(null)
+      const error = getIntegrationActionError(data)
+      if (error) {
+        toast.error(`Erro ao desconectar ${label}`, { description: error })
+        return
+      }
       setDisconnectTarget(null)
       toast.success(`${label} desconectado`, {
         description:
