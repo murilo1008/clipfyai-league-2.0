@@ -38,10 +38,14 @@ function getClientCreationClerkError(error: unknown): TRPCError {
         message: "Já existe uma conta com este email.",
       })
     case "form_password_length_too_short":
+      return new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A senha deve ter pelo menos 8 caracteres.",
+      })
     case "form_password_pwned":
       return new TRPCError({
         code: "BAD_REQUEST",
-        message: "A senha não atende aos requisitos de segurança do sistema.",
+        message: "Esta senha aparece em vazamentos conhecidos. Escolha uma senha diferente.",
       })
     case "form_password_not_strong_enough":
     case "form_password_validation_failed":
