@@ -11,6 +11,64 @@ import {
 // Client status enum
 const ClientStatusEnum = z.enum(["ACTIVE", "INACTIVE", "PENDING"])
 
+type ClerkErrorDetail = {
+  code?: string
+  message?: string
+  longMessage?: string
+}
+
+function getClientCreationClerkError(error: unknown): TRPCError {
+  const clerkError = error as { errors?: ClerkErrorDetail[] }
+  const detail = clerkError.errors?.[0]
+
+  if (!detail) {
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Erro ao comunicar com o sistema de autenticação. Tente novamente.",
+    })
+  }
+
+  const message = `${detail.message ?? ""} ${detail.longMessage ?? ""}`.toLowerCase()
+
+  switch (detail.code) {
+    case "form_identifier_exists":
+    case "identifier_exists":
+      return new TRPCError({
+        code: "CONFLICT",
+        message: "Já existe uma conta com este email.",
+      })
+    case "form_password_length_too_short":
+    case "form_password_pwned":
+      return new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A senha não atende aos requisitos de segurança do sistema.",
+      })
+    case "form_password_not_strong_enough":
+    case "form_password_validation_failed":
+      return new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A senha não é forte o suficiente. Use maiúsculas, minúsculas, números e símbolos.",
+      })
+    case "form_param_format_invalid":
+      return new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Email inválido. Verifique o formato informado.",
+      })
+  }
+
+  if (message.includes("email") && /already|exists|taken|uso/.test(message)) {
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "Já existe uma conta com este email.",
+    })
+  }
+
+  return new TRPCError({
+    code: "BAD_REQUEST",
+    message: detail.longMessage || detail.message || "Não foi possível validar os dados do cliente.",
+  })
+}
+
 export const clientRouter = createTRPCRouter({
   // Get all clients
   getAll: privateProcedure.query(async ({ ctx }) => {
@@ -88,7 +146,7 @@ export const clientRouter = createTRPCRouter({
     const clients = users.map((user) => {
       const profile = user.clientProfile
       const org = user.organizations[0]?.organization
-      
+
       // Usar clientCampaigns (campanhas vinculadas ao cliente) ao invés de org.campaigns
       const totalCampaigns = user.clientCampaigns.length
       const activeCampaigns = user.clientCampaigns.filter((c) => c.status === "ACTIVE").length
@@ -201,7 +259,7 @@ export const clientRouter = createTRPCRouter({
 
       const profile = user.clientProfile
       const org = user.organizations[0]?.organization
-      
+
       // Usar clientCampaigns (campanhas vinculadas ao cliente)
       const totalCampaigns = user.clientCampaigns.length
       const activeCampaigns = user.clientCampaigns.filter((c) => c.status === "ACTIVE").length
@@ -236,8 +294,8 @@ export const clientRouter = createTRPCRouter({
   create: privateProcedure
     .input(
       z.object({
-        name: z.string().min(1, "Nome é obrigatório"),
-        email: z.string().email("Email inválido"),
+        name: z.string().trim().min(1, "Nome é obrigatório"),
+        email: z.string().trim().toLowerCase().email("Email inválido"),
         password: z.string().min(8, "Senha deve ter no mínimo 8 caracteres"),
         phone: z.string().optional(),
         company: z.string().optional(),
@@ -266,9 +324,9 @@ export const clientRouter = createTRPCRouter({
         })
       }
 
-      // Verificar se já existe um usuário com este email
-      const existingUser = await ctx.db.user.findUnique({
-        where: { email: input.email },
+      // O Clerk trata emails sem diferenciar maiúsculas/minúsculas.
+      const existingUser = await ctx.db.user.findFirst({
+        where: { email: { equals: input.email, mode: "insensitive" } },
       })
 
       if (existingUser) {
@@ -279,9 +337,9 @@ export const clientRouter = createTRPCRouter({
       }
 
       // 1. Criar usuário no Clerk primeiro
+      const clerk = await clerkClient()
       let clerkUserId: string
       try {
-        const clerk = await clerkClient()
         const clerkUser = await clerk.users.createUser({
           emailAddress: [input.email],
           password: input.password,
@@ -292,89 +350,111 @@ export const clientRouter = createTRPCRouter({
           },
         })
         clerkUserId = clerkUser.id
-      } catch (error: any) {
+      } catch (error) {
         console.error("Erro ao criar usuário no Clerk:", error)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao criar usuário no sistema de autenticação",
-        })
+        throw getClientCreationClerkError(error)
       }
 
-      // 2. Criar o usuário no banco com o ID do Clerk
-      const result = await ctx.db.$transaction(async (tx) => {
-        // Criar o usuário com role CLIENT usando o ID do Clerk
-        const user = await tx.user.create({
-          data: {
-            id: clerkUserId,
-            email: input.email,
-            name: input.name,
-            role: "CLIENT",
-            onboardingCompleted: true,
-            hasStore: input.hasStore || false,
-            hasKiwifyStore: input.hasKiwifyStore || false,
-          },
-        })
-
-        // 2. Criar o ClientProfile
-        const clientProfile = await tx.clientProfile.create({
-          data: {
-            userId: user.id,
-            fullName: input.name,
-            phone: input.phone || null,
-            company: input.company || null,
-            position: input.position || null,
-            website: input.website || null,
-            country: input.country || "Brasil",
-            city: input.city || null,
-            status: input.status || "PENDING",
-            notes: input.notes || null,
-          },
-        })
-
-        // 3. Se forneceu company, criar uma organização
-        if (input.company) {
-          const slug = input.company
-            .toLowerCase()
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-+|-+$/g, "")
-
-          await tx.organization.create({
+      try {
+        // 2. Persistir tudo em uma única transação. Se ela falhar, a conta
+        // recém-criada no Clerk é removida no catch abaixo.
+        const result = await ctx.db.$transaction(async (tx) => {
+          // Criar o usuário com role CLIENT usando o ID do Clerk
+          const user = await tx.user.create({
             data: {
-              name: input.company,
-              slug: `${slug}-${Date.now()}`,
+              id: clerkUserId,
+              email: input.email,
+              name: input.name,
+              role: "CLIENT",
+              onboardingCompleted: true,
+              hasStore: input.hasStore || false,
+              hasKiwifyStore: input.hasStore === true && input.hasKiwifyStore === true,
+            },
+          })
+
+          // 2. Criar o ClientProfile
+          await tx.clientProfile.create({
+            data: {
+              userId: user.id,
+              fullName: input.name,
+              phone: input.phone || null,
+              company: input.company || null,
+              position: input.position || null,
               website: input.website || null,
-              country: input.country || null,
-              members: {
-                create: {
-                  userId: user.id,
-                  role: "OWNER",
+              country: input.country || "Brasil",
+              city: input.city || null,
+              status: input.status || "PENDING",
+              notes: input.notes || null,
+            },
+          })
+
+          // 3. Se forneceu company, criar uma organização
+          if (input.company) {
+            const slug = input.company
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "")
+
+            await tx.organization.create({
+              data: {
+                name: input.company,
+                slug: `${slug}-${Date.now()}`,
+                website: input.website || null,
+                country: input.country || null,
+                members: {
+                  create: {
+                    userId: user.id,
+                    role: "OWNER",
+                  },
                 },
+              },
+            })
+          }
+
+          await tx.auditLog.create({
+            data: {
+              userId: ctx.userId,
+              action: "CREATE",
+              entityType: "Client",
+              entityId: user.id,
+              changes: {
+                name: input.name,
+                email: input.email,
+                company: input.company,
               },
             },
           })
+
+          return user
+        })
+
+        return { success: true, clientId: result.id }
+      } catch (error) {
+        try {
+          await clerk.users.deleteUser(clerkUserId)
+        } catch (rollbackError) {
+          console.error(
+            "Não foi possível remover o usuário do Clerk após falha no banco:",
+            rollbackError,
+          )
         }
 
-        return { user, clientProfile }
-      })
+        const prismaError = error as { code?: string }
+        if (prismaError.code === "P2002") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Já existe um usuário com este email.",
+          })
+        }
 
-      // Criar log de auditoria
-      await ctx.db.auditLog.create({
-        data: {
-          userId: ctx.userId,
-          action: "CREATE",
-          entityType: "Client",
-          entityId: result.user.id,
-          changes: {
-            name: input.name,
-            email: input.email,
-            company: input.company,
-          },
-        },
-      })
-
-      return { success: true, clientId: result.user.id }
+        console.error("Erro ao salvar cliente no banco:", error)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Não foi possível salvar o cliente. Tente novamente.",
+        })
+      }
     }),
 
   // Update client
@@ -453,12 +533,12 @@ export const clientRouter = createTRPCRouter({
         if (input.name) userUpdateData.name = input.name
         if (input.hasStore !== undefined) userUpdateData.hasStore = input.hasStore
         if (input.hasKiwifyStore !== undefined) userUpdateData.hasKiwifyStore = input.hasKiwifyStore
-        
+
         // Se hasStore for false, também desabilita hasKiwifyStore
         if (input.hasStore === false) {
           userUpdateData.hasKiwifyStore = false
         }
-        
+
         if (Object.keys(userUpdateData).length > 0) {
           await tx.user.update({
             where: { id: input.id },
@@ -797,7 +877,7 @@ export const clientRouter = createTRPCRouter({
     // Buscar role do usuário no banco
     const dbUser = await ctx.db.user.findUnique({
       where: { id: ctx.userId },
-      select: { 
+      select: {
         role: true,
         hasStore: true,
         hasKiwifyStore: true,
@@ -855,13 +935,13 @@ export const clientRouter = createTRPCRouter({
         // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
         const isTarcisioCompetition = campaign.slug === "tarcisio-de-freitas-novembro";
         const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00"); // 07/11/2025 22:00 BRT
-        
-        const postDateFilter = isTarcisioCompetition 
+
+        const postDateFilter = isTarcisioCompetition
           ? { postedAt: { gte: tarcisioStartDate } }
           : {};
-        
+
         // Buscar contagem real de posts (TODOS, independente do status)
-        const totalPostsCount = isTarcisioCompetition 
+        const totalPostsCount = isTarcisioCompetition
           ? await ctx.db.clipPost.count({
               where: {
                 campaignId: campaign.id,
@@ -875,7 +955,7 @@ export const clientRouter = createTRPCRouter({
                 // ✅ Removido filtro de status - conta TODOS os posts
               },
             });
-        
+
         // Buscar métricas totais da campanha (TODOS os posts, independente do status)
         const metrics = await ctx.db.clipPost.aggregate({
           where: {
@@ -1207,7 +1287,7 @@ export const clientRouter = createTRPCRouter({
       // ⚠️ FILTRO ESPECIAL: Competição Tarcísio De Freitas - Novembro
       // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
       const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00"); // 07/11/2025 22:00 BRT
-      
+
       // Verificar se está filtrando especificamente pela campanha do Tarcísio
       let isTarcisioCompetition = false;
       if (campaignId) {
@@ -1671,7 +1751,7 @@ export const clientRouter = createTRPCRouter({
         if (!tokenResponse.ok) {
           const errorText = await tokenResponse.text()
           console.error("Erro ao validar credenciais Kiwify:", errorText)
-          
+
           // Mensagem mais específica baseada no erro
           let message = "Credenciais inválidas. Verifique o Client ID e Secret Key."
           if (errorText.includes("TOKEN_INVALID") || errorText.includes("invalid_client")) {
@@ -1679,7 +1759,7 @@ export const clientRouter = createTRPCRouter({
           } else if (errorText.includes("unauthorized")) {
             message = "Credenciais não autorizadas. Verifique se a API Key está ativa."
           }
-          
+
           throw new TRPCError({
             code: "BAD_REQUEST",
             message,
@@ -1696,7 +1776,7 @@ export const clientRouter = createTRPCRouter({
         yesterday.setDate(yesterday.getDate() - 1)
         const startDate = yesterday.toISOString().split("T")[0]
         const endDate = today.toISOString().split("T")[0]
-        
+
         const testResponse = await fetch(
           `https://public-api.kiwify.com/v1/sales?start_date=${startDate}&end_date=${endDate}&page_size=1`,
           {
@@ -1923,7 +2003,7 @@ export const clientRouter = createTRPCRouter({
         }
 
         const salesData = await salesResponse.json()
-        
+
         // Processar estatísticas (pode falhar silenciosamente)
         let statsData: {
           total_sales?: number
@@ -1935,7 +2015,7 @@ export const clientRouter = createTRPCRouter({
           total_boleto_paid?: number
           boleto_rate?: number
         } = {}
-        
+
         if (statsResponse.ok) {
           statsData = await statsResponse.json()
         } else {
@@ -1945,12 +2025,12 @@ export const clientRouter = createTRPCRouter({
         // Processar vendas pagas para calcular receita total
         let allPaidSalesData: any[] = []
         let totalPaidCount = 0
-        
+
         if (paidSalesResponse.ok) {
           const paidData = await paidSalesResponse.json()
           allPaidSalesData = paidData.data || []
           totalPaidCount = paidData.pagination?.count || allPaidSalesData.length
-          
+
           // Se há mais páginas de vendas pagas, buscar todas
           const totalPages = Math.ceil(totalPaidCount / 100)
           if (totalPages > 1) {
@@ -1973,7 +2053,7 @@ export const clientRouter = createTRPCRouter({
                 })
               )
             }
-            
+
             const additionalResponses = await Promise.all(additionalRequests)
             for (const resp of additionalResponses) {
               if (resp.ok) {
@@ -1983,10 +2063,10 @@ export const clientRouter = createTRPCRouter({
             }
           }
         }
-        
+
         // Calcular receita total a partir das vendas pagas
         const calculatedTotalRevenue = allPaidSalesData.reduce(
-          (sum: number, sale: any) => sum + (sale.net_amount || 0), 
+          (sum: number, sale: any) => sum + (sale.net_amount || 0),
           0
         )
 
@@ -2012,13 +2092,13 @@ export const clientRouter = createTRPCRouter({
         const totalSalesFromStats = statsData.total_sales ?? 0
         const refundRate = statsData.refund_rate ?? 0
         const chargebackRate = statsData.chargeback_rate ?? 0
-        
-        console.log("📈 Métricas processadas:", { 
-          totalSalesFromStats, 
+
+        console.log("📈 Métricas processadas:", {
+          totalSalesFromStats,
           totalPaidCount,
           calculatedTotalRevenue: calculatedTotalRevenue / 100,
-          refundRate, 
-          chargebackRate 
+          refundRate,
+          chargebackRate
         })
 
         // Métricas da página atual (para contagem local)
@@ -2278,7 +2358,7 @@ export const clientRouter = createTRPCRouter({
         const today = new Date()
         const thirtyDaysAgo = new Date(today)
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-        
+
         const salesParams = new URLSearchParams({
           start_date: thirtyDaysAgo.toISOString().split("T")[0] || "",
           end_date: today.toISOString().split("T")[0] || "",
@@ -2298,11 +2378,11 @@ export const clientRouter = createTRPCRouter({
 
         // Processar vendas por afiliado
         const affiliateSalesMap: Record<string, { salesCount: number; totalRevenue: number; totalCommission: number }> = {}
-        
+
         if (salesResponse.ok) {
           const salesData = await salesResponse.json()
           const sales = salesData.data || []
-          
+
           sales.forEach((sale: any) => {
             if (sale.affiliate?.document) {
               const affiliateDoc = sale.affiliate.document
