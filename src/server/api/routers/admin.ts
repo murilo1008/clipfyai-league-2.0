@@ -31,6 +31,8 @@ import {
   fetchDailyPixReconciliation,
   fetchDailyPayoutPay,
   fetchDailyPayoutPreview,
+  fetchTopPostersPayoutPay,
+  fetchTopPostersPayoutPreview,
 } from "@/lib/daily-payout-client";
 import {
   assertCanTriggerManualMetricsExtraction,
@@ -297,6 +299,7 @@ function getPaymentNotificationEmailTemplate(
   campaignName?: string,
   position?: number,
   rankingType?: string,
+  automaticPix = false,
 ) {
   const paymentTypeLabel =
     paymentType === "PRIZE_CREDIT"
@@ -460,14 +463,21 @@ function getPaymentNotificationEmailTemplate(
             <span style="position: absolute; left: 0; color: #37FF9F; font-weight: 700;">✓</span>
             Você pode <strong style="color: #ffffff;">acompanhar seu saldo</strong> na plataforma
           </li>
-          <li style="margin-bottom: 8px; font-size: 14px; line-height: 1.6; color: #e0e0e0; position: relative; padding-left: 24px;">
+          ${
+            automaticPix
+              ? `<li style="margin: 0; font-size: 14px; line-height: 1.6; color: #e0e0e0; position: relative; padding-left: 24px;">
+            <span style="position: absolute; left: 0; color: #37FF9F; font-weight: 700;">✓</span>
+            O envio automático para sua chave <strong style="color: #ffffff;">PIX será processado em seguida</strong>; a confirmação aparecerá na plataforma
+          </li>`
+              : `<li style="margin-bottom: 8px; font-size: 14px; line-height: 1.6; color: #e0e0e0; position: relative; padding-left: 24px;">
             <span style="position: absolute; left: 0; color: #37FF9F; font-weight: 700;">✓</span>
             O pagamento será realizado <strong style="color: #ffffff;">via PIX no final da competição</strong>
           </li>
           <li style="margin: 0; font-size: 14px; line-height: 1.6; color: #e0e0e0; position: relative; padding-left: 24px;">
             <span style="position: absolute; left: 0; color: #37FF9F; font-weight: 700;">✓</span>
             Você receberá as <strong style="color: #ffffff;">instruções para saque</strong> em breve
-          </li>
+          </li>`
+          }
         </ul>
       </div>
 
@@ -9721,6 +9731,7 @@ export const adminRouter = createTRPCRouter({
           select: {
             id: true,
             name: true,
+            dailyPix: true,
             topClippersRankingEnabled: true,
             topClippersPrizeTable: true,
           },
@@ -10078,6 +10089,7 @@ export const adminRouter = createTRPCRouter({
                 campaign.name,
                 line.position,
                 "daily",
+                campaign.dailyPix,
               );
 
               resend.emails
@@ -11241,6 +11253,217 @@ export const adminRouter = createTRPCRouter({
   /**
    * Prévia do payout PIX (Asaas) para o ranking diário do dia UTC.
    */
+  getDailyRankingPixPayoutStatus: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const gate = await computeDailyPixPayoutSettledGate(
+        ctx.db,
+        input.campaignId,
+        input.date,
+      );
+      if (!gate || gate.prizeCount === 0) {
+        return { status: "NOT_READY" as const };
+      }
+      if (gate.isSettled) return { status: "COMPLETED" as const };
+      if (gate.processingTransactionCount > 0) {
+        return { status: "PROCESSING" as const };
+      }
+      if (gate.unsettledCount < gate.prizeCount) {
+        return { status: "PARTIAL" as const };
+      }
+      return { status: "PENDING" as const };
+    }),
+
+  getTopPostersPixPayoutStatus: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const credits = await ctx.db.transaction.findMany({
+        where: {
+          campaignId: input.campaignId,
+          type: "PRIZE_CREDIT",
+          status: "COMPLETED",
+          metadata: { path: ["source"], equals: "top_posters_daily_rank" },
+          AND: { metadata: { path: ["date"], equals: input.date } },
+        },
+        select: {
+          id: true,
+          amount: true,
+          rankingPosition: true,
+          wallet: {
+            select: {
+              clipperProfile: {
+                select: { fullName: true, artisticName: true },
+              },
+            },
+          },
+        },
+        orderBy: { rankingPosition: "asc" },
+      });
+      const reversals = await ctx.db.transaction.findMany({
+        where: {
+          campaignId: input.campaignId,
+          type: "ADJUSTMENT",
+          status: "COMPLETED",
+        },
+        select: { metadata: true },
+      });
+      const reversedCreditIds = new Set(
+        reversals
+          .map((row) => {
+            const metadata = row.metadata as {
+              reversedPrizeCreditId?: unknown;
+            } | null;
+            return typeof metadata?.reversedPrizeCreditId === "string"
+              ? metadata.reversedPrizeCreditId
+              : null;
+          })
+          .filter((id): id is string => Boolean(id)),
+      );
+      const activeCredits = credits.filter(
+        (credit) => !reversedCreditIds.has(credit.id),
+      );
+      const idempotencyKeys = activeCredits.map(
+        (credit) =>
+          `top_posters_daily_pix:${input.campaignId}:${input.date}:${credit.id}`,
+      );
+      const payouts = idempotencyKeys.length
+        ? await ctx.db.transaction.findMany({
+            where: { idempotencyKey: { in: idempotencyKeys } },
+            select: {
+              id: true,
+              idempotencyKey: true,
+              status: true,
+              proofUrls: true,
+              failureReason: true,
+            },
+          })
+        : [];
+      const payoutByKey = new Map(
+        payouts.map((payout) => [payout.idempotencyKey, payout]),
+      );
+      const lines = activeCredits.map((credit) => {
+        const key = `top_posters_daily_pix:${input.campaignId}:${input.date}:${credit.id}`;
+        const payout = payoutByKey.get(key);
+        return {
+          position: credit.rankingPosition,
+          clipperName:
+            credit.wallet.clipperProfile.artisticName ||
+            credit.wallet.clipperProfile.fullName,
+          amount: credit.amount,
+          status: payout?.status ?? ("PENDING" as const),
+          transactionId: payout?.id ?? null,
+          proofUrl: payout?.proofUrls[0] ?? null,
+          failureReason: payout?.failureReason ?? null,
+        };
+      });
+      const completed = lines.filter((line) => line.status === "COMPLETED").length;
+      const processing = lines.filter((line) => line.status === "PROCESSING").length;
+      const failed = lines.filter((line) => line.status === "FAILED").length;
+      const pending = lines.filter((line) => line.status === "PENDING").length;
+      let status:
+        | "NOT_READY"
+        | "PENDING"
+        | "PROCESSING"
+        | "PARTIAL"
+        | "FAILED"
+        | "COMPLETED" = "NOT_READY";
+      if (lines.length > 0) {
+        if (completed === lines.length) status = "COMPLETED";
+        else if (processing > 0 && completed === 0 && failed === 0) {
+          status = "PROCESSING";
+        } else if (failed === lines.length) status = "FAILED";
+        else if (pending === lines.length) status = "PENDING";
+        else status = "PARTIAL";
+      }
+      return {
+        status,
+        total: lines.length,
+        completed,
+        processing,
+        failed,
+        pending,
+        lines,
+      };
+    }),
+
+  previewTopPostersPixPayout: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const campaign = await ctx.db.campaign.findUnique({
+        where: { id: input.campaignId },
+        select: { dailyPix: true, topClippersRankingEnabled: true },
+      });
+      if (!campaign) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada" });
+      }
+      if (!campaign.dailyPix || !campaign.topClippersRankingEnabled) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O PIX diário e o Top Postadores precisam estar habilitados.",
+        });
+      }
+      try {
+        return await fetchTopPostersPayoutPreview(input.campaignId, input.date);
+      } catch (error) {
+        if (error instanceof DailyPayoutConfigError) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error instanceof Error ? error.message : "Erro na prévia PIX do Top Postadores",
+        });
+      }
+    }),
+
+  executeTopPostersPixPayout: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const campaign = await ctx.db.campaign.findUnique({
+        where: { id: input.campaignId },
+        select: { dailyPix: true, topClippersRankingEnabled: true },
+      });
+      if (!campaign) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada" });
+      }
+      if (!campaign.dailyPix || !campaign.topClippersRankingEnabled) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O PIX diário e o Top Postadores precisam estar habilitados.",
+        });
+      }
+      try {
+        return await fetchTopPostersPayoutPay(input.campaignId, input.date);
+      } catch (error) {
+        if (error instanceof DailyPayoutConfigError) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error instanceof Error ? error.message : "Erro no PIX do Top Postadores",
+        });
+      }
+    }),
+
   previewDailyPixPayout: adminProcedure
     .input(
       z.object({
