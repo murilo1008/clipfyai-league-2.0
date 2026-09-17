@@ -2,6 +2,7 @@
  * Cliente HTTP para o serviço interno de payout PIX do ranking diário (Asaas).
  * Variáveis: DAILY_PAYOUT_BASE_URL, DAILY_PAYOUT_INTERNAL_KEY
  */
+import { z } from "zod";
 
 export class DailyPayoutConfigError extends Error {
   constructor(message: string) {
@@ -70,6 +71,44 @@ export async function fetchDailyPayoutPay(
 ): Promise<unknown> {
   return postJson<unknown>("/daily-ranking-payout/pay", { dailyRankingId });
 }
+
+export async function fetchTopPostersPayoutPreview(
+  campaignId: string,
+  date: string,
+): Promise<unknown> {
+  return postJson<unknown>("/daily-ranking-payout/top-posters/preview", {
+    campaignId,
+    date,
+  });
+}
+
+export async function fetchTopPostersPayoutPay(
+  campaignId: string,
+  date: string,
+): Promise<z.infer<typeof topPostersPayoutResultSchema>> {
+  const response = await postJson<unknown>("/daily-ranking-payout/top-posters/pay", {
+    campaignId,
+    date,
+  });
+  return topPostersPayoutResultSchema.parse(response);
+}
+
+const topPostersPayoutResultSchema = z.object({
+  campaignId: z.string(),
+  date: z.string(),
+  totalPrizeAmount: z.number(),
+  lines: z.array(
+    z
+      .object({
+        position: z.number().nullable().optional(),
+        status: z.string(),
+        transactionId: z.string().optional(),
+        asaasTransferId: z.string().optional(),
+        error: z.string().optional(),
+      })
+      .passthrough(),
+  ),
+});
 
 export async function fetchDailyPixReconciliation(input: {
   dailyRankingId?: string;

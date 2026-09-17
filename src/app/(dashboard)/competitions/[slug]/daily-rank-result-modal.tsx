@@ -183,6 +183,52 @@ function MetricChip({
   )
 }
 
+function PixPaymentStatusBadge({
+  label,
+  status,
+}: {
+  label: string
+  status: "NOT_READY" | "PENDING" | "PROCESSING" | "PARTIAL" | "FAILED" | "COMPLETED"
+}) {
+  const statusLabel = {
+    NOT_READY: "aguardando crédito",
+    PENDING: "pendente",
+    PROCESSING: "processando",
+    PARTIAL: "parcial",
+    FAILED: "falhou",
+    COMPLETED: "pago",
+  }[status]
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "gap-1.5 rounded-full font-semibold",
+        status === "COMPLETED" &&
+          "border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300",
+        status === "PROCESSING" &&
+          "border-blue-500/40 bg-blue-500/15 text-blue-600 dark:text-blue-300",
+        status === "PARTIAL" &&
+          "border-amber-500/40 bg-amber-500/15 text-amber-600 dark:text-amber-300",
+        status === "FAILED" &&
+          "border-rose-500/40 bg-rose-500/15 text-rose-600 dark:text-rose-300",
+        (status === "PENDING" || status === "NOT_READY") &&
+          "border-border/60 bg-muted/40 text-muted-foreground",
+      )}
+    >
+      {status === "PROCESSING" ? (
+        <Spinner className="size-3 animate-spin" />
+      ) : status === "COMPLETED" ? (
+        <CheckCircle className="size-3" weight="fill" />
+      ) : status === "FAILED" ? (
+        <XCircle className="size-3" weight="fill" />
+      ) : (
+        <Wallet className="size-3" weight="fill" />
+      )}
+      {label}: {statusLabel}
+    </Badge>
+  )
+}
+
 /* ============================================================
    Modal Resultado do Rank Diário (o centro de tudo)
    ============================================================ */
@@ -277,6 +323,80 @@ export function DailyRankResultModal({
       { campaignId, date: preview?.date ?? "" },
       { enabled: paymentTransactionsOpen && !!campaignId && !!preview?.date },
     )
+  const { data: dailyRankingPixStatus } =
+    api.admin.getDailyRankingPixPayoutStatus.useQuery(
+      { campaignId, date: preview?.date ?? "" },
+      {
+        enabled:
+          open &&
+          data.campaign.dailyPix &&
+          Boolean(campaignId) &&
+          Boolean(preview?.date),
+        refetchInterval: open ? 5_000 : false,
+      },
+    )
+  const { data: topPostersPixStatus, isLoading: isLoadingTopPostersPixStatus } =
+    api.admin.getTopPostersPixPayoutStatus.useQuery(
+      {
+        campaignId: topPostersPreviewData?.campaignId ?? "",
+        date: topPostersPreviewData?.date ?? "",
+      },
+      {
+        enabled:
+          topPostersModalOpen &&
+          data.campaign.dailyPix &&
+          Boolean(topPostersPreviewData?.campaignId) &&
+          Boolean(topPostersPreviewData?.date),
+        refetchInterval: topPostersModalOpen ? 5_000 : false,
+      },
+    )
+
+  const dailyRankingPixFallbackStatus = React.useMemo(() => {
+    if (preview?.dailyPixPayoutCompleted) return "COMPLETED" as const
+    const eligible =
+      preview?.entries.filter(
+        (entry) =>
+          !entry.isDisqualified && entry.prize > 0 && entry.pixPayoutEligible,
+      ) ?? []
+    if (eligible.some((entry) => entry.dailyPixStatus === "PROCESSING")) {
+      return "PROCESSING" as const
+    }
+    const paid = eligible.filter(
+      (entry) => entry.dailyPixStatus === "PAID",
+    ).length
+    const failed = eligible.filter(
+      (entry) => entry.dailyPixStatus === "FAILED",
+    ).length
+    if (paid > 0 || (failed > 0 && failed < eligible.length)) {
+      return "PARTIAL" as const
+    }
+    if (failed > 0 && failed === eligible.length) return "FAILED" as const
+    return "PENDING" as const
+  }, [preview])
+  const topPostersPixLineByPosition = React.useMemo(
+    () =>
+      new Map(
+        (topPostersPixStatus?.lines ?? []).map((line) => [
+          line.position,
+          line.status === "COMPLETED"
+            ? ("COMPLETED" as const)
+            : line.status === "PROCESSING"
+              ? ("PROCESSING" as const)
+              : line.status === "FAILED"
+                ? ("FAILED" as const)
+                : ("PENDING" as const),
+        ]),
+      ),
+    [topPostersPixStatus],
+  )
+  const isDailyPixCompleted =
+    preview?.dailyPixPayoutCompleted === true ||
+    dailyRankingPixStatus?.status === "COMPLETED"
+  const effectiveDailyPixStatus =
+    dailyRankingPixStatus?.status === "PENDING" &&
+    dailyRankingPixFallbackStatus !== "PENDING"
+      ? dailyRankingPixFallbackStatus
+      : (dailyRankingPixStatus?.status ?? dailyRankingPixFallbackStatus)
 
   /* ===== Mutations ===== */
   const previewTopPostersDailyRankByDate =
@@ -326,6 +446,12 @@ export function DailyRankResultModal({
             date: result.date,
             excludedApplicationIds: topPostersExcludedApplicationIds,
           })
+          if (data.campaign.dailyPix && result.paid.length > 0) {
+            executeTopPostersPixPayout.mutate({
+              campaignId: result.campaignId,
+              date: result.date,
+            })
+          }
         }
 
         await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
@@ -333,6 +459,47 @@ export function DailyRankResultModal({
       },
       onError: (err) => {
         toast.error(err.message || "Erro ao pagar Top Postadores")
+      },
+    })
+
+  const executeTopPostersPixPayout =
+    api.admin.executeTopPostersPixPayout.useMutation({
+      onSuccess: async (result) => {
+        const failed = result.lines.filter((line) => line.status === "FAILED")
+        const processing = result.lines.filter(
+          (line) => line.status === "PROCESSING",
+        )
+        const completed = result.lines.length - failed.length - processing.length
+        if (failed.length > 0) {
+          toast.warning(
+            `PIX parcial: ${completed} concluído(s), ${processing.length} processando e ${failed.length} falha(s).`,
+            {
+              description:
+                failed
+                  .map(
+                    (line) =>
+                      `${line.position ?? "?"}º: ${line.error || "transferência recusada"}`,
+                  )
+                  .join(" · ") || undefined,
+            },
+          )
+        } else if (processing.length > 0) {
+          toast.success("PIX do Top Postadores enviado para processamento.", {
+            description: `${completed} concluído(s) e ${processing.length} aguardando confirmação da Asaas.`,
+          })
+        } else {
+          toast.success(`PIX do Top Postadores concluído para ${completed} posição(ões).`)
+        }
+        await utils.admin.getTopPostersPixPayoutStatus.invalidate({
+          campaignId: result.campaignId,
+          date: result.date,
+        })
+      },
+      onError: (err) => {
+        toast.error(err.message || "Erro no PIX do Top Postadores", {
+          description:
+            "Os prêmios continuam disponíveis nas carteiras e o PIX pode ser tentado novamente.",
+        })
       },
     })
 
@@ -876,6 +1043,23 @@ export function DailyRankResultModal({
                     />
                   </div>
                 )}
+                {data.campaign.dailyPix &&
+                  !isDisqualified &&
+                  computedPrize > 0 &&
+                  entry.pixPayoutEligible && (
+                    <PixPaymentStatusBadge
+                      label="PIX Diário"
+                      status={
+                        entry.dailyPixStatus === "PAID"
+                          ? "COMPLETED"
+                          : entry.dailyPixStatus === "PROCESSING"
+                            ? "PROCESSING"
+                            : entry.dailyPixStatus === "FAILED"
+                              ? "FAILED"
+                              : "PENDING"
+                      }
+                    />
+                  )}
               </div>
             </div>
 
@@ -1024,6 +1208,12 @@ export function DailyRankResultModal({
                   <span className="text-foreground/80 hidden text-sm font-medium sm:inline">
                     {preview?.campaignName}
                   </span>
+                  {data.campaign.dailyPix && (
+                    <PixPaymentStatusBadge
+                      label="PIX Ranking Diário"
+                      status={effectiveDailyPixStatus}
+                    />
+                  )}
                 </DialogTitle>
                 <DialogDescription asChild>
                   <div className="space-y-1.5 text-left">
@@ -1217,7 +1407,8 @@ export function DailyRankResultModal({
                               disabled={
                                 !markAnnouncedOnPay ||
                                 previewDailyPixPayout.isPending ||
-                                preview?.dailyPixPayoutCompleted === true
+                                effectiveDailyPixStatus === "PROCESSING" ||
+                                isDailyPixCompleted
                               }
                               className={cn(
                                 "h-9 w-full cursor-pointer gap-2 rounded-xl font-semibold",
@@ -1235,7 +1426,7 @@ export function DailyRankResultModal({
                             </Button>
                           </span>
                         </TooltipTrigger>
-                        {preview?.dailyPixPayoutCompleted ? (
+                        {isDailyPixCompleted ? (
                           <TooltipContent
                             side="bottom"
                             className="max-w-[240px] text-center"
@@ -1273,7 +1464,7 @@ export function DailyRankResultModal({
                   )}
                   {data.campaign.dailyPix &&
                     preview.canUndoRankPayments &&
-                    !preview.dailyPixPayoutCompleted && (
+                    !isDailyPixCompleted && (
                       <TooltipProvider delayDuration={200}>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -1589,6 +1780,12 @@ export function DailyRankResultModal({
                           {formatLongDate(topPostersPreviewData.date)}
                         </Badge>
                       )}
+                      {data.campaign.dailyPix && topPostersPixStatus && (
+                        <PixPaymentStatusBadge
+                          label="PIX Top Postadores"
+                          status={topPostersPixStatus.status}
+                        />
+                      )}
                     </div>
                     {topPostersPreviewData && (
                       <span className="text-muted-foreground/70 flex items-center gap-1.5 text-[10px] sm:text-[11px]">
@@ -1700,13 +1897,47 @@ export function DailyRankResultModal({
                           className="max-w-[260px] text-center"
                         >
                           <p className="text-xs">
-                            Credita o prêmio de cada posição na carteira. Remova
-                            quem não deve entrar no rateio antes de pagar.
+                            {data.campaign.dailyPix
+                              ? "Credita o prêmio na carteira e envia o PIX do Top Postadores. Remova quem não deve entrar antes de pagar."
+                              : "Credita o prêmio de cada posição na carteira. Remova quem não deve entrar no rateio antes de pagar."}
                           </p>
                         </TooltipContent>
                       )}
                     </Tooltip>
                   </TooltipProvider>
+                  {data.campaign.dailyPix &&
+                    !topPostersPreviewData.canPayTopPosters &&
+                    topPostersPixStatus?.status !== "COMPLETED" && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() =>
+                          executeTopPostersPixPayout.mutate({
+                            campaignId: topPostersPreviewData.campaignId,
+                            date: topPostersPreviewData.date,
+                          })
+                        }
+                        disabled={
+                          executeTopPostersPixPayout.isPending ||
+                          isLoadingTopPostersPixStatus ||
+                          !topPostersPixStatus ||
+                          topPostersPixStatus.processing > 0
+                        }
+                        className="h-9 w-full cursor-pointer gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 font-semibold text-emerald-600 hover:bg-emerald-500/25 disabled:opacity-50 sm:w-auto dark:text-emerald-300"
+                      >
+                        {executeTopPostersPixPayout.isPending ||
+                        isLoadingTopPostersPixStatus ? (
+                          <Spinner className="size-3.5 animate-spin" />
+                        ) : (
+                          <Wallet className="size-3.5" weight="fill" />
+                        )}
+                        {topPostersPixStatus?.processing
+                          ? "PIX processando"
+                          : topPostersPixStatus?.failed
+                            ? "Tentar PIX novamente"
+                            : "Enviar PIX"}
+                      </Button>
+                    )}
                 </div>
               )}
 
@@ -1764,6 +1995,17 @@ export function DailyRankResultModal({
                         >
                           {entry.prizeStatus === "PAID" ? "Pago" : "Pendente"}
                         </Badge>
+                        {data.campaign.dailyPix &&
+                          entry.prizeStatus === "PAID" && (
+                            <PixPaymentStatusBadge
+                              label="PIX Top"
+                              status={
+                                topPostersPixLineByPosition.get(
+                                  entry.position,
+                                ) ?? "PENDING"
+                              }
+                            />
+                          )}
                         <Button
                           type="button"
                           variant="ghost"
@@ -2743,9 +2985,10 @@ export function DailyRankResultModal({
                         !preview?.canUndoRankPayments ||
                         dailyPixPreviewPayload?.hasSufficientBalance === false ||
                         executeDailyPixPayout.isPending ||
+                        effectiveDailyPixStatus === "PROCESSING" ||
                         !campaignId ||
                         !preview?.date ||
-                        preview?.dailyPixPayoutCompleted === true
+                        isDailyPixCompleted
                       }
                       onClick={() => {
                         if (!campaignId || !preview?.date) return
