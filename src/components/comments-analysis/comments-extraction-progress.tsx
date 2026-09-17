@@ -28,6 +28,7 @@ export type CommentsExtractionStatus =
   | "DELAYED"
   | "RUNNING"
   | "COMPLETED"
+  | "PARTIAL"
   | "FAILED";
 
 export interface CommentsExtractionStat {
@@ -119,6 +120,17 @@ const STATUS_VISUALS: Record<CommentsExtractionStatus, StatusVisual> = {
     ring: "ring-emerald-500/20 dark:ring-emerald-400/25",
     bar: "from-emerald-500 to-teal-400 dark:from-[var(--brand-green)] dark:to-[var(--brand-mint)]",
   },
+  PARTIAL: {
+    label: "Coleta parcial",
+    description:
+      "A coleta terminou, mas alguns posts apresentaram falha. Os dados obtidos foram preservados.",
+    Icon: WarningCircle,
+    step: 2,
+    chip: "bg-amber-500/12 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300",
+    text: "text-amber-700 dark:text-amber-400",
+    ring: "ring-amber-500/20 dark:ring-amber-400/25",
+    bar: "from-amber-500 to-orange-400 dark:from-amber-400 dark:to-orange-300",
+  },
   FAILED: {
     label: "Falha na coleta",
     description: "A coleta foi interrompida antes de terminar.",
@@ -175,8 +187,11 @@ export function CommentsExtractionProgress({
   }
 
   const visual = STATUS_VISUALS[status] ?? STATUS_VISUALS.PENDING;
-  const isTerminal = status === "COMPLETED" || status === "FAILED";
-  const percentage = clampPercent(status === "COMPLETED" ? 100 : progress);
+  const isTerminal =
+    status === "COMPLETED" || status === "PARTIAL" || status === "FAILED";
+  const percentage = clampPercent(
+    status === "COMPLETED" || status === "PARTIAL" ? 100 : progress,
+  );
   const showRetries =
     typeof attemptsMade === "number" && typeof maxAttempts === "number";
 

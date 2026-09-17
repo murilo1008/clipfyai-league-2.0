@@ -357,11 +357,13 @@ export function CompetitionCommentsAnalysisPanel({
 function batchStatus(status: {
   totalJobs: number;
   processedJobs: number;
+  completedJobs: number;
   failedJobs: number;
   statusCounts: Record<string, number>;
 }): CommentsExtractionStatus {
   if (status.processedJobs >= status.totalJobs) {
-    return status.failedJobs > 0 ? "FAILED" : "COMPLETED";
+    if (status.failedJobs === 0) return "COMPLETED";
+    return status.completedJobs > 0 ? "PARTIAL" : "FAILED";
   }
   if ((status.statusCounts.RUNNING ?? 0) > 0) return "RUNNING";
   if ((status.statusCounts.DELAYED ?? 0) > 0) return "DELAYED";
