@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  ArrowsClockwise,
   ChatsCircle,
   CircleNotch,
   Sparkle,
@@ -12,6 +13,7 @@ import { toast } from "sonner";
 import {
   AnalysisNotice,
   CommentsAnalysisCostEstimate,
+  formatCostUsd,
 } from "@/components/comments-analysis/comments-analysis-cost-estimate";
 import {
   CommentsAnalysisProgress,
@@ -26,8 +28,23 @@ import {
   type CommentsExtractionStatus,
 } from "@/components/comments-analysis/comments-extraction-progress";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
+
+import {
+  campaignAnalysisEstimateSummary,
+  campaignAnalysisInput,
+} from "./competition-comments-analysis";
 
 /* ============================================================
    PAINEL ADMIN — OPINIÃO PÚBLICA DA COMPETIÇÃO
@@ -35,9 +52,6 @@ import { api } from "@/trpc/react";
    em USD (bloqueando acima do teto), dispara a análise de IA,
    acompanha o progresso ao vivo e mostra o resultado agregado.
    ============================================================ */
-
-/** Teto de comentários enviados por rodada de análise da competição. */
-const MAX_COMMENTS = 30_000;
 
 const TERMINAL_JOB_STATUSES = ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"];
 
@@ -55,6 +69,7 @@ export function CompetitionCommentsAnalysisPanel({
   const [extractionBatchId, setExtractionBatchId] = React.useState<
     string | null
   >(null);
+  const [isFullReanalysisOpen, setIsFullReanalysisOpen] = React.useState(false);
   const refreshedJobId = React.useRef<string | null>(null);
   const extractionFinished = React.useRef(false);
   const utils = api.useUtils();
@@ -66,9 +81,26 @@ export function CompetitionCommentsAnalysisPanel({
     campaignId,
   });
 
-  const estimateQuery = api.commentsAnalysis.estimateCampaign.useQuery(
-    { campaignId, maxComments: MAX_COMMENTS },
-    { refetchOnWindowFocus: false },
+  const incrementalEstimateInput = React.useMemo(
+    () => campaignAnalysisInput(campaignId, false),
+    [campaignId],
+  );
+  const fullEstimateInput = React.useMemo(
+    () => campaignAnalysisInput(campaignId, true),
+    [campaignId],
+  );
+
+  const incrementalEstimateQuery =
+    api.commentsAnalysis.estimateCampaign.useQuery(incrementalEstimateInput, {
+      refetchOnWindowFocus: false,
+    });
+
+  const fullEstimateQuery = api.commentsAnalysis.estimateCampaign.useQuery(
+    fullEstimateInput,
+    {
+      enabled: isFullReanalysisOpen,
+      refetchOnWindowFocus: false,
+    },
   );
 
   const jobQuery = api.commentsAnalysis.getJob.useQuery(
@@ -105,6 +137,7 @@ export function CompetitionCommentsAnalysisPanel({
       const nextJobId = (job as { id?: string })?.id;
       refreshedJobId.current = null;
       if (nextJobId) setJobId(nextJobId);
+      setIsFullReanalysisOpen(false);
       toast.success("Análise da competição adicionada à fila");
       await utils.commentsAnalysis.getCampaignAggregate.invalidate({
         campaignId,
@@ -175,13 +208,20 @@ export function CompetitionCommentsAnalysisPanel({
 
     void Promise.all([
       utils.commentsAnalysis.estimateCampaign.invalidate({
-        campaignId,
-        maxComments: MAX_COMMENTS,
+        ...incrementalEstimateInput,
       }),
+      utils.commentsAnalysis.estimateCampaign.invalidate(fullEstimateInput),
       utils.commentsAnalysis.getCampaignAggregate.invalidate({ campaignId }),
       utils.commentsAnalysis.getRepresentativeComments.invalidate(),
     ]);
-  }, [campaignId, extractionBatchId, extractionStatus.data, utils]);
+  }, [
+    campaignId,
+    extractionBatchId,
+    extractionStatus.data,
+    fullEstimateInput,
+    incrementalEstimateInput,
+    utils,
+  ]);
 
   React.useEffect(() => {
     if (!extractionStatus.error) return;
@@ -199,11 +239,18 @@ export function CompetitionCommentsAnalysisPanel({
       utils.commentsAnalysis.getCampaignAggregate.invalidate({ campaignId }),
       utils.commentsAnalysis.getRepresentativeComments.invalidate(),
       utils.commentsAnalysis.estimateCampaign.invalidate({
-        campaignId,
-        maxComments: MAX_COMMENTS,
+        ...incrementalEstimateInput,
       }),
+      utils.commentsAnalysis.estimateCampaign.invalidate(fullEstimateInput),
     ]);
-  }, [campaignId, jobId, jobQuery.data, utils]);
+  }, [
+    campaignId,
+    fullEstimateInput,
+    incrementalEstimateInput,
+    jobId,
+    jobQuery.data,
+    utils,
+  ]);
 
   /* ── Derivados ───────────────────────────────────────────────────────── */
 
@@ -211,14 +258,31 @@ export function CompetitionCommentsAnalysisPanel({
     | CommentsAnalysisAggregateData
     | null
     | undefined;
-  const estimate = estimateQuery.data as Record<string, unknown> | undefined;
+  const incrementalEstimate = incrementalEstimateQuery.data as
+    | Record<string, unknown>
+    | undefined;
+  const fullEstimate = fullEstimateQuery.data as
+    | Record<string, unknown>
+    | undefined;
+  const fullEstimateSummary = campaignAnalysisEstimateSummary(fullEstimate);
   const job = jobQuery.data as CommentsAnalysisJob | undefined;
   const batch = extractionStatus.data;
 
   const isRunning =
     job?.status === "PENDING" || job?.status === "RUNNING" || trigger.isPending;
-  const exceedsLimit = Boolean(estimate?.exceedsLimit);
-  const canTrigger = !isRunning && !estimateQuery.isLoading && !exceedsLimit;
+  const incrementalExceedsLimit = Boolean(incrementalEstimate?.exceedsLimit);
+  const canTriggerIncremental =
+    !isRunning &&
+    !incrementalEstimateQuery.isFetching &&
+    !incrementalEstimateQuery.error &&
+    Boolean(incrementalEstimate) &&
+    !incrementalExceedsLimit;
+  const canTriggerFull =
+    !isRunning &&
+    !fullEstimateQuery.isFetching &&
+    !fullEstimateQuery.error &&
+    Boolean(fullEstimate) &&
+    !fullEstimateSummary.exceedsLimit;
 
   const extractionIsRunning =
     triggerExtraction.isPending ||
@@ -257,45 +321,75 @@ export function CompetitionCommentsAnalysisPanel({
             {extractionIsRunning ? "Coletando…" : "Coletar comentários"}
           </Button>
 
-          <Button
-            type="button"
-            size="sm"
-            variant={aggregate ? "outline" : "default"}
-            className={cn(
-              "h-9 cursor-pointer rounded-xl text-xs",
-              !aggregate &&
+          {aggregate ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="bg-gradient-custom h-9 cursor-pointer rounded-xl text-xs text-[#04222A] hover:brightness-105"
+                disabled={!canTriggerIncremental}
+                title={
+                  incrementalExceedsLimit
+                    ? "Bloqueado: a estimativa incremental está acima do teto configurado"
+                    : undefined
+                }
+                onClick={() => trigger.mutate(incrementalEstimateInput)}
+              >
+                {isRunning ? (
+                  <CircleNotch className="size-3.5 animate-spin motion-reduce:animate-none" />
+                ) : (
+                  <Sparkle className="size-3.5" weight="fill" />
+                )}
+                {isRunning ? "Analisando…" : "Analisar novos comentários"}
+              </Button>
+
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-9 cursor-pointer rounded-xl text-xs"
+                disabled={isRunning}
+                onClick={() => setIsFullReanalysisOpen(true)}
+              >
+                <ArrowsClockwise className="size-3.5" weight="bold" />
+                Reanalisar competição completa
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              className={cn(
+                "h-9 cursor-pointer rounded-xl text-xs",
                 "bg-gradient-custom text-[#04222A] hover:brightness-105",
-            )}
-            disabled={!canTrigger}
-            title={
-              exceedsLimit
-                ? "Bloqueado: a estimativa de custo está acima do teto configurado"
-                : undefined
-            }
-            onClick={() =>
-              trigger.mutate({ campaignId, maxComments: MAX_COMMENTS })
-            }
-          >
-            {isRunning ? (
-              <CircleNotch className="size-3.5 animate-spin motion-reduce:animate-none" />
-            ) : (
-              <Sparkle className="size-3.5" weight="fill" />
-            )}
-            {isRunning
-              ? "Analisando…"
-              : aggregate
-                ? "Reanalisar competição"
-                : "Analisar competição"}
-          </Button>
+              )}
+              disabled={!canTriggerIncremental}
+              title={
+                incrementalExceedsLimit
+                  ? "Bloqueado: a estimativa de custo está acima do teto configurado"
+                  : undefined
+              }
+              onClick={() => trigger.mutate(incrementalEstimateInput)}
+            >
+              {isRunning ? (
+                <CircleNotch className="size-3.5 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <Sparkle className="size-3.5" weight="fill" />
+              )}
+              {isRunning ? "Analisando…" : "Analisar competição"}
+            </Button>
+          )}
         </>
       }
     >
       {/* ── Estimativa de custo (antes de disparar) ── */}
       <CommentsAnalysisCostEstimate
-        estimate={estimate}
-        isLoading={estimateQuery.isLoading}
-        errorMessage={estimateQuery.error?.message}
-        exceedsLimit={exceedsLimit}
+        estimate={incrementalEstimate}
+        isLoading={incrementalEstimateQuery.isFetching}
+        errorMessage={incrementalEstimateQuery.error?.message}
+        exceedsLimit={incrementalExceedsLimit}
       />
 
       {/* ── Progresso da coleta dos posts ── */}
@@ -347,6 +441,74 @@ export function CompetitionCommentsAnalysisPanel({
           {actionErrorMessage}
         </AnalysisNotice>
       )}
+
+      <AlertDialog
+        open={isFullReanalysisOpen}
+        onOpenChange={setIsFullReanalysisOpen}
+      >
+        <AlertDialogContent className="rounded-3xl sm:max-w-md">
+          <AlertDialogHeader className="text-left sm:text-left">
+            <AlertDialogTitle>Reanalisar competição completa?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-4">
+                <p>
+                  Todos os comentários serão processados novamente, inclusive os
+                  que já possuem uma análise válida.
+                </p>
+
+                {fullEstimateQuery.isFetching ? (
+                  <p className="flex items-center gap-2 font-medium">
+                    <CircleNotch className="size-4 animate-spin" />
+                    Calculando estimativa da reanálise completa…
+                  </p>
+                ) : fullEstimateQuery.error ? (
+                  <AnalysisNotice tone="rose" icon={WarningCircle}>
+                    {fullEstimateQuery.error.message}
+                  </AnalysisNotice>
+                ) : (
+                  <div className="border-border/60 bg-muted/30 grid grid-cols-2 gap-3 rounded-2xl border p-4">
+                    <div>
+                      <p className="text-muted-foreground text-xs">
+                        Comentários
+                      </p>
+                      <p className="text-foreground text-lg font-bold tabular-nums">
+                        {fullEstimateSummary.comments.toLocaleString("pt-BR")}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground text-xs">
+                        Custo estimado
+                      </p>
+                      <p className="text-foreground text-lg font-bold tabular-nums">
+                        {formatCostUsd(fullEstimateSummary.estimatedCostUsd)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {fullEstimateSummary.exceedsLimit && (
+                  <AnalysisNotice tone="amber" icon={WarningCircle}>
+                    A reanálise completa está acima do teto de custo
+                    configurado.
+                  </AnalysisNotice>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="cursor-pointer rounded-xl">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="cursor-pointer rounded-xl"
+              disabled={!canTriggerFull}
+              onClick={() => trigger.mutate(fullEstimateInput)}
+            >
+              Confirmar reanálise completa
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </CommentsAnalysisResultsPanel>
   );
 }
