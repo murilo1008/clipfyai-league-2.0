@@ -29,6 +29,8 @@ export interface CommentsAnalysisJobProgress {
   percentage?: number;
   handledComments?: number;
   completedComments?: number;
+  estimatedCompletedComments?: number;
+  estimatedProcessingComments?: number;
   failedComments?: number;
   skippedComments?: number;
   processingComments?: number;
@@ -219,7 +221,7 @@ export function CommentsAnalysisProgress({
   const status = job.status ?? "PENDING";
   const isTerminal = TERMINAL_STATUSES.has(status);
 
-  const completed =
+  const persistedCompleted =
     progress?.completedComments ??
     job.itemsByStatus?.COMPLETED ??
     job.processedComments ??
@@ -234,8 +236,19 @@ export function CommentsAnalysisProgress({
     job.itemsByStatus?.SKIPPED ??
     job.skippedComments ??
     0;
-  const processing =
-    progress?.processingComments ?? job.itemsByStatus?.PROCESSING ?? 0;
+  const usesEstimatedBatchProgress =
+    !isTerminal &&
+    typeof progress?.estimatedCompletedComments === "number" &&
+    progress.estimatedCompletedComments > persistedCompleted;
+  const completed = usesEstimatedBatchProgress
+    ? progress.estimatedCompletedComments!
+    : persistedCompleted;
+  const processing = usesEstimatedBatchProgress
+    ? (progress?.estimatedProcessingComments ??
+      progress?.processingComments ??
+      job.itemsByStatus?.PROCESSING ??
+      0)
+    : (progress?.processingComments ?? job.itemsByStatus?.PROCESSING ?? 0);
   const reused = job.metadata?.usageTelemetry?.reusedComments ?? 0;
   const queued = progress?.queuedComments ?? job.queuedComments ?? 0;
   const handled = progress?.handledComments ?? completed + failed;
@@ -383,7 +396,9 @@ export function CommentsAnalysisProgress({
         {/* ── Comentários processados ── */}
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
           <JobStat
-            label="Concluídos"
+            label={
+              usesEstimatedBatchProgress ? "Concluídos (estim.)" : "Concluídos"
+            }
             value={completed}
             suffix={queued > 0 ? `de ${formatInt(queued)}` : undefined}
             isTerminal={isTerminal}

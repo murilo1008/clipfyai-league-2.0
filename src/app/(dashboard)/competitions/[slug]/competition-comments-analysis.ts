@@ -7,7 +7,9 @@ export interface CampaignAnalysisInput {
 }
 
 export interface CampaignAnalysisEstimateSummary {
-  comments: number;
+  loadedComments: number;
+  queuedComments: number;
+  ignoredComments: number;
   estimatedCostUsd: number;
   exceedsLimit: boolean;
 }
@@ -26,9 +28,13 @@ export function campaignAnalysisInput(
 export function campaignAnalysisEstimateSummary(
   estimate: Record<string, unknown> | undefined,
 ): CampaignAnalysisEstimateSummary {
+  const loadedComments = estimateNumber(estimate?.totalCommentsLoaded);
+  const queuedComments = estimateNumber(estimate?.queuedComments);
   return {
-    comments: estimateNumber(
-      estimate?.totalCommentsLoaded ?? estimate?.queuedComments,
+    loadedComments: loadedComments || queuedComments,
+    queuedComments,
+    ignoredComments: estimateNumber(
+      estimate?.emptyComments ?? Math.max(loadedComments - queuedComments, 0),
     ),
     estimatedCostUsd: estimateNumber(estimate?.estimatedCostUsd),
     exceedsLimit: Boolean(estimate?.exceedsLimit),

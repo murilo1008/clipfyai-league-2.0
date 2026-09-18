@@ -28,11 +28,14 @@ describe("competition comments analysis flow", () => {
       campaignAnalysisEstimateSummary({
         totalCommentsLoaded: 12_345,
         queuedComments: 12_000,
+        emptyComments: 345,
         estimatedCostUsd: 1.234567,
         exceedsLimit: true,
       }),
     ).toEqual({
-      comments: 12_345,
+      loadedComments: 12_345,
+      queuedComments: 12_000,
+      ignoredComments: 345,
       estimatedCostUsd: 1.234567,
       exceedsLimit: true,
     });
@@ -45,8 +48,26 @@ describe("competition comments analysis flow", () => {
         estimatedCostUsd: "0.05",
       }),
     ).toEqual({
-      comments: 42,
+      loadedComments: 42,
+      queuedComments: 42,
+      ignoredComments: 0,
       estimatedCostUsd: 0.05,
+      exceedsLimit: false,
+    });
+  });
+
+  it("calcula ignorados quando a API não informa emptyComments", () => {
+    expect(
+      campaignAnalysisEstimateSummary({
+        totalCommentsLoaded: 1_091,
+        queuedComments: 832,
+        estimatedCostUsd: 0.014201,
+      }),
+    ).toEqual({
+      loadedComments: 1_091,
+      queuedComments: 832,
+      ignoredComments: 259,
+      estimatedCostUsd: 0.014201,
       exceedsLimit: false,
     });
   });

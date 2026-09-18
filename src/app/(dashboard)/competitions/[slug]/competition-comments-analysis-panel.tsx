@@ -469,10 +469,12 @@ export function CompetitionCommentsAnalysisPanel({
                   <div className="border-border/60 bg-muted/30 grid grid-cols-2 gap-3 rounded-2xl border p-4">
                     <div>
                       <p className="text-muted-foreground text-xs">
-                        Comentários
+                        Comentários a processar
                       </p>
                       <p className="text-foreground text-lg font-bold tabular-nums">
-                        {fullEstimateSummary.comments.toLocaleString("pt-BR")}
+                        {fullEstimateSummary.queuedComments.toLocaleString(
+                          "pt-BR",
+                        )}
                       </p>
                     </div>
                     <div>
@@ -485,6 +487,22 @@ export function CompetitionCommentsAnalysisPanel({
                     </div>
                   </div>
                 )}
+
+                {!fullEstimateQuery.isFetching &&
+                  !fullEstimateQuery.error &&
+                  fullEstimateSummary.ignoredComments > 0 && (
+                    <AnalysisNotice tone="amber" icon={WarningCircle}>
+                      {fullEstimateSummary.ignoredComments.toLocaleString(
+                        "pt-BR",
+                      )}{" "}
+                      comentários sem texto serão ignorados antes do
+                      processamento. Foram encontrados{" "}
+                      {fullEstimateSummary.loadedComments.toLocaleString(
+                        "pt-BR",
+                      )}{" "}
+                      comentários no total.
+                    </AnalysisNotice>
+                  )}
 
                 {fullEstimateSummary.exceedsLimit && (
                   <AnalysisNotice tone="amber" icon={WarningCircle}>
