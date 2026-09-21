@@ -86,6 +86,8 @@ model User {
   clientProfile     ClientProfile?
   auditLogs         AuditLog[]
   notifications     Notification[]
+  googleCalendarConnection GoogleCalendarConnection?
+  calendarSubscriptions    CampaignCalendarSubscription[]
   fraudReviews      FraudFlag[]          @relation("FraudReviewer")
   referredByClipper ClipperProfile?      @relation("ClipperReferrals", fields: [referredByClipperId], references: [id], onDelete: SetNull)
 
@@ -307,6 +309,7 @@ model Campaign {
   spotifyTracks             CampaignSpotifyTrack[]
   commentAnalysisJobs       CommentAnalysisJob[]
   commentAnalysisAggregates CommentAnalysisAggregate[]
+  calendarSubscriptions     CampaignCalendarSubscription[]
 
   @@index([organizationId])
   @@index([slug])
@@ -2221,6 +2224,44 @@ model Notification {
 
   @@index([userId, isRead])
   @@index([createdAt])
+}
+
+model GoogleCalendarConnection {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  refreshTokenEncrypted String    @db.Text
+  googleEmail           String?
+  calendarId            String    @default("primary")
+  scopes                String[]
+  connectedAt           DateTime  @default(now())
+  lastUsedAt            DateTime?
+  lastError             String?   @db.Text
+  revokedAt             DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user          User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptions CampaignCalendarSubscription[]
+}
+
+model CampaignCalendarSubscription {
+  id           String    @id @default(cuid())
+  campaignId   String
+  userId       String
+  connectionId String
+  enabled      Boolean   @default(true)
+  lastSyncedAt DateTime?
+  lastError    String?   @db.Text
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  campaign   Campaign                 @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user       User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection GoogleCalendarConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, userId])
+  @@index([connectionId, enabled])
+  @@index([campaignId, enabled])
 }
 
 // ============================================================================

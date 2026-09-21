@@ -15,6 +15,7 @@ import {
   FileXls,
   FilePdf,
   GearSix,
+  GoogleLogo,
   Globe,
   Hash,
   Heart,
@@ -120,6 +121,46 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
   )
 
   const [activeTab, setActiveTab] = React.useState("overview")
+  const [isCalendarDisconnectOpen, setIsCalendarDisconnectOpen] =
+    React.useState(false)
+  const calendarCampaignId = data?.campaign.id ?? ""
+  const { data: calendarSubscription, refetch: refetchCalendarSubscription } =
+    api.admin.getGoogleCalendarSubscription.useQuery(
+      { campaignId: calendarCampaignId },
+      { enabled: Boolean(calendarCampaignId) },
+    )
+  const disconnectCalendar =
+    api.admin.disconnectGoogleCalendarSubscription.useMutation({
+      onSuccess: async (result) => {
+        if (result.cleanupWarning) {
+          toast.warning("Integração desconectada", {
+            description:
+              "A conexão com o Google já não estava válida; talvez seja necessário remover eventos antigos manualmente.",
+          })
+        } else {
+          toast.success("Lembretes removidos do Google Agenda")
+        }
+        setIsCalendarDisconnectOpen(false)
+        await refetchCalendarSubscription()
+      },
+      onError: (error) =>
+        toast.error(error.message || "Não foi possível remover os lembretes"),
+    })
+
+  React.useEffect(() => {
+    const url = new URL(window.location.href)
+    const calendarStatus = url.searchParams.get("calendar")
+    if (!calendarStatus) return
+    if (calendarStatus === "connected") {
+      toast.success("Google Agenda conectado", {
+        description: "Os lembretes da competição foram sincronizados.",
+      })
+    } else if (calendarStatus === "error") {
+      toast.error("Não foi possível conectar o Google Agenda")
+    }
+    url.searchParams.delete("calendar")
+    window.history.replaceState({}, "", url)
+  }, [])
 
   /* ===== Dialog: mudar status ===== */
   const [isStatusDialogOpen, setIsStatusDialogOpen] = React.useState(false)
@@ -534,6 +575,44 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
                     <Button
                       variant="outline"
                       size="sm"
+                      className={cn(
+                        "h-9 cursor-pointer rounded-xl border-white/12 bg-white/[0.06] text-[#ecf7f9] hover:bg-white/12 hover:text-white",
+                        calendarSubscription?.connected &&
+                          "border-emerald-400/40 bg-emerald-500/15 text-emerald-300",
+                      )}
+                      title={
+                        calendarSubscription?.connected
+                          ? calendarSubscription.lastError
+                            ? `Google Agenda conectado, mas a última sincronização falhou: ${calendarSubscription.lastError}`
+                            : `Google Agenda conectado${calendarSubscription.googleEmail ? `: ${calendarSubscription.googleEmail}` : ""}`
+                          : "Receber lembretes desta competição no Google Agenda"
+                      }
+                      aria-label="Google Agenda"
+                      onClick={() => {
+                        if (
+                          calendarSubscription?.connected &&
+                          !calendarSubscription.lastError
+                        ) {
+                          setIsCalendarDisconnectOpen(true)
+                          return
+                        }
+                        window.location.assign(
+                          `/api/integrations/google-calendar/connect?campaignId=${encodeURIComponent(campaign.id)}${calendarSubscription?.lastError ? "&force=1" : ""}`,
+                        )
+                      }}
+                    >
+                      <GoogleLogo className="size-4" weight="bold" />
+                      <span className="hidden sm:inline">
+                        {calendarSubscription?.lastError
+                          ? "Reconectar agenda"
+                          : calendarSubscription?.connected
+                            ? "Agenda conectada"
+                            : "Lembretes"}
+                      </span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       className="h-9 cursor-pointer rounded-xl border-white/12 bg-white/[0.06] text-[#ecf7f9] hover:bg-white/12 hover:text-white"
                       onClick={() => {
                         setNewStatus(campaign.status)
@@ -783,6 +862,42 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
           </TabsContent>
         </Tabs>
       </Reveal>
+
+      <Dialog
+        open={isCalendarDisconnectOpen}
+        onOpenChange={setIsCalendarDisconnectOpen}
+      >
+        <DialogContent className="rounded-3xl sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remover lembretes desta competição?</DialogTitle>
+            <DialogDescription>
+              Os eventos da competição serão apagados da sua conta Google
+              Agenda. A conexão poderá continuar sendo usada em outras
+              competições.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCalendarDisconnectOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={disconnectCalendar.isPending || !calendarCampaignId}
+              onClick={() =>
+                disconnectCalendar.mutate({ campaignId: calendarCampaignId })
+              }
+            >
+              {disconnectCalendar.isPending ? (
+                <Spinner className="size-4 animate-spin" />
+              ) : null}
+              Remover lembretes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ===== Dialog: mudar status ===== */}
       <Dialog open={isStatusDialogOpen} onOpenChange={setIsStatusDialogOpen}>

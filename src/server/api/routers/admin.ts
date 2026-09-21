@@ -43,6 +43,8 @@ import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
+import { removeGoogleCalendarCampaignEvents } from "@/lib/google-calendar-oauth";
+import { syncGoogleCalendarCampaign } from "@/server/google-calendar-sync";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -695,6 +697,46 @@ function getApplicationApprovalEmailTemplate(
  * Acesso exclusivo para Admin Clipfy
  */
 export const adminRouter = createTRPCRouter({
+  getGoogleCalendarSubscription: adminProcedure
+    .input(z.object({ campaignId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const subscription = await ctx.db.campaignCalendarSubscription.findUnique({
+        where: { campaignId_userId: { campaignId: input.campaignId, userId: ctx.userId } },
+        select: { enabled: true, lastSyncedAt: true, lastError: true, connection: { select: { googleEmail: true, revokedAt: true } } },
+      });
+      return {
+        connected: Boolean(subscription?.enabled && !subscription.connection.revokedAt),
+        googleEmail: subscription?.connection.googleEmail ?? null,
+        lastSyncedAt: subscription?.lastSyncedAt ?? null,
+        lastError: subscription?.lastError ?? null,
+      };
+    }),
+
+  disconnectGoogleCalendarSubscription: adminProcedure
+    .input(z.object({ campaignId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const subscription = await ctx.db.campaignCalendarSubscription.findUnique({
+        where: { campaignId_userId: { campaignId: input.campaignId, userId: ctx.userId } },
+        include: { connection: true },
+      });
+      if (!subscription) return { disconnected: true, cleanupWarning: undefined };
+      let cleanupWarning: string | undefined;
+      try {
+        await removeGoogleCalendarCampaignEvents({
+          campaignId: input.campaignId,
+          calendarId: subscription.connection.calendarId,
+          refreshTokenEncrypted: subscription.connection.refreshTokenEncrypted,
+        });
+      } catch (error) {
+        cleanupWarning = error instanceof Error ? error.message : "Falha ao limpar eventos antigos";
+      }
+      await ctx.db.campaignCalendarSubscription.update({
+        where: { id: subscription.id },
+        data: { enabled: false, lastSyncedAt: null, lastError: cleanupWarning ?? null },
+      });
+      return { disconnected: true, cleanupWarning };
+    }),
+
   canTriggerManualMetricsExtraction: adminProcedure.query(({ ctx }) => {
     return {
       allowed: canTriggerManualMetricsExtraction(ctx.userId),
@@ -2627,6 +2669,14 @@ export const adminRouter = createTRPCRouter({
           },
         });
 
+        if (
+          input.data.name !== undefined ||
+          input.data.startDate !== undefined ||
+          input.data.endDate !== undefined
+        ) {
+          await syncGoogleCalendarCampaign(updated.id);
+        }
+
         return updated;
       }),
 
@@ -2636,6 +2686,9 @@ export const adminRouter = createTRPCRouter({
       .mutation(async ({ ctx, input }) => {
         const campaign = await ctx.db.campaign.findUnique({
           where: { id: input.id },
+          include: {
+            calendarSubscriptions: { include: { connection: true } },
+          },
         });
 
         if (!campaign) {
@@ -2653,6 +2706,18 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
+        const { calendarSubscriptions, ...deletedCampaign } = campaign;
+        await Promise.allSettled(
+          calendarSubscriptions.map((subscription) =>
+            removeGoogleCalendarCampaignEvents({
+              campaignId: campaign.id,
+              calendarId: subscription.connection.calendarId,
+              refreshTokenEncrypted:
+                subscription.connection.refreshTokenEncrypted,
+            }),
+          ),
+        );
+
         await ctx.db.campaign.delete({
           where: { id: input.id },
         });
@@ -2664,7 +2729,7 @@ export const adminRouter = createTRPCRouter({
             action: "DELETE",
             entityType: "Campaign",
             entityId: input.id,
-            changes: { deleted: campaign },
+            changes: { deleted: deletedCampaign },
           },
         });
 
