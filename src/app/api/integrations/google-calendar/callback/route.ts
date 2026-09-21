@@ -8,7 +8,6 @@ import {
   verifyGoogleCalendarState,
 } from "@/lib/google-calendar-oauth";
 import { db } from "@/server/db";
-import { syncGoogleCalendarSubscription } from "@/server/google-calendar-sync";
 
 function destination(request: Request, slug: string, status: string) {
   return new URL(`/competitions/${slug}?calendar=${status}`, request.url);
@@ -63,7 +62,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const subscriptionId = await db.$transaction(async (tx) => {
+    await db.$transaction(async (tx) => {
       const connection = await tx.googleCalendarConnection.upsert({
         where: { userId },
         create: {
@@ -81,7 +80,7 @@ export async function GET(request: Request) {
           lastError: null,
         },
       });
-      const subscription = await tx.campaignCalendarSubscription.upsert({
+      await tx.campaignCalendarSubscription.upsert({
         where: { campaignId_userId: { campaignId: campaign.id, userId } },
         create: {
           campaignId: campaign.id,
@@ -90,10 +89,7 @@ export async function GET(request: Request) {
         },
         update: { connectionId: connection.id, enabled: true, lastError: null },
       });
-      return subscription.id;
     });
-
-    await syncGoogleCalendarSubscription(subscriptionId);
 
     return NextResponse.redirect(
       destination(request, campaign.slug, "connected"),

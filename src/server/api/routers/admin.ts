@@ -44,7 +44,6 @@ import {
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
 import { removeGoogleCalendarCampaignEvents } from "@/lib/google-calendar-oauth";
-import { syncGoogleCalendarCampaign } from "@/server/google-calendar-sync";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -2668,14 +2667,6 @@ export const adminRouter = createTRPCRouter({
             changes: { before, after: updated },
           },
         });
-
-        if (
-          input.data.name !== undefined ||
-          input.data.startDate !== undefined ||
-          input.data.endDate !== undefined
-        ) {
-          await syncGoogleCalendarCampaign(updated.id);
-        }
 
         return updated;
       }),

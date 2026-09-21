@@ -153,7 +153,7 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
     if (!calendarStatus) return
     if (calendarStatus === "connected") {
       toast.success("Google Agenda conectado", {
-        description: "Os lembretes da competição foram sincronizados.",
+        description: "Os lembretes serão sincronizados em até 5 minutos.",
       })
     } else if (calendarStatus === "error") {
       toast.error("Não foi possível conectar o Google Agenda")

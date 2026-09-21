@@ -6,7 +6,6 @@ import {
   googleCalendarAuthorizationUrl,
 } from "@/lib/google-calendar-oauth";
 import { db } from "@/server/db";
-import { syncGoogleCalendarSubscription } from "@/server/google-calendar-sync";
 
 export async function GET(request: Request) {
   const { userId } = await auth();
@@ -43,7 +42,7 @@ export async function GET(request: Request) {
 
   if (existingConnection && !existingConnection.revokedAt && !forceConsent) {
     try {
-      const subscription = await db.campaignCalendarSubscription.upsert({
+      await db.campaignCalendarSubscription.upsert({
         where: { campaignId_userId: { campaignId, userId } },
         create: {
           campaignId,
@@ -56,7 +55,6 @@ export async function GET(request: Request) {
           lastError: null,
         },
       });
-      await syncGoogleCalendarSubscription(subscription.id);
       return NextResponse.redirect(
         new URL(
           `/competitions/${campaign.slug}?calendar=connected`,
