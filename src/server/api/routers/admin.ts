@@ -43,7 +43,7 @@ import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
-import { removeGoogleCalendarCampaignEvents } from "@/lib/google-calendar-oauth";
+import { disconnectGoogleCalendar } from "@/server/google-calendar";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -714,26 +714,20 @@ export const adminRouter = createTRPCRouter({
   disconnectGoogleCalendarSubscription: adminProcedure
     .input(z.object({ campaignId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const subscription = await ctx.db.campaignCalendarSubscription.findUnique({
-        where: { campaignId_userId: { campaignId: input.campaignId, userId: ctx.userId } },
-        include: { connection: true },
-      });
-      if (!subscription) return { disconnected: true, cleanupWarning: undefined };
-      let cleanupWarning: string | undefined;
       try {
-        await removeGoogleCalendarCampaignEvents({
+        return await disconnectGoogleCalendar({
+          userId: ctx.userId,
           campaignId: input.campaignId,
-          calendarId: subscription.connection.calendarId,
-          refreshTokenEncrypted: subscription.connection.refreshTokenEncrypted,
         });
       } catch (error) {
-        cleanupWarning = error instanceof Error ? error.message : "Falha ao limpar eventos antigos";
+        return {
+          disconnected: false,
+          cleanupWarning:
+            error instanceof Error
+              ? error.message
+              : "Falha ao desconectar o Google Agenda",
+        };
       }
-      await ctx.db.campaignCalendarSubscription.update({
-        where: { id: subscription.id },
-        data: { enabled: false, lastSyncedAt: null, lastError: cleanupWarning ?? null },
-      });
-      return { disconnected: true, cleanupWarning };
     }),
 
   canTriggerManualMetricsExtraction: adminProcedure.query(({ ctx }) => {
@@ -2700,11 +2694,9 @@ export const adminRouter = createTRPCRouter({
         const { calendarSubscriptions, ...deletedCampaign } = campaign;
         await Promise.allSettled(
           calendarSubscriptions.map((subscription) =>
-            removeGoogleCalendarCampaignEvents({
+            disconnectGoogleCalendar({
+              userId: subscription.userId,
               campaignId: campaign.id,
-              calendarId: subscription.connection.calendarId,
-              refreshTokenEncrypted:
-                subscription.connection.refreshTokenEncrypted,
             }),
           ),
         );

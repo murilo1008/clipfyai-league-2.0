@@ -1,11 +1,8 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-import {
-  createGoogleCalendarState,
-  googleCalendarAuthorizationUrl,
-} from "@/lib/google-calendar-oauth";
 import { db } from "@/server/db";
+import { startGoogleCalendarConnection } from "@/server/google-calendar";
 
 export async function GET(request: Request) {
   const { userId } = await auth();
@@ -20,15 +17,11 @@ export async function GET(request: Request) {
       { status: 400 },
     );
 
-  const [user, campaign, existingConnection] = await Promise.all([
+  const [user, campaign] = await Promise.all([
     db.user.findUnique({ where: { id: userId }, select: { role: true } }),
     db.campaign.findUnique({
       where: { id: campaignId },
       select: { id: true, slug: true },
-    }),
-    db.googleCalendarConnection.findUnique({
-      where: { userId },
-      select: { id: true, revokedAt: true },
     }),
   ]);
   if (!user || user.role !== "ADMIN") {
@@ -40,38 +33,13 @@ export async function GET(request: Request) {
       { status: 404 },
     );
 
-  if (existingConnection && !existingConnection.revokedAt && !forceConsent) {
-    try {
-      await db.campaignCalendarSubscription.upsert({
-        where: { campaignId_userId: { campaignId, userId } },
-        create: {
-          campaignId,
-          userId,
-          connectionId: existingConnection.id,
-        },
-        update: {
-          connectionId: existingConnection.id,
-          enabled: true,
-          lastError: null,
-        },
-      });
-      return NextResponse.redirect(
-        new URL(
-          `/competitions/${campaign.slug}?calendar=connected`,
-          request.url,
-        ),
-      );
-    } catch (error) {
-      console.error("Google Calendar existing connection:", error);
-      return NextResponse.redirect(
-        new URL(`/competitions/${campaign.slug}?calendar=error`, request.url),
-      );
-    }
-  }
-
   try {
-    const state = createGoogleCalendarState(userId, campaignId);
-    return NextResponse.redirect(googleCalendarAuthorizationUrl(state));
+    const { redirectUrl } = await startGoogleCalendarConnection({
+      userId,
+      campaignId,
+      forceConsent,
+    });
+    return NextResponse.redirect(redirectUrl);
   } catch (error) {
     console.error("Google Calendar OAuth start:", error);
     return NextResponse.redirect(
