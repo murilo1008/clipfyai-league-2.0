@@ -47,6 +47,7 @@ export const organizationRouter = createTRPCRouter({
             where: { organizationId: org.id },
             include: {
               clipPosts: {
+                where: { status: "ELIGIBLE" },
                 select: {
                   views: true,
                 },
@@ -368,6 +369,7 @@ export const organizationRouter = createTRPCRouter({
       const allCampaigns = await ctx.db.campaign.findMany({
         include: {
           clipPosts: {
+            where: { status: "ELIGIBLE" },
             select: {
               views: true,
             },

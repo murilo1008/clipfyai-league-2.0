@@ -69,6 +69,7 @@ export const clanRouter = createTRPCRouter({
               applications: {
                 select: {
                   clipPosts: {
+                    where: { status: "ELIGIBLE" },
                     select: {
                       views: true,
                     },
@@ -168,6 +169,7 @@ export const clanRouter = createTRPCRouter({
               applications: {
                 select: {
                   clipPosts: {
+                    where: { status: "ELIGIBLE" },
                     select: {
                       views: true,
                     },
@@ -468,6 +470,7 @@ export const clanRouter = createTRPCRouter({
                     select: { id: true, name: true },
                   },
                   clipPosts: {
+                    where: { status: "ELIGIBLE" },
                     select: {
                       id: true,
                       views: true,
@@ -676,6 +679,7 @@ export const clanRouter = createTRPCRouter({
                     },
                   },
                   clipPosts: {
+                    where: { status: "ELIGIBLE" },
                     select: {
                       id: true,
                       views: true,
@@ -1027,6 +1031,7 @@ export const clanRouter = createTRPCRouter({
             applications: {
               select: {
                 clipPosts: {
+                  where: { status: "ELIGIBLE" },
                   select: {
                     views: true,
                     likes: true,

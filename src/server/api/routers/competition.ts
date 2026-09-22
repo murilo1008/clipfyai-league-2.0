@@ -202,22 +202,22 @@ export const campaignRouter = createTRPCRouter({
             startDate: true,
             endDate: true,
           },
-        })
+        });
 
         if (!campaign) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Campanha não encontrada",
-          })
+          });
         }
 
-        // Top Accounts (usuários com mais views somadas)
-        // Inclui TODOS os posts independente do status
+        // Top Accounts (usuários com mais views elegíveis somadas)
         const topAccounts = await ctx.db.clipPost.groupBy({
           by: ["username"],
           where: {
             campaignId: input.campaignId,
             username: { not: null },
+            status: "ELIGIBLE",
           },
           _sum: {
             views: true,
@@ -235,13 +235,13 @@ export const campaignRouter = createTRPCRouter({
             },
           },
           take: 10,
-        })
+        });
 
-        // Top Posts por Views
-        // Inclui TODOS os posts independente do status
+        // Top Posts elegíveis por Views
         const topPostsByViews = await ctx.db.clipPost.findMany({
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           select: {
             id: true,
@@ -259,13 +259,13 @@ export const campaignRouter = createTRPCRouter({
             views: "desc",
           },
           take: 10,
-        })
+        });
 
-        // Top Posts por Likes
-        // Inclui TODOS os posts independente do status
+        // Top Posts elegíveis por Likes
         const topPostsByLikes = await ctx.db.clipPost.findMany({
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           select: {
             id: true,
@@ -283,13 +283,13 @@ export const campaignRouter = createTRPCRouter({
             likes: "desc",
           },
           take: 10,
-        })
+        });
 
-        // Top Posts por Comments
-        // Inclui TODOS os posts independente do status
+        // Top Posts elegíveis por Comments
         const topPostsByComments = await ctx.db.clipPost.findMany({
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           select: {
             id: true,
@@ -307,13 +307,13 @@ export const campaignRouter = createTRPCRouter({
             comments: "desc",
           },
           take: 10,
-        })
+        });
 
-        // TODOS os posts para a tabela
-        // Inclui TODOS os posts independente do status
+        // Posts elegíveis para a tabela
         const allPosts = await ctx.db.clipPost.findMany({
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           select: {
             id: true,
@@ -330,15 +330,15 @@ export const campaignRouter = createTRPCRouter({
           orderBy: {
             views: "desc",
           },
-        })
+        });
 
-        // TODAS as contas para a tabela (agrupadas)
-        // Inclui TODOS os posts independente do status
+        // Contas com posts elegíveis para a tabela (agrupadas)
         const allAccountsGrouped = await ctx.db.clipPost.groupBy({
           by: ["username"],
           where: {
             campaignId: input.campaignId,
             username: { not: null },
+            status: "ELIGIBLE",
           },
           _sum: {
             views: true,
@@ -355,16 +355,16 @@ export const campaignRouter = createTRPCRouter({
               views: "desc",
             },
           },
-        })
+        });
 
-        // Para cada conta, buscar as plataformas
-        // Inclui TODOS os posts independente do status
+        // Para cada conta, buscar as plataformas dos posts elegíveis
         const allAccounts = await Promise.all(
           allAccountsGrouped.map(async (acc) => {
             const posts = await ctx.db.clipPost.findMany({
               where: {
                 campaignId: input.campaignId,
                 username: acc.username,
+                status: "ELIGIBLE",
               },
               select: {
                 platform: true,
@@ -398,15 +398,16 @@ export const campaignRouter = createTRPCRouter({
               totalSaves,
               postsCount: acc._count.id,
               avgEngagement,
-            }
+            };
           }),
-        )
+        );
 
         // Crescimento de views ao longo do tempo (histórico de métricas)
         const metricsHistory = await ctx.db.clipPostMetrics.findMany({
           where: {
             clipPost: {
               campaignId: input.campaignId,
+              status: "ELIGIBLE",
             },
           },
           select: {
@@ -457,13 +458,13 @@ export const campaignRouter = createTRPCRouter({
             comments: data.comments,
             shares: data.shares,
           }),
-        )
+        );
 
-        // Estatísticas gerais
-        // Inclui TODOS os posts independente do status
+        // Estatísticas gerais dos posts elegíveis
         const totalStats = await ctx.db.clipPost.aggregate({
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           _sum: {
             views: true,
@@ -475,14 +476,14 @@ export const campaignRouter = createTRPCRouter({
           _count: {
             id: true,
           },
-        })
+        });
 
-        // Distribuição por plataforma
-        // Inclui TODOS os posts independente do status
+        // Distribuição dos posts elegíveis por plataforma
         const platformStats = await ctx.db.clipPost.groupBy({
           by: ["platform"],
           where: {
             campaignId: input.campaignId,
+            status: "ELIGIBLE",
           },
           _sum: {
             views: true,
@@ -572,24 +573,24 @@ export const campaignRouter = createTRPCRouter({
     )
     .query(async ({ ctx, input }) => {
       try {
-        const { campaignId, limit, cursor, platform, search, sortBy } = input
-        const skip = cursor || 0
+        const { campaignId, limit, cursor, platform, search, sortBy } = input;
+        const skip = cursor || 0;
 
-        // Construir where clause
-        // Inclui TODOS os posts independente do status
+        // Construir where clause apenas com posts elegíveis
         const where: any = {
           campaignId,
-        }
+          status: "ELIGIBLE",
+        };
 
         if (platform && platform !== "all") {
-          where.platform = platform
+          where.platform = platform;
         }
 
         if (search) {
           where.username = {
             contains: search,
             mode: "insensitive",
-          }
+          };
         }
 
         // Buscar posts
@@ -659,21 +660,21 @@ export const campaignRouter = createTRPCRouter({
     )
     .query(async ({ ctx, input }) => {
       try {
-        const { campaignId, limit, cursor, platform, search, sortBy } = input
-        const skip = cursor || 0
+        const { campaignId, limit, cursor, platform, search, sortBy } = input;
+        const skip = cursor || 0;
 
-        // Primeiro, buscar TODAS as contas (usernames únicos)
-        // Inclui TODOS os posts independente do status
+        // Primeiro, buscar contas com posts elegíveis (usernames únicos)
         const where: any = {
           campaignId,
           username: { not: null },
-        }
+          status: "ELIGIBLE",
+        };
 
         if (search) {
           where.username = {
             contains: search,
             mode: "insensitive",
-          }
+          };
         }
 
         // Buscar contas agrupadas
@@ -690,35 +691,35 @@ export const campaignRouter = createTRPCRouter({
           _count: {
             id: true,
           },
-        })
+        });
 
-        // Para cada conta, buscar plataformas e calcular engagement
-        // Inclui TODOS os posts independente do status
+        // Para cada conta, buscar plataformas elegíveis e calcular engagement
         let accounts = await Promise.all(
           allAccountsGrouped.map(async (acc) => {
             const posts = await ctx.db.clipPost.findMany({
               where: {
                 campaignId,
                 username: acc.username,
+                status: "ELIGIBLE",
               },
               select: {
                 platform: true,
               },
-            })
+            });
 
-            const platforms = Array.from(new Set(posts.map((p) => p.platform)))
-            const totalViews = Number(acc._sum.views || 0)
-            const totalLikes = acc._sum.likes || 0
-            const totalComments = acc._sum.comments || 0
-            const totalShares = acc._sum.shares || 0
-            const totalSaves = acc._sum.saves || 0
+            const platforms = Array.from(new Set(posts.map((p) => p.platform)));
+            const totalViews = Number(acc._sum.views || 0);
+            const totalLikes = acc._sum.likes || 0;
+            const totalComments = acc._sum.comments || 0;
+            const totalShares = acc._sum.shares || 0;
+            const totalSaves = acc._sum.saves || 0;
             const avgEngagement = calculateEngagementRate(
               totalViews,
               totalLikes,
               totalComments,
               totalShares,
               totalSaves,
-            )
+            );
 
             return {
               username: acc.username || "",
@@ -1877,17 +1878,17 @@ export const campaignRouter = createTRPCRouter({
             ctx.db.clipPost.aggregate({
               where: {
                 campaignId: campaign.id,
-                // Incluir TODOS os posts (ELIGIBLE, INELIGIBLE, PENDING, DISQUALIFIED) para a meta de views
+                status: "ELIGIBLE",
               },
               _sum: {
                 views: true,
               },
             }),
-          ])
+          ]);
 
         const competitionTotalViews = Number(
           competitionViewsAgg._sum.views || 0,
-        )
+        );
 
         // Buscar posts do clipper nesta competição (TODOS os status, incluindo PENDING)
         // OTIMIZAÇÃO: Limitar a 100 posts mais recentes para evitar queries pesadas
@@ -2301,7 +2302,7 @@ export const campaignRouter = createTRPCRouter({
           ctx.db.clipPost.findMany({
             where: {
               campaignId: campaign.id,
-              status: { not: "DISQUALIFIED" },
+              status: "ELIGIBLE",
               postedAt: { gte: dailyWindowStart, lt: dailyWindowEnd },
             },
             include: {
@@ -2374,28 +2375,29 @@ export const campaignRouter = createTRPCRouter({
               clanEmoji: post.application.clipperProfile.clan?.emoji ?? null,
               clanEmojiColor:
                 post.application.clipperProfile.clan?.emojiColor ?? null,
-            }
+            };
           }),
           metricType: campaign.rankingMetricType,
           topCount: dailyLimit,
           dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
-        })
+        });
 
         const topDailyPosts =
           snapshotRankingForReference.hasSnapshot &&
           snapshotRankingForReference.posts.length > 0
             ? snapshotRankingForReference.posts
-            : liveDailyPosts
+            : liveDailyPosts;
 
         // Dados de crescimento (últimos 7 dias)
-        const sevenDaysAgo = new Date()
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
         const metricsHistory = await ctx.db.clipPostMetrics.findMany({
           where: {
             clipPost: {
               campaignId: campaign.id,
               applicationId: application.id,
+              status: "ELIGIBLE",
             },
             collectedAt: {
               gte: sevenDaysAgo,
@@ -2683,15 +2685,15 @@ export const campaignRouter = createTRPCRouter({
           totalPosts: fromSnapshot.totalPosts,
           windowStart: startDate.toISOString(),
           windowEnd: endDate.toISOString(),
-        }
+        };
       }
 
-      const { startDate, endDate } = getPostedAtWindowUtc(input.date)
+      const { startDate, endDate } = getPostedAtWindowUtc(input.date);
       const [posts, dailyEntryMetricsMap] = await Promise.all([
         ctx.db.clipPost.findMany({
           where: {
             campaignId: input.campaignId,
-            status: { not: "DISQUALIFIED" },
+            status: "ELIGIBLE",
             postedAt: {
               gte: startDate,
               lt: endDate,

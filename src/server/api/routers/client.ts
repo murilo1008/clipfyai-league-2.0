@@ -964,7 +964,7 @@ export const clientRouter = createTRPCRouter({
         const metrics = await ctx.db.clipPost.aggregate({
           where: {
             campaignId: campaign.id,
-            // ✅ Removido filtro de status - soma TODOS os posts
+            status: "ELIGIBLE",
             ...postDateFilter,
           },
           _sum: {
@@ -983,7 +983,7 @@ export const clientRouter = createTRPCRouter({
         const recentMetrics = await ctx.db.clipPost.aggregate({
           where: {
             campaignId: campaign.id,
-            // ✅ Removido filtro de status - soma TODOS os posts
+            status: "ELIGIBLE",
             createdAt: {
               gte: sevenDaysAgo,
             },
@@ -1005,6 +1005,7 @@ export const clientRouter = createTRPCRouter({
           ctx.db.clipPost.findMany({
             where: {
               campaignId: campaign.id,
+              status: "ELIGIBLE",
               createdAt: { gte: growthStartDate, lte: growthEndDate },
               ...(isTarcisioCompetition ? { postedAt: { gte: tarcisioStartDate } } : {}),
             },
@@ -1014,6 +1015,7 @@ export const clientRouter = createTRPCRouter({
             by: ["platform"],
             where: {
               campaignId: campaign.id,
+              status: "ELIGIBLE",
               ...(isTarcisioCompetition ? { postedAt: { gte: tarcisioStartDate } } : {}),
             },
             _sum: { views: true },

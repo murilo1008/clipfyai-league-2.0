@@ -2550,6 +2550,7 @@ async function toolGetClipperPostsAnalysis(db: DB, args: Record<string, unknown>
 
   const postWhere: Record<string, unknown> = {
     applicationId: { in: apps.map((a: any) => a.id) },
+    status: "ELIGIBLE",
   }
   if (args.platform) postWhere.platform = args.platform
 

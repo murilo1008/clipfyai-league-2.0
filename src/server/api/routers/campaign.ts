@@ -184,6 +184,7 @@ export const campaignRouter = createTRPCRouter({
           where: {
             clipPost: {
               campaignId: input.campaignId,
+              status: "ELIGIBLE",
             },
           },
           select: {

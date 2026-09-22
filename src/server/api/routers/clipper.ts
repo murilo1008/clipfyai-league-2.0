@@ -674,7 +674,8 @@ export const clipperRouter = createTRPCRouter({
         COUNT(p."id")::bigint as total_posts
       FROM "ClipperProfile" cp
       LEFT JOIN "ClipperApplication" ca ON ca."clipperProfileId" = cp."id"
-      LEFT JOIN "ClipPost" p ON p."applicationId" = ca."id"
+      LEFT JOIN "ClipPost" p
+        ON p."applicationId" = ca."id" AND p."status" = 'ELIGIBLE'
       WHERE cp."city" IS NOT NULL AND cp."city" != ''
       GROUP BY cp."city", cp."state"
       ORDER BY total_views DESC
@@ -1767,6 +1768,7 @@ export const clipperRouter = createTRPCRouter({
               application: {
                 clipperProfileId: clipperProfile.id,
               },
+              status: "ELIGIBLE",
             },
             collectedAt: {
               gte: startDate,
@@ -4117,7 +4119,7 @@ export const clipperRouter = createTRPCRouter({
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     const posts = await ctx.db.clipPost.findMany({
-      where: { createdAt: { gte: thirtyDaysAgo } },
+      where: { status: "ELIGIBLE", createdAt: { gte: thirtyDaysAgo } },
       select: {
         views: true,
         likes: true,

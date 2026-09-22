@@ -3103,6 +3103,7 @@ export const adminRouter = createTRPCRouter({
     const previousMonthViewsResult = await ctx.db.clipPost.aggregate({
       _sum: { views: true },
       where: {
+        status: "ELIGIBLE",
         createdAt: {
           gte: previousMonth,
           lt: thirtyDaysAgo,
@@ -3232,6 +3233,7 @@ export const adminRouter = createTRPCRouter({
         ctx.db.clipPost.aggregate({
           _sum: { views: true },
           where: {
+            status: "ELIGIBLE",
             createdAt: {
               gte: date,
               lt: nextDay,
@@ -3241,6 +3243,7 @@ export const adminRouter = createTRPCRouter({
         ctx.db.clipPost.aggregate({
           _sum: { likes: true },
           where: {
+            status: "ELIGIBLE",
             createdAt: {
               gte: date,
               lt: nextDay,
@@ -3267,16 +3270,17 @@ export const adminRouter = createTRPCRouter({
 
     const [postsInRange, allPlatforms, viewsBefore] = await Promise.all([
       ctx.db.clipPost.findMany({
-        where: { createdAt: { gte: startDate } },
+        where: { status: "ELIGIBLE", createdAt: { gte: startDate } },
         select: { platform: true, views: true, createdAt: true },
       }),
       ctx.db.clipPost.groupBy({
         by: ["platform"],
+        where: { status: "ELIGIBLE" },
         _sum: { views: true },
       }),
       ctx.db.clipPost.groupBy({
         by: ["platform"],
-        where: { createdAt: { lt: startDate } },
+        where: { status: "ELIGIBLE", createdAt: { lt: startDate } },
         _sum: { views: true },
       }),
     ]);
@@ -3331,6 +3335,7 @@ export const adminRouter = createTRPCRouter({
   getPlatformData: adminProcedure.query(async ({ ctx }) => {
     const platforms = await ctx.db.clipPost.groupBy({
       by: ["platform"],
+      where: { status: "ELIGIBLE" },
       _count: { id: true },
       _sum: {
         views: true,
@@ -3345,7 +3350,7 @@ export const adminRouter = createTRPCRouter({
       platforms.map(async (p) => {
         // Contar clippers únicos por plataforma
         const clippers = await ctx.db.clipPost.findMany({
-          where: { platform: p.platform },
+          where: { platform: p.platform, status: "ELIGIBLE" },
           select: { applicationId: true },
           distinct: ["applicationId"],
         });
@@ -3386,6 +3391,7 @@ export const adminRouter = createTRPCRouter({
       orderBy: { createdAt: "desc" },
       include: {
         clipPosts: {
+          where: { status: "ELIGIBLE" },
           select: {
             views: true,
           },
@@ -3423,7 +3429,7 @@ export const adminRouter = createTRPCRouter({
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     const posts = await ctx.db.clipPost.findMany({
-      where: { createdAt: { gte: thirtyDaysAgo } },
+      where: { status: "ELIGIBLE", createdAt: { gte: thirtyDaysAgo } },
       select: {
         views: true,
         likes: true,
@@ -3609,6 +3615,7 @@ export const adminRouter = createTRPCRouter({
     // Buscar totais de todas as métricas
     const [totalMetrics, maxMetrics] = await Promise.all([
       ctx.db.clipPost.aggregate({
+        where: { status: "ELIGIBLE" },
         _sum: {
           views: true,
           likes: true,
@@ -3619,6 +3626,7 @@ export const adminRouter = createTRPCRouter({
         _count: { _all: true },
       }),
       ctx.db.clipPost.aggregate({
+        where: { status: "ELIGIBLE" },
         _max: {
           views: true,
           likes: true,
@@ -3827,7 +3835,7 @@ export const adminRouter = createTRPCRouter({
               in: ["ACTIVE", "COMPLETED"],
             },
           },
-          // Removido filtro de status para contar TODOS os posts
+          status: "ELIGIBLE",
         },
         _sum: {
           views: true,
@@ -5223,7 +5231,7 @@ export const adminRouter = createTRPCRouter({
           // 1. Estatísticas gerais
           Promise.all([
             ctx.db.clipPost.aggregate({
-              where: { campaignId: campaign.id },
+              where: { campaignId: campaign.id, status: "ELIGIBLE" },
               _sum: {
                 views: true,
                 likes: true,
@@ -5902,7 +5910,7 @@ export const adminRouter = createTRPCRouter({
 
         // Estatísticas gerais para ajuste do último ponto do gráfico
         const totalStatsAgg = await ctx.db.clipPost.aggregate({
-          where: { campaignId: campaign.id },
+          where: { campaignId: campaign.id, status: "ELIGIBLE" },
           _sum: {
             views: true,
             likes: true,
@@ -6077,13 +6085,14 @@ export const adminRouter = createTRPCRouter({
           ctx.db.clipPost.findMany({
             where: {
               campaignId: campaign.id,
+              status: "ELIGIBLE",
               createdAt: { gte: growthStartDate, lte: growthEndDate },
             },
             select: { platform: true, views: true, createdAt: true },
           }),
           ctx.db.clipPost.groupBy({
             by: ["platform"],
-            where: { campaignId: campaign.id },
+            where: { campaignId: campaign.id, status: "ELIGIBLE" },
             _sum: { views: true },
           }),
         ]);
@@ -7444,6 +7453,7 @@ export const adminRouter = createTRPCRouter({
           JOIN "ClipPost" cp2 ON cp2."applicationId" = ca2.id
             AND cp2."platform"::text = sa2."platform"::text
             AND LOWER(REPLACE(COALESCE(cp2."username", ''), '@', '')) = LOWER(REPLACE(sa2."username", '@', ''))
+            AND cp2."status" = 'ELIGIBLE'
           GROUP BY sa2.id
         )
         SELECT
@@ -7568,6 +7578,7 @@ export const adminRouter = createTRPCRouter({
             COUNT(DISTINCT ca."clipperProfileId")::bigint as clippers_with_posts
           FROM "ClipPost" cp
           JOIN "ClipperApplication" ca ON cp."applicationId" = ca.id
+          WHERE cp."status" = 'ELIGIBLE'
         `,
     ]);
 
@@ -8736,6 +8747,7 @@ export const adminRouter = createTRPCRouter({
         // Buscar total de views por competição (para CPM)
         const campaignViews = await ctx.db.clipPost.groupBy({
           by: ["campaignId"],
+          where: { status: "ELIGIBLE" },
           _sum: { views: true },
           _count: { id: true },
         });
@@ -13707,6 +13719,7 @@ export const adminRouter = createTRPCRouter({
       const posts = await ctx.db.clipPost.findMany({
         where: {
           campaignId: { in: input.campaignIds },
+          status: "ELIGIBLE",
           ...(isAll ? {} : { postedAt: dateFilter }),
         },
         select: {
