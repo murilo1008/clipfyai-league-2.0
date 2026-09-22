@@ -34,10 +34,10 @@ import {
   Warning,
   X,
   XCircle,
-} from "@phosphor-icons/react"
-import { format, parseISO } from "date-fns"
-import { ptBR } from "date-fns/locale"
-import { toast } from "sonner"
+} from "@phosphor-icons/react";
+import { format, parseISO } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -47,9 +47,9 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -57,20 +57,20 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
-import { Bone } from "@/components/shared/skeletons"
-import { Textarea } from "@/components/ui/textarea"
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Bone } from "@/components/shared/skeletons";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/components/ui/tooltip"
-import { buildDailyRankDiscordExportText } from "@/lib/daily-ranking-preview"
-import { platformConfig, type PlatformKey } from "@/lib/platform-config"
-import { cn } from "@/lib/utils"
-import { api, type RouterOutputs } from "@/trpc/react"
+} from "@/components/ui/tooltip";
+import { buildDailyRankDiscordExportText } from "@/lib/daily-ranking-preview";
+import { platformConfig, type PlatformKey } from "@/lib/platform-config";
+import { cn } from "@/lib/utils";
+import { api, type RouterOutputs } from "@/trpc/react";
 
 import {
   ConfirmWordInput,
@@ -139,11 +139,11 @@ function slugifyCampaignName(name: string | null | undefined): string {
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_|_$/g, "")
+    .replace(/^_|_$/g, "");
 }
 
 function formatLongDate(ymd: string): string {
-  return format(parseISO(ymd), "dd 'de' MMMM 'de' yyyy", { locale: ptBR })
+  return format(parseISO(ymd), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
 }
 
 /** Chip de métrica compacto (variação com cores por métrica). */
@@ -153,10 +153,10 @@ function MetricChip({
   tone,
   muted,
 }: {
-  icon?: React.ReactNode
-  children: React.ReactNode
-  tone: "blue" | "rose" | "sky" | "violet" | "amber" | "pink"
-  muted?: boolean
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  tone: "blue" | "rose" | "sky" | "violet" | "amber" | "pink";
+  muted?: boolean;
 }) {
   const tones: Record<string, string> = {
     blue: "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-300",
@@ -167,7 +167,7 @@ function MetricChip({
     amber:
       "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300",
     pink: "border-pink-500/20 bg-gradient-to-r from-pink-500/10 to-purple-500/10 text-pink-600 dark:text-pink-300",
-  }
+  };
   return (
     <span
       className={cn(
@@ -180,15 +180,21 @@ function MetricChip({
       {icon}
       {children}
     </span>
-  )
+  );
 }
 
 function PixPaymentStatusBadge({
   label,
   status,
 }: {
-  label: string
-  status: "NOT_READY" | "PENDING" | "PROCESSING" | "PARTIAL" | "FAILED" | "COMPLETED"
+  label: string;
+  status:
+    | "NOT_READY"
+    | "PENDING"
+    | "PROCESSING"
+    | "PARTIAL"
+    | "FAILED"
+    | "COMPLETED";
 }) {
   const statusLabel = {
     NOT_READY: "aguardando crédito",
@@ -197,7 +203,7 @@ function PixPaymentStatusBadge({
     PARTIAL: "parcial",
     FAILED: "falhou",
     COMPLETED: "pago",
-  }[status]
+  }[status];
   return (
     <Badge
       variant="outline"
@@ -226,7 +232,7 @@ function PixPaymentStatusBadge({
       )}
       {label}: {statusLabel}
     </Badge>
-  )
+  );
 }
 
 /* ============================================================
@@ -245,84 +251,80 @@ export function DailyRankResultModal({
   refreshPreviewSilently,
   refetch,
 }: DailyRankResultModalProps) {
-  const formatCurrency = useFormatCurrency()
-  const utils = api.useUtils()
+  const formatCurrency = useFormatCurrency();
+  const utils = api.useUtils();
 
   /* ===== Estado interno dos sub-modais ===== */
   const [dailyRankExportModalOpen, setDailyRankExportModalOpen] =
-    React.useState(false)
-  const [dailyRankExportText, setDailyRankExportText] = React.useState("")
-  const [topPostersModalOpen, setTopPostersModalOpen] = React.useState(false)
+    React.useState(false);
+  const [dailyRankExportText, setDailyRankExportText] = React.useState("");
+  const [topPostersModalOpen, setTopPostersModalOpen] = React.useState(false);
   const [topPostersExportModalOpen, setTopPostersExportModalOpen] =
-    React.useState(false)
-  const [topPostersExportText, setTopPostersExportText] = React.useState("")
+    React.useState(false);
+  const [topPostersExportText, setTopPostersExportText] = React.useState("");
   const [topPostersPreviewData, setTopPostersPreviewData] =
-    React.useState<TopPostersPreview | null>(null)
-  /** Clipadores removidos do rateio do Top Postadores antes de pagar. */
-  const [
-    topPostersExcludedApplicationIds,
-    setTopPostersExcludedApplicationIds,
-  ] = React.useState<string[]>([])
+    React.useState<TopPostersPreview | null>(null);
   const [topPostersPayDialogOpen, setTopPostersPayDialogOpen] =
-    React.useState(false)
+    React.useState(false);
   const [topPostersPayPlan, setTopPostersPayPlan] =
-    React.useState<PayTopPostersPlan | null>(null)
-  const [topPostersPayInput, setTopPostersPayInput] = React.useState("")
+    React.useState<PayTopPostersPlan | null>(null);
+  const [topPostersPayInput, setTopPostersPayInput] = React.useState("");
   const [paymentTransactionsOpen, setPaymentTransactionsOpen] =
-    React.useState(false)
+    React.useState(false);
   const [dailyPixPayoutModalOpen, setDailyPixPayoutModalOpen] =
-    React.useState(false)
+    React.useState(false);
   const [dailyPixPreviewPayload, setDailyPixPreviewPayload] =
-    React.useState<Record<string, unknown> | null>(null)
-  const [payRankDialogOpen, setPayRankDialogOpen] = React.useState(false)
-  const [payRankInput, setPayRankInput] = React.useState("")
-  const [payRankPlan, setPayRankPlan] = React.useState<PayRankPlan | null>(null)
-  const [undoRankDialogOpen, setUndoRankDialogOpen] = React.useState(false)
+    React.useState<Record<string, unknown> | null>(null);
+  const [payRankDialogOpen, setPayRankDialogOpen] = React.useState(false);
+  const [payRankInput, setPayRankInput] = React.useState("");
+  const [payRankPlan, setPayRankPlan] = React.useState<PayRankPlan | null>(
+    null,
+  );
+  const [undoRankDialogOpen, setUndoRankDialogOpen] = React.useState(false);
   const [undoRankPlan, setUndoRankPlan] = React.useState<UndoRankPlan | null>(
     null,
-  )
+  );
   const [disqualifyConfirm, setDisqualifyConfirm] = React.useState<{
-    dailyRankingEntryId: string
-    clipPostId: string
-    clipperName: string
-    submittedUrl: string
-  } | null>(null)
-  const [disqualifyInput, setDisqualifyInput] = React.useState("")
-  const [disqualifyReason, setDisqualifyReason] = React.useState("")
+    dailyRankingEntryId: string;
+    clipPostId: string;
+    clipperName: string;
+    submittedUrl: string;
+  } | null>(null);
+  const [disqualifyInput, setDisqualifyInput] = React.useState("");
+  const [disqualifyReason, setDisqualifyReason] = React.useState("");
 
   /* Ao fechar o modal principal, zera todos os sub-estados. */
   React.useEffect(() => {
     if (!open) {
-      setDailyRankExportModalOpen(false)
-      setDailyRankExportText("")
-      setTopPostersModalOpen(false)
-      setTopPostersExportModalOpen(false)
-      setTopPostersExportText("")
-      setTopPostersPreviewData(null)
-      setTopPostersExcludedApplicationIds([])
-      setTopPostersPayDialogOpen(false)
-      setTopPostersPayPlan(null)
-      setTopPostersPayInput("")
-      setPaymentTransactionsOpen(false)
-      setDailyPixPayoutModalOpen(false)
-      setDailyPixPreviewPayload(null)
-      setPayRankDialogOpen(false)
-      setPayRankInput("")
-      setPayRankPlan(null)
-      setUndoRankDialogOpen(false)
-      setUndoRankPlan(null)
-      setDisqualifyConfirm(null)
-      setDisqualifyInput("")
-      setDisqualifyReason("")
+      setDailyRankExportModalOpen(false);
+      setDailyRankExportText("");
+      setTopPostersModalOpen(false);
+      setTopPostersExportModalOpen(false);
+      setTopPostersExportText("");
+      setTopPostersPreviewData(null);
+      setTopPostersPayDialogOpen(false);
+      setTopPostersPayPlan(null);
+      setTopPostersPayInput("");
+      setPaymentTransactionsOpen(false);
+      setDailyPixPayoutModalOpen(false);
+      setDailyPixPreviewPayload(null);
+      setPayRankDialogOpen(false);
+      setPayRankInput("");
+      setPayRankPlan(null);
+      setUndoRankDialogOpen(false);
+      setUndoRankPlan(null);
+      setDisqualifyConfirm(null);
+      setDisqualifyInput("");
+      setDisqualifyReason("");
     }
-  }, [open])
+  }, [open]);
 
   /* ===== Queries ===== */
   const { data: paymentTransactions, isLoading: isLoadingTransactions } =
     api.admin.getDailyRankPaymentTransactions.useQuery(
       { campaignId, date: preview?.date ?? "" },
       { enabled: paymentTransactionsOpen && !!campaignId && !!preview?.date },
-    )
+    );
   const { data: dailyRankingPixStatus } =
     api.admin.getDailyRankingPixPayoutStatus.useQuery(
       { campaignId, date: preview?.date ?? "" },
@@ -334,7 +336,7 @@ export function DailyRankResultModal({
           Boolean(preview?.date),
         refetchInterval: open ? 5_000 : false,
       },
-    )
+    );
   const { data: topPostersPixStatus, isLoading: isLoadingTopPostersPixStatus } =
     api.admin.getTopPostersPixPayoutStatus.useQuery(
       {
@@ -349,30 +351,30 @@ export function DailyRankResultModal({
           Boolean(topPostersPreviewData?.date),
         refetchInterval: topPostersModalOpen ? 5_000 : false,
       },
-    )
+    );
 
   const dailyRankingPixFallbackStatus = React.useMemo(() => {
-    if (preview?.dailyPixPayoutCompleted) return "COMPLETED" as const
+    if (preview?.dailyPixPayoutCompleted) return "COMPLETED" as const;
     const eligible =
       preview?.entries.filter(
         (entry) =>
           !entry.isDisqualified && entry.prize > 0 && entry.pixPayoutEligible,
-      ) ?? []
+      ) ?? [];
     if (eligible.some((entry) => entry.dailyPixStatus === "PROCESSING")) {
-      return "PROCESSING" as const
+      return "PROCESSING" as const;
     }
     const paid = eligible.filter(
       (entry) => entry.dailyPixStatus === "PAID",
-    ).length
+    ).length;
     const failed = eligible.filter(
       (entry) => entry.dailyPixStatus === "FAILED",
-    ).length
+    ).length;
     if (paid > 0 || (failed > 0 && failed < eligible.length)) {
-      return "PARTIAL" as const
+      return "PARTIAL" as const;
     }
-    if (failed > 0 && failed === eligible.length) return "FAILED" as const
-    return "PENDING" as const
-  }, [preview])
+    if (failed > 0 && failed === eligible.length) return "FAILED" as const;
+    return "PENDING" as const;
+  }, [preview]);
   const topPostersPixLineByPosition = React.useMemo(
     () =>
       new Map(
@@ -388,88 +390,127 @@ export function DailyRankResultModal({
         ]),
       ),
     [topPostersPixStatus],
-  )
+  );
   const isDailyPixCompleted =
     preview?.dailyPixPayoutCompleted === true ||
-    dailyRankingPixStatus?.status === "COMPLETED"
+    dailyRankingPixStatus?.status === "COMPLETED";
   const effectiveDailyPixStatus =
     dailyRankingPixStatus?.status === "PENDING" &&
     dailyRankingPixFallbackStatus !== "PENDING"
       ? dailyRankingPixFallbackStatus
-      : (dailyRankingPixStatus?.status ?? dailyRankingPixFallbackStatus)
+      : (dailyRankingPixStatus?.status ?? dailyRankingPixFallbackStatus);
 
   /* ===== Mutations ===== */
   const previewTopPostersDailyRankByDate =
     api.admin.previewTopPostersDailyRankByDate.useMutation({
       onSuccess: (result) => {
-        setTopPostersPreviewData(result)
-        setTopPostersModalOpen(true)
+        setTopPostersPreviewData(result);
+        setTopPostersModalOpen(true);
       },
       onError: (err) => {
-        toast.error(err.message || "Erro ao gerar top postadores do dia")
+        toast.error(err.message || "Erro ao gerar top postadores do dia");
       },
-    })
+    });
+
+  const disqualifyTopClippersEntry =
+    api.admin.disqualifyTopClippersDailyRankingEntry.useMutation({
+      onSuccess: (result) => {
+        toast.success(result.message);
+        if (!topPostersPreviewData) return;
+        previewTopPostersDailyRankByDate.mutate({
+          campaignId: topPostersPreviewData.campaignId,
+          date: topPostersPreviewData.date,
+        });
+      },
+      onError: (err) => {
+        toast.error(err.message || "Erro ao desclassificar clipador");
+      },
+    });
+
+  const undoDisqualifyTopClippersEntry =
+    api.admin.undoDisqualifyTopClippersDailyRankingEntry.useMutation({
+      onSuccess: (result) => {
+        toast.success(result.message);
+        if (!topPostersPreviewData) return;
+        previewTopPostersDailyRankByDate.mutate({
+          campaignId: topPostersPreviewData.campaignId,
+          date: topPostersPreviewData.date,
+        });
+      },
+      onError: (err) => {
+        toast.error(err.message || "Erro ao reverter desclassificação");
+      },
+    });
 
   const payTopPostersDailyRankByDate =
     api.admin.payTopPostersDailyRankByDate.useMutation({
       onSuccess: async (result) => {
         if (result.dryRun) {
-          setTopPostersPayPlan(result)
-          setTopPostersPayDialogOpen(true)
-          return
+          setTopPostersPayPlan(result);
+          setTopPostersPayDialogOpen(true);
+          return;
         }
 
-        const ok = result.paid.length
-        const bad = result.failed.length
+        const ok = result.paid.length;
+        const bad = result.failed.length;
         if (bad === 0) {
           toast.success(
             `Top Postadores pago: ${ok} crédito(s) processado(s).`,
             {
               description: `Total creditado: ${formatCurrency(result.totalAmountPaid)}`,
             },
-          )
+          );
         } else {
           toast.warning(`Pagamento parcial: ${ok} ok, ${bad} falha(s).`, {
             description: result.failed
               .map((f) => `${f.position}º ${f.clipperName}: ${f.error}`)
               .join(" · "),
-          })
+          });
         }
 
-        setTopPostersPayDialogOpen(false)
-        setTopPostersPayPlan(null)
-        setTopPostersPayInput("")
+        setTopPostersPayDialogOpen(false);
+        setTopPostersPayPlan(null);
+        setTopPostersPayInput("");
 
         if (result.campaignId && result.date) {
           previewTopPostersDailyRankByDate.mutate({
             campaignId: result.campaignId,
             date: result.date,
-            excludedApplicationIds: topPostersExcludedApplicationIds,
-          })
+          });
           if (data.campaign.dailyPix && result.paid.length > 0) {
             executeTopPostersPixPayout.mutate({
               campaignId: result.campaignId,
               date: result.date,
-            })
+            });
           }
         }
 
-        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-        refetch()
+        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+        refetch();
       },
-      onError: (err) => {
-        toast.error(err.message || "Erro ao pagar Top Postadores")
+      onError: (err, variables) => {
+        toast.error(err.message || "Erro ao pagar Top Postadores");
+        if (!variables.dryRun && topPostersPreviewData) {
+          setTopPostersPayDialogOpen(false);
+          setTopPostersPayPlan(null);
+          setTopPostersPayInput("");
+          previewTopPostersDailyRankByDate.mutate({
+            campaignId: topPostersPreviewData.campaignId,
+            date: topPostersPreviewData.date,
+          });
+        }
       },
-    })
+    });
 
   const executeTopPostersPixPayout =
     api.admin.executeTopPostersPixPayout.useMutation({
       onSuccess: async (result) => {
-        const failed = result.lines.filter((line) => line.status === "FAILED")
+        const failed = result.lines.filter((line) => line.status === "FAILED");
         const processing = result.lines.filter(
           (line) => line.status === "PROCESSING",
-        )
-        const completed = result.lines.length - failed.length - processing.length
+        );
+        const completed =
+          result.lines.length - failed.length - processing.length;
         if (failed.length > 0) {
           toast.warning(
             `PIX parcial: ${completed} concluído(s), ${processing.length} processando e ${failed.length} falha(s).`,
@@ -482,90 +523,92 @@ export function DailyRankResultModal({
                   )
                   .join(" · ") || undefined,
             },
-          )
+          );
         } else if (processing.length > 0) {
           toast.success("PIX do Top Postadores enviado para processamento.", {
             description: `${completed} concluído(s) e ${processing.length} aguardando confirmação da Asaas.`,
-          })
+          });
         } else {
-          toast.success(`PIX do Top Postadores concluído para ${completed} posição(ões).`)
+          toast.success(
+            `PIX do Top Postadores concluído para ${completed} posição(ões).`,
+          );
         }
         await utils.admin.getTopPostersPixPayoutStatus.invalidate({
           campaignId: result.campaignId,
           date: result.date,
-        })
+        });
       },
       onError: (err) => {
         toast.error(err.message || "Erro no PIX do Top Postadores", {
           description:
             "Os prêmios continuam disponíveis nas carteiras e o PIX pode ser tentado novamente.",
-        })
+        });
       },
-    })
+    });
 
   const payDailyRankByDate = api.admin.payDailyRankByDate.useMutation({
     onSuccess: async (result) => {
       if (result.dryRun) {
-        setPayRankPlan(result)
-        setPayRankDialogOpen(true)
-        return
+        setPayRankPlan(result);
+        setPayRankDialogOpen(true);
+        return;
       }
-      const ok = result.paid.length
-      const bad = result.failed.length
+      const ok = result.paid.length;
+      const bad = result.failed.length;
       if (bad === 0) {
         toast.success(
           `Pagamento concluído: ${ok} crédito(s) de prêmio processado(s).`,
           {
             description: `Total creditado: ${formatCurrency(result.totalAmountPaid)}`,
           },
-        )
+        );
       } else {
         toast.warning(`Pagamento parcial: ${ok} ok, ${bad} falha(s).`, {
           description: result.failed
             .map((f) => `${f.position}º ${f.clipperName}: ${f.error}`)
             .join(" · "),
-        })
+        });
       }
-      setPayRankDialogOpen(false)
-      setPayRankPlan(null)
-      refreshPreviewSilently()
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-      refetch()
+      setPayRankDialogOpen(false);
+      setPayRankPlan(null);
+      refreshPreviewSilently();
+      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+      refetch();
     },
     onError: (err) => {
-      toast.error(err.message || "Erro ao processar pagamento do rank")
+      toast.error(err.message || "Erro ao processar pagamento do rank");
     },
-  })
+  });
 
   const previewDailyPixPayout = api.admin.previewDailyPixPayout.useMutation({
     onSuccess: (payload) => {
-      setDailyPixPreviewPayload(payload as Record<string, unknown>)
-      setDailyPixPayoutModalOpen(true)
-      toast.success("Prévia PIX carregada")
+      setDailyPixPreviewPayload(payload as Record<string, unknown>);
+      setDailyPixPayoutModalOpen(true);
+      toast.success("Prévia PIX carregada");
     },
     onError: (err) => {
-      toast.error(err.message || "Erro ao carregar prévia PIX")
+      toast.error(err.message || "Erro ao carregar prévia PIX");
     },
-  })
+  });
 
   const executeDailyPixPayout = api.admin.executeDailyPixPayout.useMutation({
     onSuccess: async () => {
-      toast.success("Pagamento PIX concluído.")
-      setDailyPixPayoutModalOpen(false)
-      setDailyPixPreviewPayload(null)
-      refreshPreviewSilently()
+      toast.success("Pagamento PIX concluído.");
+      setDailyPixPayoutModalOpen(false);
+      setDailyPixPreviewPayload(null);
+      refreshPreviewSilently();
       await utils.admin.getDailyRankPaymentTransactions.invalidate({
         campaignId,
         date: preview?.date ?? "",
-      })
-      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId })
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-      refetch()
+      });
+      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
+      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+      refetch();
     },
     onError: (err) => {
-      toast.error(err.message || "Erro ao executar pagamento PIX")
+      toast.error(err.message || "Erro ao executar pagamento PIX");
     },
-  })
+  });
 
   /**
    * Reconciliação PIX: não envia pagamento novo — apenas alinha status locais
@@ -573,117 +616,119 @@ export function DailyRankResultModal({
    * já liquidou. Necessária quando uma transferência fica PROCESSING e o
    * webhook de confirmação se perde.
    */
-  const reconcileDailyPixPayout = api.admin.reconcileDailyPixPayout.useMutation({
-    onSuccess: async (result) => {
-      const updates =
-        result.totals.entriesUpdated +
-        result.totals.transactionsUpdated +
-        result.totals.dailyRankingsUpdated
-      toast.success(
-        result.dailyPixPayoutCompleted
-          ? "PIX reconciliado e marcado como concluído."
-          : "Reconciliação PIX executada.",
-        {
-          description:
-            updates > 0
-              ? `${updates} ajuste(s) aplicado(s) no status/ledger.`
-              : "Nenhuma inconsistência nova encontrada.",
-        },
-      )
-      refreshPreviewSilently()
-      await utils.admin.getDailyRankPaymentTransactions.invalidate({
-        campaignId,
-        date: preview?.date ?? "",
-      })
-      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId })
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-      refetch()
+  const reconcileDailyPixPayout = api.admin.reconcileDailyPixPayout.useMutation(
+    {
+      onSuccess: async (result) => {
+        const updates =
+          result.totals.entriesUpdated +
+          result.totals.transactionsUpdated +
+          result.totals.dailyRankingsUpdated;
+        toast.success(
+          result.dailyPixPayoutCompleted
+            ? "PIX reconciliado e marcado como concluído."
+            : "Reconciliação PIX executada.",
+          {
+            description:
+              updates > 0
+                ? `${updates} ajuste(s) aplicado(s) no status/ledger.`
+                : "Nenhuma inconsistência nova encontrada.",
+          },
+        );
+        refreshPreviewSilently();
+        await utils.admin.getDailyRankPaymentTransactions.invalidate({
+          campaignId,
+          date: preview?.date ?? "",
+        });
+        await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
+        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+        refetch();
+      },
+      onError: (err) => {
+        toast.error(err.message || "Erro ao reconciliar PIX");
+      },
     },
-    onError: (err) => {
-      toast.error(err.message || "Erro ao reconciliar PIX")
-    },
-  })
+  );
 
   const undoDailyRankPayments = api.admin.undoDailyRankPayments.useMutation({
     onSuccess: async (result) => {
       if (result.dryRun) {
-        setUndoRankPlan(result)
-        setUndoRankDialogOpen(true)
-        return
+        setUndoRankPlan(result);
+        setUndoRankDialogOpen(true);
+        return;
       }
       toast.success(
         `Estorno concluído: ${result.reversed.length} lançamento(s) revertido(s).`,
         {
           description: `Total debitado das carteiras: ${formatCurrency(result.totalAmountReversed)}`,
         },
-      )
-      setUndoRankDialogOpen(false)
-      setUndoRankPlan(null)
-      refreshPreviewSilently()
-      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId })
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-      refetch()
+      );
+      setUndoRankDialogOpen(false);
+      setUndoRankPlan(null);
+      refreshPreviewSilently();
+      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
+      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+      refetch();
     },
     onError: (err) => {
-      toast.error(err.message || "Erro ao desfazer pagamento do rank")
+      toast.error(err.message || "Erro ao desfazer pagamento do rank");
     },
-  })
+  });
 
   const disqualifyDailyRankingEntry =
     api.admin.disqualifyDailyRankingEntry.useMutation({
       onSuccess: async (result) => {
-        toast.success(result.message)
-        setDisqualifyConfirm(null)
-        setDisqualifyInput("")
-        setDisqualifyReason("")
+        toast.success(result.message);
+        setDisqualifyConfirm(null);
+        setDisqualifyInput("");
+        setDisqualifyReason("");
         refreshPreviewSilently({
           fallbackErrorMessage:
             "Vídeo desqualificado, mas não foi possível atualizar a lista do preview.",
-        })
-        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-        refetch()
+        });
+        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+        refetch();
       },
       onError: (err) => {
-        toast.error(err.message || "Erro ao desqualificar vídeo")
+        toast.error(err.message || "Erro ao desqualificar vídeo");
       },
-    })
+    });
 
   const undoDisqualifyEntry =
     api.admin.undoDisqualifyDailyRankingEntry.useMutation({
       onSuccess: async (result) => {
-        toast.success(result.message)
+        toast.success(result.message);
         refreshPreviewSilently({
           fallbackErrorMessage:
             "Desclassificação revertida, mas não foi possível atualizar a lista.",
-        })
-        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-        refetch()
+        });
+        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+        refetch();
       },
       onError: (err) => {
-        toast.error(err.message || "Erro ao reverter desclassificação")
+        toast.error(err.message || "Erro ao reverter desclassificação");
       },
-    })
+    });
 
   const toggleAnnounced = api.admin.toggleDailyRankingAnnounced.useMutation({
     onSuccess: () => {
-      void utils.admin.getDailyRankingCalendar.invalidate({ campaignId })
+      void utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
     },
     onError: (err) => {
-      toast.error(err.message || "Erro ao atualizar status de divulgação")
+      toast.error(err.message || "Erro ao atualizar status de divulgação");
     },
-  })
+  });
 
   /* ===== Handlers de export ===== */
 
   const openDailyRankPreviewExport = () => {
     if (!preview || preview.entries.length === 0) {
-      toast.error("Nenhum dado no rank para gerar o texto")
-      return
+      toast.error("Nenhum dado no rank para gerar o texto");
+      return;
     }
-    const topCount = preview.topCount ?? 15
+    const topCount = preview.topCount ?? 15;
     const activeForExport = preview.entries
       .filter((e) => !e.isDisqualified)
-      .slice(0, topCount)
+      .slice(0, topCount);
     setDailyRankExportText(
       buildDailyRankDiscordExportText({
         campaignName: preview.campaignName,
@@ -706,14 +751,14 @@ export function DailyRankResultModal({
         })),
         stats: preview.stats,
       }),
-    )
-    setDailyRankExportModalOpen(true)
-  }
+    );
+    setDailyRankExportModalOpen(true);
+  };
 
   const copyDailyRankExportText = () => {
     if (!dailyRankExportText) {
-      toast.error("Nada para copiar")
-      return
+      toast.error("Nada para copiar");
+      return;
     }
     navigator.clipboard
       .writeText(dailyRankExportText)
@@ -721,201 +766,198 @@ export function DailyRankResultModal({
         toast.success("Texto copiado", {
           description:
             "Cole no Discord ou em um arquivo .md com Ctrl+V (Cmd+V no Mac).",
-        })
+        });
       })
       .catch(() => {
-        toast.error("Não foi possível copiar")
-      })
-  }
+        toast.error("Não foi possível copiar");
+      });
+  };
 
   const downloadDailyRankMd = () => {
     if (!dailyRankExportText) {
-      toast.error("Nenhum texto para baixar")
-      return
+      toast.error("Nenhum texto para baixar");
+      return;
     }
-    const slugSafe = slugifyCampaignName(preview?.campaignName)
-    const datePart = preview?.date ?? "data"
-    const fileName = `ranking_diario_${slugSafe}_${datePart}.md`
-    downloadTextFile(fileName, dailyRankExportText, "text/markdown")
-    toast.success("Arquivo .md baixado", { description: fileName })
-  }
+    const slugSafe = slugifyCampaignName(preview?.campaignName);
+    const datePart = preview?.date ?? "data";
+    const fileName = `ranking_diario_${slugSafe}_${datePart}.md`;
+    downloadTextFile(fileName, dailyRankExportText, "text/markdown");
+    toast.success("Arquivo .md baixado", { description: fileName });
+  };
 
   const openTopPostersPreviewExport = () => {
     if (!topPostersPreviewData || topPostersPreviewData.entries.length === 0) {
-      toast.error("Nenhum dado no top postadores para gerar markdown")
-      return
+      toast.error("Nenhum dado no top postadores para gerar markdown");
+      return;
     }
-    const dateLabel = format(parseISO(topPostersPreviewData.date), "dd/MM/yyyy")
-    const lines: string[] = []
+    const dateLabel = format(
+      parseISO(topPostersPreviewData.date),
+      "dd/MM/yyyy",
+    );
+    const lines: string[] = [];
     lines.push(
       `🏆 **TOP POSTADORES DO DIA — ${topPostersPreviewData.campaignName}**`,
-    )
-    lines.push(`📅 **${dateLabel}**`)
-    lines.push("")
+    );
+    lines.push(`📅 **${dateLabel}**`);
+    lines.push("");
 
     topPostersPreviewData.entries.forEach((entry) => {
-      const prize = formatCurrencyPlain(entry.prize)
-      lines.push(`${entry.position}º **${entry.clipperName} — ${prize}**`)
+      const prize = formatCurrencyPlain(entry.prize);
+      lines.push(`${entry.position}º **${entry.clipperName} — ${prize}**`);
       lines.push(
         `🎯 ${entry.totalPosts} posts • 👀 ${entry.totalViews.toLocaleString("pt-BR")} views`,
-      )
-      lines.push("")
-    })
+      );
+      lines.push("");
+    });
 
     lines.push(
       `📊 **Total de posts na janela:** ${topPostersPreviewData.stats.totalPostsInWindow.toLocaleString("pt-BR")}`,
-    )
+    );
     lines.push(
       `👀 **Total de views na janela:** ${topPostersPreviewData.stats.totalViewsInWindow.toLocaleString("pt-BR")}`,
-    )
+    );
 
-    setTopPostersExportText(lines.join("\n"))
-    setTopPostersExportModalOpen(true)
-  }
+    setTopPostersExportText(lines.join("\n"));
+    setTopPostersExportModalOpen(true);
+  };
 
   const copyTopPostersExportText = () => {
     if (!topPostersExportText) {
-      toast.error("Nada para copiar")
-      return
+      toast.error("Nada para copiar");
+      return;
     }
     navigator.clipboard
       .writeText(topPostersExportText)
       .then(() => {
         toast.success("Texto copiado", {
           description: "Cole no Discord ou em um arquivo .md.",
-        })
+        });
       })
       .catch(() => {
-        toast.error("Não foi possível copiar")
-      })
-  }
+        toast.error("Não foi possível copiar");
+      });
+  };
 
   const downloadTopPostersMd = () => {
     if (!topPostersExportText) {
-      toast.error("Nenhum texto para baixar")
-      return
+      toast.error("Nenhum texto para baixar");
+      return;
     }
-    const slugSafe = slugifyCampaignName(topPostersPreviewData?.campaignName)
-    const datePart = topPostersPreviewData?.date ?? "data"
-    const fileName = `top_postadores_dia_${slugSafe}_${datePart}.md`
-    downloadTextFile(fileName, topPostersExportText, "text/markdown")
-    toast.success("Arquivo .md baixado", { description: fileName })
-  }
+    const slugSafe = slugifyCampaignName(topPostersPreviewData?.campaignName);
+    const datePart = topPostersPreviewData?.date ?? "data";
+    const fileName = `top_postadores_dia_${slugSafe}_${datePart}.md`;
+    downloadTextFile(fileName, topPostersExportText, "text/markdown");
+    toast.success("Arquivo .md baixado", { description: fileName });
+  };
 
   const downloadCsv = () => {
     if (!preview || preview.entries.length === 0) {
-      toast.error("Nenhum dado no rank para gerar o CSV")
-      return
+      toast.error("Nenhum dado no rank para gerar o CSV");
+      return;
     }
-    const topCount = preview.topCount ?? 15
+    const topCount = preview.topCount ?? 15;
     const activeForExport = preview.entries
       .filter((e) => !e.isDisqualified)
-      .slice(0, topCount)
+      .slice(0, topCount);
 
     const rows = activeForExport.map((e, idx) => {
-      const pos = idx + 1
-      const clipadorLabel = `${pos}º — ${formatCurrencyPlain(e.prize)} — ${e.fullName || e.clipperName}`
-      const pix = e.pixKey || "—"
-      return `${escapeCsvCell(clipadorLabel)},${escapeCsvCell(pix)}`
-    })
+      const pos = idx + 1;
+      const clipadorLabel = `${pos}º — ${formatCurrencyPlain(e.prize)} — ${e.fullName || e.clipperName}`;
+      const pix = e.pixKey || "—";
+      return `${escapeCsvCell(clipadorLabel)},${escapeCsvCell(pix)}`;
+    });
 
-    rows.reverse()
+    rows.reverse();
 
-    const csvContent = "CLIPADOR,CHAVE PIX\n" + rows.join("\n") + "\n"
-    const campaignSlug = slugifyCampaignName(preview.campaignName)
-    const ddmmyyyy = format(parseISO(preview.date), "ddMMyyyy")
-    const fileName = `${campaignSlug}_${ddmmyyyy}.csv`
+    const csvContent = "CLIPADOR,CHAVE PIX\n" + rows.join("\n") + "\n";
+    const campaignSlug = slugifyCampaignName(preview.campaignName);
+    const ddmmyyyy = format(parseISO(preview.date), "ddMMyyyy");
+    const fileName = `${campaignSlug}_${ddmmyyyy}.csv`;
 
-    downloadTextFile(fileName, csvContent, "text/csv", true)
-    toast.success("CSV baixado com sucesso", { description: fileName })
-  }
+    downloadTextFile(fileName, csvContent, "text/csv", true);
+    toast.success("CSV baixado com sucesso", { description: fileName });
+  };
 
   /* ===== Handlers de pagamento ===== */
 
   const startPayRankSimulation = () => {
     if (!preview?.campaignId || !preview.date) {
-      toast.error("Gere o rank diário antes de pagar")
-      return
+      toast.error("Gere o rank diário antes de pagar");
+      return;
     }
     payDailyRankByDate.mutate({
       campaignId: preview.campaignId,
       date: preview.date,
       dryRun: true,
-    })
-  }
+    });
+  };
 
   const confirmPayRankExecution = () => {
-    if (!preview?.campaignId || !preview.date) return
+    if (!preview?.campaignId || !preview.date) return;
     payDailyRankByDate.mutate({
       campaignId: preview.campaignId,
       date: preview.date,
       dryRun: false,
-    })
-  }
+    });
+  };
 
   const confirmUndoRankExecution = () => {
-    if (!preview?.campaignId || !preview.date) return
+    if (!preview?.campaignId || !preview.date) return;
     undoDailyRankPayments.mutate({
       campaignId: preview.campaignId,
       date: preview.date,
       dryRun: false,
-    })
-  }
+    });
+  };
 
   /* ===== Handlers do Top Postadores ===== */
 
   /** Abre o preview do Top Postadores do dia (zera exclusões anteriores). */
   const openTopPostersPreview = () => {
     if (!campaignId || !preview?.date) {
-      toast.error("Gere o rank diário antes de abrir o Top Postadores")
-      return
+      toast.error("Gere o rank diário antes de abrir o Top Postadores");
+      return;
     }
-    setTopPostersExcludedApplicationIds([])
     previewTopPostersDailyRankByDate.mutate({
       campaignId,
       date: preview.date,
-      excludedApplicationIds: [],
-    })
-  }
+    });
+  };
 
   const startTopPostersPaySimulation = () => {
     if (!topPostersPreviewData?.campaignId || !topPostersPreviewData.date) {
-      toast.error("Gere o Top Postadores antes de pagar")
-      return
+      toast.error("Gere o Top Postadores antes de pagar");
+      return;
     }
     payTopPostersDailyRankByDate.mutate({
       campaignId: topPostersPreviewData.campaignId,
       date: topPostersPreviewData.date,
       dryRun: true,
-      excludedApplicationIds: topPostersExcludedApplicationIds,
-    })
-  }
+    });
+  };
 
   const confirmTopPostersPayExecution = () => {
-    if (!topPostersPreviewData?.campaignId || !topPostersPreviewData.date) return
+    if (!topPostersPreviewData?.campaignId || !topPostersPreviewData.date)
+      return;
     payTopPostersDailyRankByDate.mutate({
       campaignId: topPostersPreviewData.campaignId,
       date: topPostersPreviewData.date,
       dryRun: false,
-      excludedApplicationIds: topPostersExcludedApplicationIds,
-    })
-  }
+      expectedPlanFingerprint: topPostersPayPlan?.planFingerprint,
+    });
+  };
 
   /** Remove um clipador do rateio e recalcula o Top Postadores. */
-  const removeFromTopPosters = (applicationId: string, clipperName: string) => {
-    if (!topPostersPreviewData) return
-    const excludedApplicationIds = [
-      ...topPostersExcludedApplicationIds,
-      applicationId,
-    ]
-    setTopPostersExcludedApplicationIds(excludedApplicationIds)
-    previewTopPostersDailyRankByDate.mutate({
-      campaignId: topPostersPreviewData.campaignId,
-      date: topPostersPreviewData.date,
-      excludedApplicationIds,
-    })
-    toast.success(`${clipperName} removido do Top Postadores`)
-  }
+  const removeFromTopPosters = (
+    rankingEntryId: string,
+    _clipperName: string,
+  ) => {
+    if (!topPostersPreviewData) return;
+    disqualifyTopClippersEntry.mutate({
+      rankingEntryId,
+      reason: "Desclassificado pelo administrador no Top Clipadores.",
+    });
+  };
 
   /* ===== Renderização de uma linha do rank ===== */
 
@@ -926,16 +968,16 @@ export function DailyRankResultModal({
   ) => {
     const platformInfo = entry.platform
       ? platformConfig[entry.platform as PlatformKey]
-      : undefined
-    const PlatformIcon = platformInfo?.icon
-    const isDisqualified = entry.isDisqualified
-    const pos = computedPosition
-    const isTop3 = pos !== null && pos <= 3
+      : undefined;
+    const PlatformIcon = platformInfo?.icon;
+    const isDisqualified = entry.isDisqualified;
+    const pos = computedPosition;
+    const isTop3 = pos !== null && pos <= 3;
     const medalColors = [
       "from-amber-500/15 to-yellow-500/10 border-amber-500/30",
       "from-zinc-400/15 to-zinc-500/10 border-zinc-400/30",
       "from-orange-500/15 to-amber-700/10 border-orange-500/30",
-    ]
+    ];
 
     return (
       <div
@@ -975,7 +1017,7 @@ export function DailyRankResultModal({
           {/* Thumbnail */}
           <div
             className={cn(
-              "relative h-16 w-11 shrink-0 overflow-hidden rounded-lg bg-muted/50 ring-1 ring-border/40 sm:h-20 sm:w-14",
+              "bg-muted/50 ring-border/40 relative h-16 w-11 shrink-0 overflow-hidden rounded-lg ring-1 sm:h-20 sm:w-14",
               isDisqualified && "grayscale",
             )}
           >
@@ -1065,16 +1107,32 @@ export function DailyRankResultModal({
 
             {/* Métricas */}
             <div className="flex flex-wrap gap-1 sm:gap-1.5">
-              <MetricChip tone="blue" muted={isDisqualified} icon={<Eye className="size-2.5" />}>
+              <MetricChip
+                tone="blue"
+                muted={isDisqualified}
+                icon={<Eye className="size-2.5" />}
+              >
                 {formatMetricFull(entry.views)}
               </MetricChip>
-              <MetricChip tone="rose" muted={isDisqualified} icon={<Heart className="size-2.5" />}>
+              <MetricChip
+                tone="rose"
+                muted={isDisqualified}
+                icon={<Heart className="size-2.5" />}
+              >
                 {formatMetricFull(entry.likes)}
               </MetricChip>
-              <MetricChip tone="sky" muted={isDisqualified} icon={<ChatCircle className="size-2.5" />}>
+              <MetricChip
+                tone="sky"
+                muted={isDisqualified}
+                icon={<ChatCircle className="size-2.5" />}
+              >
                 {formatMetricFull(entry.comments)}
               </MetricChip>
-              <MetricChip tone="violet" muted={isDisqualified} icon={<ShareNetwork className="size-2.5" />}>
+              <MetricChip
+                tone="violet"
+                muted={isDisqualified}
+                icon={<ShareNetwork className="size-2.5" />}
+              >
                 {formatMetricFull(entry.shares)}
               </MetricChip>
               <MetricChip tone="amber" muted={isDisqualified}>
@@ -1086,7 +1144,11 @@ export function DailyRankResultModal({
                 %
               </MetricChip>
               {preview?.sortedByEngagement && (
-                <MetricChip tone="pink" muted={isDisqualified} icon={<Sparkle className="size-2.5" weight="fill" />}>
+                <MetricChip
+                  tone="pink"
+                  muted={isDisqualified}
+                  icon={<Sparkle className="size-2.5" weight="fill" />}
+                >
                   {Math.round(entry.score).toLocaleString("pt-BR")}
                 </MetricChip>
               )}
@@ -1123,7 +1185,7 @@ export function DailyRankResultModal({
                   onClick={() => {
                     undoDisqualifyEntry.mutate({
                       dailyRankingEntryId: entry.dailyRankingEntryId,
-                    })
+                    });
                   }}
                 >
                   {undoDisqualifyEntry.isPending ? (
@@ -1145,13 +1207,13 @@ export function DailyRankResultModal({
                   )}
                   disabled={disqualifyDailyRankingEntry.isPending}
                   onClick={() => {
-                    setDisqualifyInput("")
+                    setDisqualifyInput("");
                     setDisqualifyConfirm({
                       dailyRankingEntryId: entry.dailyRankingEntryId,
                       clipPostId: entry.clipPostId,
                       clipperName: entry.clipperName,
                       submittedUrl: entry.submittedUrl,
-                    })
+                    });
                   }}
                 >
                   <XCircle className="size-3 sm:size-3.5" />
@@ -1180,7 +1242,7 @@ export function DailyRankResultModal({
       <Dialog
         open={open}
         onOpenChange={(nextOpen) => {
-          onOpenChange(nextOpen)
+          onOpenChange(nextOpen);
         }}
       >
         <DialogContent className="flex max-h-[90vh] w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-4xl">
@@ -1358,7 +1420,10 @@ export function DailyRankResultModal({
                                 weight="fill"
                               />
                             ) : (
-                              <Coins className="size-3.5 shrink-0" weight="fill" />
+                              <Coins
+                                className="size-3.5 shrink-0"
+                                weight="fill"
+                              />
                             )}
                             {preview.canUndoRankPayments
                               ? "Ranking pago"
@@ -1398,11 +1463,11 @@ export function DailyRankResultModal({
                               type="button"
                               size="sm"
                               onClick={() => {
-                                if (!campaignId || !preview?.date) return
+                                if (!campaignId || !preview?.date) return;
                                 previewDailyPixPayout.mutate({
                                   campaignId,
                                   date: preview.date,
-                                })
+                                });
                               }}
                               disabled={
                                 !markAnnouncedOnPay ||
@@ -1420,7 +1485,10 @@ export function DailyRankResultModal({
                               {previewDailyPixPayout.isPending ? (
                                 <Spinner className="size-3.5 shrink-0 animate-spin" />
                               ) : (
-                                <Money className="size-3.5 shrink-0" weight="fill" />
+                                <Money
+                                  className="size-3.5 shrink-0"
+                                  weight="fill"
+                                />
                               )}
                               Prévia PIX
                             </Button>
@@ -1473,15 +1541,15 @@ export function DailyRankResultModal({
                                 type="button"
                                 size="sm"
                                 onClick={() => {
-                                  if (!campaignId || !preview?.date) return
+                                  if (!campaignId || !preview?.date) return;
                                   const ok = window.confirm(
                                     "Reconciliar este PIX? Essa ação não envia novo pagamento; ela apenas corrige status locais quando o Pix já está liquidado.",
-                                  )
-                                  if (!ok) return
+                                  );
+                                  if (!ok) return;
                                   reconcileDailyPixPayout.mutate({
                                     campaignId,
                                     date: preview.date,
-                                  })
+                                  });
                                 }}
                                 disabled={
                                   reconcileDailyPixPayout.isPending ||
@@ -1524,12 +1592,12 @@ export function DailyRankResultModal({
                       type="button"
                       size="sm"
                       onClick={() => {
-                        if (!preview?.campaignId || !preview.date) return
+                        if (!preview?.campaignId || !preview.date) return;
                         undoDailyRankPayments.mutate({
                           campaignId: preview.campaignId,
                           date: preview.date,
                           dryRun: true,
-                        })
+                        });
                       }}
                       disabled={undoDailyRankPayments.isPending}
                       className={cn(
@@ -1615,7 +1683,7 @@ export function DailyRankResultModal({
               {preview && preview.date && (
                 <button
                   onClick={() => {
-                    if (!campaignId || !preview.date) return
+                    if (!campaignId || !preview.date) return;
                     toggleAnnounced.mutate(
                       {
                         dailyRankingDate: preview.date,
@@ -1623,9 +1691,10 @@ export function DailyRankResultModal({
                         announced: !markAnnouncedOnPay,
                       },
                       {
-                        onSuccess: (res) => onMarkAnnouncedChange(res.announced),
+                        onSuccess: (res) =>
+                          onMarkAnnouncedChange(res.announced),
                       },
-                    )
+                    );
                   }}
                   disabled={toggleAnnounced.isPending}
                   className={cn(
@@ -1686,7 +1755,10 @@ export function DailyRankResultModal({
             {!preview || preview.entries.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 py-16">
                 <div className="bg-muted/30 flex size-16 items-center justify-center rounded-2xl">
-                  <Lightning className="text-muted-foreground/40 size-8" weight="fill" />
+                  <Lightning
+                    className="text-muted-foreground/40 size-8"
+                    weight="fill"
+                  />
                 </div>
                 <p className="text-muted-foreground text-sm">
                   Nenhuma entrada no período para esta data.
@@ -1794,7 +1866,9 @@ export function DailyRankResultModal({
                           topPostersPreviewData.windowStart,
                         )}{" "}
                         →{" "}
-                        {formatIsoInstantBrasil(topPostersPreviewData.windowEnd)}
+                        {formatIsoInstantBrasil(
+                          topPostersPreviewData.windowEnd,
+                        )}
                       </span>
                     )}
                   </div>
@@ -1873,7 +1947,10 @@ export function DailyRankResultModal({
                                 weight="fill"
                               />
                             ) : (
-                              <Coins className="size-3.5 shrink-0" weight="fill" />
+                              <Coins
+                                className="size-3.5 shrink-0"
+                                weight="fill"
+                              />
                             )}
                             {!topPostersPreviewData.canPayTopPosters
                               ? "Ranking pago"
@@ -1940,27 +2017,14 @@ export function DailyRankResultModal({
                     )}
                 </div>
               )}
-
-              {topPostersExcludedApplicationIds.length > 0 && (
-                <p className="flex items-start gap-1.5 px-0.5 text-[10px] text-amber-600 sm:text-[11px] dark:text-amber-200/80">
-                  <Warning className="mt-0.5 size-3 shrink-0" weight="fill" />
-                  <span>
-                    {topPostersExcludedApplicationIds.length}{" "}
-                    {topPostersExcludedApplicationIds.length === 1
-                      ? "clipador removido"
-                      : "clipadores removidos"}{" "}
-                    deste Top Postadores. As posições foram recalculadas — feche
-                    o modal para restaurar a lista completa.
-                  </span>
-                </p>
-              )}
             </div>
             <div className="via-border/60 h-px bg-gradient-to-r from-transparent to-transparent" />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-6">
             {!topPostersPreviewData ||
-            topPostersPreviewData.entries.length === 0 ? (
+            (topPostersPreviewData.entries.length === 0 &&
+              topPostersPreviewData.disqualifiedEntries.length === 0) ? (
               <p className="text-muted-foreground py-8 text-center text-sm">
                 Nenhum clipador no período selecionado.
               </p>
@@ -2017,7 +2081,7 @@ export function DailyRankResultModal({
                           }
                           onClick={() =>
                             removeFromTopPosters(
-                              entry.applicationId,
+                              entry.rankingEntryId,
                               entry.clipperName,
                             )
                           }
@@ -2060,6 +2124,48 @@ export function DailyRankResultModal({
                     </div>
                   </div>
                 ))}
+                {topPostersPreviewData.disqualifiedEntries.length > 0 && (
+                  <div className="mt-5 space-y-2 border-t border-rose-500/20 pt-4">
+                    <p className="text-xs font-bold tracking-wide text-rose-600 uppercase dark:text-rose-300">
+                      Desclassificados (
+                      {topPostersPreviewData.disqualifiedEntries.length})
+                    </p>
+                    {topPostersPreviewData.disqualifiedEntries.map((entry) => (
+                      <div
+                        key={entry.rankingEntryId}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-muted-foreground truncate text-sm font-semibold line-through">
+                            {entry.clipperName}
+                          </p>
+                          <p className="text-muted-foreground text-[11px]">
+                            {entry.totalPosts.toLocaleString("pt-BR")} posts
+                            {entry.reason ? ` · ${entry.reason}` : ""}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            undoDisqualifyTopClippersEntry.isPending ||
+                            payTopPostersDailyRankByDate.isPending
+                          }
+                          onClick={() =>
+                            undoDisqualifyTopClippersEntry.mutate({
+                              rankingEntryId: entry.rankingEntryId,
+                            })
+                          }
+                          className="h-8 gap-1.5 text-xs"
+                        >
+                          <ArrowCounterClockwise className="size-3" />
+                          Reverter
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2083,9 +2189,9 @@ export function DailyRankResultModal({
         open={topPostersPayDialogOpen}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !payTopPostersDailyRankByDate.isPending) {
-            setTopPostersPayDialogOpen(false)
-            setTopPostersPayPlan(null)
-            setTopPostersPayInput("")
+            setTopPostersPayDialogOpen(false);
+            setTopPostersPayPlan(null);
+            setTopPostersPayInput("");
           }
         }}
       >
@@ -2296,8 +2402,8 @@ export function DailyRankResultModal({
       <Dialog
         open={topPostersExportModalOpen}
         onOpenChange={(nextOpen) => {
-          setTopPostersExportModalOpen(nextOpen)
-          if (!nextOpen) setTopPostersExportText("")
+          setTopPostersExportModalOpen(nextOpen);
+          if (!nextOpen) setTopPostersExportText("");
         }}
       >
         <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-2xl">
@@ -2350,9 +2456,9 @@ export function DailyRankResultModal({
       <Dialog
         open={dailyRankExportModalOpen}
         onOpenChange={(nextOpen) => {
-          setDailyRankExportModalOpen(nextOpen)
+          setDailyRankExportModalOpen(nextOpen);
           if (!nextOpen) {
-            setDailyRankExportText("")
+            setDailyRankExportText("");
           }
         }}
       >
@@ -2494,9 +2600,9 @@ export function DailyRankResultModal({
                   </div>
                 </div>
                 {paymentTransactions.map((tx) => {
-                  const kind = tx.transactionType ?? "PRIZE_CREDIT"
-                  const isPix = kind === "WITHDRAWAL_COMPLETED"
-                  const displayAmount = isPix ? Math.abs(tx.amount) : tx.amount
+                  const kind = tx.transactionType ?? "PRIZE_CREDIT";
+                  const isPix = kind === "WITHDRAWAL_COMPLETED";
+                  const displayAmount = isPix ? Math.abs(tx.amount) : tx.amount;
                   return (
                     <div
                       key={tx.id}
@@ -2524,7 +2630,10 @@ export function DailyRankResultModal({
                         )}
                         {tx.pixKey && (
                           <p className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-indigo-500/80 dark:text-indigo-400/70">
-                            <Wallet className="size-2.5 shrink-0" weight="fill" />
+                            <Wallet
+                              className="size-2.5 shrink-0"
+                              weight="fill"
+                            />
                             {tx.pixKey}
                           </p>
                         )}
@@ -2548,7 +2657,7 @@ export function DailyRankResultModal({
                         </p>
                       </div>
                     </div>
-                  )
+                  );
                 })}
               </div>
             )}
@@ -2570,8 +2679,8 @@ export function DailyRankResultModal({
       <Dialog
         open={dailyPixPayoutModalOpen}
         onOpenChange={(nextOpen) => {
-          setDailyPixPayoutModalOpen(nextOpen)
-          if (!nextOpen) setDailyPixPreviewPayload(null)
+          setDailyPixPayoutModalOpen(nextOpen);
+          if (!nextOpen) setDailyPixPreviewPayload(null);
         }}
       >
         <DialogContent className="flex max-h-[90vh] w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-4xl">
@@ -2690,7 +2799,8 @@ export function DailyRankResultModal({
                     preview ? (
                       <span className="text-muted-foreground/70 flex items-center gap-1.5 text-[10px] sm:text-[11px]">
                         <Clock className="size-3 shrink-0" />
-                        {typeof dailyPixPreviewPayload?.startDate === "string" &&
+                        {typeof dailyPixPreviewPayload?.startDate ===
+                          "string" &&
                         typeof dailyPixPreviewPayload?.endDate === "string"
                           ? `${formatIsoInstantBrasil(dailyPixPreviewPayload.startDate)} → ${formatIsoInstantBrasil(dailyPixPreviewPayload.endDate)}`
                           : preview
@@ -2767,7 +2877,10 @@ export function DailyRankResultModal({
             {!dailyPixPreviewPayload ? (
               <div className="flex flex-col items-center justify-center gap-3 py-16">
                 <div className="bg-muted/30 flex size-16 items-center justify-center rounded-2xl">
-                  <Money className="text-muted-foreground/40 size-8" weight="fill" />
+                  <Money
+                    className="text-muted-foreground/40 size-8"
+                    weight="fill"
+                  />
                 </div>
                 <p className="text-muted-foreground text-sm">
                   Nenhuma prévia carregada.
@@ -2777,7 +2890,10 @@ export function DailyRankResultModal({
               (dailyPixPreviewPayload.lines as unknown[]).length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 py-16">
                 <div className="bg-muted/30 flex size-16 items-center justify-center rounded-2xl">
-                  <Lightning className="text-muted-foreground/40 size-8" weight="fill" />
+                  <Lightning
+                    className="text-muted-foreground/40 size-8"
+                    weight="fill"
+                  />
                 </div>
                 <p className="text-muted-foreground text-sm">
                   Nenhuma linha retornada na prévia.
@@ -2785,179 +2901,192 @@ export function DailyRankResultModal({
               </div>
             ) : (
               <div className="space-y-2 pb-2 sm:pb-4">
-                {(dailyPixPreviewPayload.lines as Record<string, unknown>[]).map(
-                  (line, idx) => {
-                    const pos =
-                      typeof line.position === "number" ? line.position : idx + 1
-                    const name =
-                      typeof line.displayName === "string"
-                        ? line.displayName
-                        : typeof line.username === "string"
-                          ? line.username
-                          : "—"
-                    const unameRaw =
-                      typeof line.username === "string" ? line.username : ""
-                    const uname = unameRaw.replace(/^@/, "") || "N/A"
-                    const masked =
-                      typeof line.pixKeyMasked === "string"
-                        ? line.pixKeyMasked
-                        : "—"
-                    const valid = line.pixKeyValid === true
-                    const prize = parsePixPreviewNumber(line.prizeAmount)
-                    const postUrl =
-                      typeof line.postUrl === "string" ? line.postUrl : ""
-                    const platformKey = postUrl
-                      ? detectPlatformFromPostUrl(postUrl)
-                      : null
-                    const platformInfo = platformKey
-                      ? platformConfig[platformKey as PlatformKey]
-                      : undefined
-                    const PlatformIcon = platformInfo?.icon
-                    const views = parsePixPreviewNumber(line.views)
-                    const likes = parsePixPreviewNumber(line.likes)
-                    const comments = parsePixPreviewNumber(line.comments)
-                    const er = parsePixPreviewNumber(line.er)
-                    const score = parsePixPreviewNumber(line.score)
-                    const useScore =
-                      typeof dailyPixPreviewPayload?.sortedByEngagement ===
-                      "boolean"
-                        ? dailyPixPreviewPayload.sortedByEngagement
-                        : preview?.sortedByEngagement === true
-                    const isTop3 = pos <= 3
-                    const medalColors = [
-                      "from-amber-500/15 to-yellow-500/10 border-amber-500/30",
-                      "from-zinc-400/15 to-zinc-500/10 border-zinc-400/30",
-                      "from-orange-500/15 to-amber-700/10 border-orange-500/30",
-                    ]
+                {(
+                  dailyPixPreviewPayload.lines as Record<string, unknown>[]
+                ).map((line, idx) => {
+                  const pos =
+                    typeof line.position === "number" ? line.position : idx + 1;
+                  const name =
+                    typeof line.displayName === "string"
+                      ? line.displayName
+                      : typeof line.username === "string"
+                        ? line.username
+                        : "—";
+                  const unameRaw =
+                    typeof line.username === "string" ? line.username : "";
+                  const uname = unameRaw.replace(/^@/, "") || "N/A";
+                  const masked =
+                    typeof line.pixKeyMasked === "string"
+                      ? line.pixKeyMasked
+                      : "—";
+                  const valid = line.pixKeyValid === true;
+                  const prize = parsePixPreviewNumber(line.prizeAmount);
+                  const postUrl =
+                    typeof line.postUrl === "string" ? line.postUrl : "";
+                  const platformKey = postUrl
+                    ? detectPlatformFromPostUrl(postUrl)
+                    : null;
+                  const platformInfo = platformKey
+                    ? platformConfig[platformKey as PlatformKey]
+                    : undefined;
+                  const PlatformIcon = platformInfo?.icon;
+                  const views = parsePixPreviewNumber(line.views);
+                  const likes = parsePixPreviewNumber(line.likes);
+                  const comments = parsePixPreviewNumber(line.comments);
+                  const er = parsePixPreviewNumber(line.er);
+                  const score = parsePixPreviewNumber(line.score);
+                  const useScore =
+                    typeof dailyPixPreviewPayload?.sortedByEngagement ===
+                    "boolean"
+                      ? dailyPixPreviewPayload.sortedByEngagement
+                      : preview?.sortedByEngagement === true;
+                  const isTop3 = pos <= 3;
+                  const medalColors = [
+                    "from-amber-500/15 to-yellow-500/10 border-amber-500/30",
+                    "from-zinc-400/15 to-zinc-500/10 border-zinc-400/30",
+                    "from-orange-500/15 to-amber-700/10 border-orange-500/30",
+                  ];
 
-                    return (
-                      <div
-                        key={`pix-${typeof line.entryId === "string" ? line.entryId : idx}`}
-                        className={cn(
-                          "group relative rounded-2xl border p-2.5 transition-all duration-300 sm:p-3.5",
-                          "border-border/50 bg-muted/10 hover:bg-muted/20",
-                          isTop3 &&
-                            cn("bg-gradient-to-r", medalColors[pos - 1]),
-                        )}
-                      >
-                        <div className="flex items-start gap-2.5 sm:gap-3">
-                          <PositionBadge position={pos} />
+                  return (
+                    <div
+                      key={`pix-${typeof line.entryId === "string" ? line.entryId : idx}`}
+                      className={cn(
+                        "group relative rounded-2xl border p-2.5 transition-all duration-300 sm:p-3.5",
+                        "border-border/50 bg-muted/10 hover:bg-muted/20",
+                        isTop3 && cn("bg-gradient-to-r", medalColors[pos - 1]),
+                      )}
+                    >
+                      <div className="flex items-start gap-2.5 sm:gap-3">
+                        <PositionBadge position={pos} />
 
-                          <div className="bg-muted/50 ring-border/40 relative flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1 sm:h-20 sm:w-14">
-                            <VideoCamera className="text-muted-foreground/50 size-4 sm:size-5" />
-                            {PlatformIcon && platformInfo && (
-                              <div className="absolute right-0.5 bottom-0.5">
-                                <div className="flex size-4 items-center justify-center rounded-md bg-black/70 ring-1 ring-white/10 backdrop-blur-sm sm:size-[18px]">
-                                  <PlatformIcon
-                                    className={cn(
-                                      "size-2.5 sm:size-3",
-                                      platformInfo.color,
-                                    )}
-                                  />
-                                </div>
+                        <div className="bg-muted/50 ring-border/40 relative flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1 sm:h-20 sm:w-14">
+                          <VideoCamera className="text-muted-foreground/50 size-4 sm:size-5" />
+                          {PlatformIcon && platformInfo && (
+                            <div className="absolute right-0.5 bottom-0.5">
+                              <div className="flex size-4 items-center justify-center rounded-md bg-black/70 ring-1 ring-white/10 backdrop-blur-sm sm:size-[18px]">
+                                <PlatformIcon
+                                  className={cn(
+                                    "size-2.5 sm:size-3",
+                                    platformInfo.color,
+                                  )}
+                                />
                               </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm leading-tight font-semibold sm:text-[15px]">
+                                {name}
+                              </p>
+                              <p className="text-muted-foreground truncate text-[11px] sm:text-xs">
+                                @{uname}
+                              </p>
+                              <p className="mt-0.5 flex items-center gap-1 truncate font-mono text-[10px] text-indigo-500/80 sm:text-[11px] dark:text-indigo-400/80">
+                                <Wallet
+                                  className="size-2.5 shrink-0"
+                                  weight="fill"
+                                />
+                                <span className="truncate">{masked}</span>
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              {prize > 0 && (
+                                <Badge className="border border-emerald-500/40 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-1.5 py-0.5 text-[10px] text-emerald-600 sm:px-2 sm:text-xs dark:text-emerald-300">
+                                  <CurrencyDollar
+                                    className="mr-0.5 size-3"
+                                    weight="bold"
+                                  />
+                                  {formatCurrency(prize)}
+                                </Badge>
+                              )}
+                              <div
+                                className={cn(
+                                  "flex size-5 items-center justify-center rounded-full sm:size-[22px]",
+                                  valid
+                                    ? "bg-emerald-500/20"
+                                    : "bg-rose-500/20",
+                                )}
+                                title={
+                                  valid
+                                    ? "Chave PIX válida"
+                                    : "Chave PIX inválida"
+                                }
+                              >
+                                {valid ? (
+                                  <CheckCircle
+                                    className="size-3 text-emerald-500 sm:size-3.5 dark:text-emerald-400"
+                                    weight="fill"
+                                  />
+                                ) : (
+                                  <XCircle
+                                    className="size-3 text-rose-500 sm:size-3.5 dark:text-rose-400"
+                                    weight="fill"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-1 sm:gap-1.5">
+                            <MetricChip
+                              tone="blue"
+                              icon={<Eye className="size-2.5" />}
+                            >
+                              {formatMetricFull(views)}
+                            </MetricChip>
+                            <MetricChip
+                              tone="rose"
+                              icon={<Heart className="size-2.5" />}
+                            >
+                              {formatMetricFull(likes)}
+                            </MetricChip>
+                            <MetricChip
+                              tone="sky"
+                              icon={<ChatCircle className="size-2.5" />}
+                            >
+                              {formatMetricFull(comments)}
+                            </MetricChip>
+                            <MetricChip tone="amber">
+                              ER{" "}
+                              {er.toLocaleString("pt-BR", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                              %
+                            </MetricChip>
+                            {useScore && (
+                              <MetricChip
+                                tone="pink"
+                                icon={
+                                  <Sparkle className="size-2.5" weight="fill" />
+                                }
+                              >
+                                {Math.round(score).toLocaleString("pt-BR")}
+                              </MetricChip>
                             )}
                           </div>
 
-                          <div className="min-w-0 flex-1 space-y-1.5">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="truncate text-sm leading-tight font-semibold sm:text-[15px]">
-                                  {name}
-                                </p>
-                                <p className="text-muted-foreground truncate text-[11px] sm:text-xs">
-                                  @{uname}
-                                </p>
-                                <p className="mt-0.5 flex items-center gap-1 truncate font-mono text-[10px] text-indigo-500/80 sm:text-[11px] dark:text-indigo-400/80">
-                                  <Wallet
-                                    className="size-2.5 shrink-0"
-                                    weight="fill"
-                                  />
-                                  <span className="truncate">{masked}</span>
-                                </p>
-                              </div>
-                              <div className="flex shrink-0 items-center gap-1.5">
-                                {prize > 0 && (
-                                  <Badge className="border border-emerald-500/40 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-1.5 py-0.5 text-[10px] text-emerald-600 sm:px-2 sm:text-xs dark:text-emerald-300">
-                                    <CurrencyDollar
-                                      className="mr-0.5 size-3"
-                                      weight="bold"
-                                    />
-                                    {formatCurrency(prize)}
-                                  </Badge>
-                                )}
-                                <div
-                                  className={cn(
-                                    "flex size-5 items-center justify-center rounded-full sm:size-[22px]",
-                                    valid
-                                      ? "bg-emerald-500/20"
-                                      : "bg-rose-500/20",
-                                  )}
-                                  title={
-                                    valid
-                                      ? "Chave PIX válida"
-                                      : "Chave PIX inválida"
-                                  }
-                                >
-                                  {valid ? (
-                                    <CheckCircle
-                                      className="size-3 text-emerald-500 sm:size-3.5 dark:text-emerald-400"
-                                      weight="fill"
-                                    />
-                                  ) : (
-                                    <XCircle
-                                      className="size-3 text-rose-500 sm:size-3.5 dark:text-rose-400"
-                                      weight="fill"
-                                    />
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-1 sm:gap-1.5">
-                              <MetricChip tone="blue" icon={<Eye className="size-2.5" />}>
-                                {formatMetricFull(views)}
-                              </MetricChip>
-                              <MetricChip tone="rose" icon={<Heart className="size-2.5" />}>
-                                {formatMetricFull(likes)}
-                              </MetricChip>
-                              <MetricChip tone="sky" icon={<ChatCircle className="size-2.5" />}>
-                                {formatMetricFull(comments)}
-                              </MetricChip>
-                              <MetricChip tone="amber">
-                                ER{" "}
-                                {er.toLocaleString("pt-BR", {
-                                  minimumFractionDigits: 2,
-                                  maximumFractionDigits: 2,
-                                })}
-                                %
-                              </MetricChip>
-                              {useScore && (
-                                <MetricChip tone="pink" icon={<Sparkle className="size-2.5" weight="fill" />}>
-                                  {Math.round(score).toLocaleString("pt-BR")}
-                                </MetricChip>
-                              )}
-                            </div>
-
-                            {postUrl ? (
-                              <a
-                                href={postUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary/70 hover:text-primary flex items-center gap-1 truncate text-[11px] transition-colors sm:text-xs"
-                              >
-                                <ArrowSquareOut className="size-3 shrink-0" />
-                                <span className="max-w-[180px] truncate sm:max-w-[320px]">
-                                  {postUrl.replace(/^https?:\/\/(www\.)?/, "")}
-                                </span>
-                              </a>
-                            ) : null}
-                          </div>
+                          {postUrl ? (
+                            <a
+                              href={postUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary/70 hover:text-primary flex items-center gap-1 truncate text-[11px] transition-colors sm:text-xs"
+                            >
+                              <ArrowSquareOut className="size-3 shrink-0" />
+                              <span className="max-w-[180px] truncate sm:max-w-[320px]">
+                                {postUrl.replace(/^https?:\/\/(www\.)?/, "")}
+                              </span>
+                            </a>
+                          ) : null}
                         </div>
                       </div>
-                    )
-                  },
-                )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2968,8 +3097,8 @@ export function DailyRankResultModal({
               variant="outline"
               className="w-full cursor-pointer rounded-xl sm:w-auto"
               onClick={() => {
-                setDailyPixPayoutModalOpen(false)
-                setDailyPixPreviewPayload(null)
+                setDailyPixPayoutModalOpen(false);
+                setDailyPixPreviewPayload(null);
               }}
             >
               Fechar
@@ -2983,7 +3112,8 @@ export function DailyRankResultModal({
                       className="w-full cursor-pointer gap-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md shadow-amber-900/20 hover:from-amber-500 hover:to-orange-500 sm:w-auto"
                       disabled={
                         !preview?.canUndoRankPayments ||
-                        dailyPixPreviewPayload?.hasSufficientBalance === false ||
+                        dailyPixPreviewPayload?.hasSufficientBalance ===
+                          false ||
                         executeDailyPixPayout.isPending ||
                         effectiveDailyPixStatus === "PROCESSING" ||
                         !campaignId ||
@@ -2991,11 +3121,11 @@ export function DailyRankResultModal({
                         isDailyPixCompleted
                       }
                       onClick={() => {
-                        if (!campaignId || !preview?.date) return
+                        if (!campaignId || !preview?.date) return;
                         executeDailyPixPayout.mutate({
                           campaignId,
                           date: preview.date,
-                        })
+                        });
                       }}
                     >
                       {executeDailyPixPayout.isPending ? (
@@ -3033,9 +3163,9 @@ export function DailyRankResultModal({
         open={payRankDialogOpen}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !payDailyRankByDate.isPending) {
-            setPayRankDialogOpen(false)
-            setPayRankPlan(null)
-            setPayRankInput("")
+            setPayRankDialogOpen(false);
+            setPayRankPlan(null);
+            setPayRankInput("");
           }
         }}
       >
@@ -3072,9 +3202,13 @@ export function DailyRankResultModal({
                               className="border-border/60 bg-muted/40 text-foreground/80 ml-2 gap-1 rounded-full text-[10px]"
                             >
                               <CalendarBlank className="size-2.5" />
-                              {format(parseISO(payRankPlan.date), "dd/MM/yyyy", {
-                                locale: ptBR,
-                              })}
+                              {format(
+                                parseISO(payRankPlan.date),
+                                "dd/MM/yyyy",
+                                {
+                                  locale: ptBR,
+                                },
+                              )}
                             </Badge>
                           )}
                         </p>
@@ -3258,8 +3392,8 @@ export function DailyRankResultModal({
         open={undoRankDialogOpen}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !undoDailyRankPayments.isPending) {
-            setUndoRankDialogOpen(false)
-            setUndoRankPlan(null)
+            setUndoRankDialogOpen(false);
+            setUndoRankPlan(null);
           }
         }}
       >
@@ -3376,9 +3510,9 @@ export function DailyRankResultModal({
         open={disqualifyConfirm !== null}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !disqualifyDailyRankingEntry.isPending) {
-            setDisqualifyConfirm(null)
-            setDisqualifyInput("")
-            setDisqualifyReason("")
+            setDisqualifyConfirm(null);
+            setDisqualifyInput("");
+            setDisqualifyReason("");
           }
         }}
       >
@@ -3480,8 +3614,8 @@ export function DailyRankResultModal({
               disabled={disqualifyDailyRankingEntry.isPending}
               className="h-10 cursor-pointer rounded-xl"
               onClick={() => {
-                setDisqualifyInput("")
-                setDisqualifyReason("")
+                setDisqualifyInput("");
+                setDisqualifyReason("");
               }}
             >
               Cancelar
@@ -3493,12 +3627,12 @@ export function DailyRankResultModal({
                 disqualifyDailyRankingEntry.isPending
               }
               onClick={() => {
-                if (!disqualifyConfirm) return
+                if (!disqualifyConfirm) return;
                 disqualifyDailyRankingEntry.mutate({
                   dailyRankingEntryId: disqualifyConfirm.dailyRankingEntryId,
                   clipPostId: disqualifyConfirm.clipPostId,
                   disqualificationReason: disqualifyReason.trim() || undefined,
-                })
+                });
               }}
               className={cn(
                 "h-10 cursor-pointer gap-2 rounded-xl font-semibold",
@@ -3522,5 +3656,5 @@ export function DailyRankResultModal({
         </AlertDialogContent>
       </AlertDialog>
     </>
-  )
+  );
 }

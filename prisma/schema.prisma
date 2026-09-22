@@ -299,6 +299,7 @@ model Campaign {
   metricsExtractionRuns     CampaignMetricsExtractionRun[]
   monthlyRankings           MonthlyRanking[]               @relation("MonthlyRankings")
   dailyRankings             DailyRanking[]                 @relation("DailyRankings")
+  topClippersDailyRankings  TopClippersDailyRanking[]
   fraudFlags                FraudFlag[]
   auditLogs                 AuditLog[]
   notifications             Notification[]
@@ -1120,12 +1121,13 @@ model ClipperApplication {
   updatedAt  DateTime  @updatedAt
 
   // Relações
-  campaign              Campaign                   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  clipperProfile        ClipperProfile             @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
-  clipPosts             ClipPost[]
-  socialAccounts        ApplicationSocialAccount[] // Contas sociais usadas nesta inscrição
-  monthlyRankingEntries MonthlyRankingEntry[] // Entradas em rankings mensais
-  dailyRankingEntries   DailyRankingEntry[] // Entradas em rankings diários
+  campaign                       Campaign                       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clipperProfile                 ClipperProfile                 @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  clipPosts                      ClipPost[]
+  socialAccounts                 ApplicationSocialAccount[] // Contas sociais usadas nesta inscrição
+  monthlyRankingEntries          MonthlyRankingEntry[] // Entradas em rankings mensais
+  dailyRankingEntries            DailyRankingEntry[] // Entradas em rankings diários
+  topClippersDailyRankingEntries TopClippersDailyRankingEntry[]
 
   @@unique([campaignId, clipperProfileId])
   @@index([campaignId])
@@ -1971,6 +1973,50 @@ model DailyRankingEntry {
   @@index([asaasExternalReference])
   @@index([bonusStatus])
   @@index([qualifiesForBonus])
+}
+
+// Snapshot diário do ranking agregado por quantidade de posts de cada clipador.
+model TopClippersDailyRanking {
+  id           String   @id @default(cuid())
+  campaignId   String
+  rankingDate  DateTime
+  calculatedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  campaign Campaign                       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  entries  TopClippersDailyRankingEntry[]
+
+  @@unique([campaignId, rankingDate])
+  @@index([campaignId, rankingDate])
+}
+
+model TopClippersDailyRankingEntry {
+  id                        String    @id @default(cuid())
+  topClippersDailyRankingId String
+  applicationId             String
+  clipperProfileId          String
+  position                  Int
+  totalPosts                Int       @default(0)
+  totalViews                BigInt    @default(0)
+  prizeAmount               Float     @default(0)
+  prizeStatus               String    @default("PENDING")
+  isDisqualified            Boolean   @default(false)
+  disqualificationReason    String?   @db.Text
+  disqualifiedAt            DateTime?
+  disqualifiedBy            String?
+  paidAt                    DateTime?
+  transactionId             String?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  ranking     TopClippersDailyRanking @relation(fields: [topClippersDailyRankingId], references: [id], onDelete: Cascade)
+  application ClipperApplication      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([topClippersDailyRankingId, applicationId])
+  @@index([topClippersDailyRankingId, position])
+  @@index([clipperProfileId])
+  @@index([transactionId])
 }
 
 // ============================================================================

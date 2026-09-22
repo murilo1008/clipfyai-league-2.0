@@ -2828,51 +2828,65 @@ export const campaignRouter = createTRPCRouter({
             },
             select: { id: true },
           })
-        : null
+        : null;
 
       if (!application) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message:
             "Você precisa participar desta competição para ver o Top Clipadores.",
-        })
+        });
       }
 
       const { startDate, endDate } = getLiveDailyWindowByReferenceDate(
         input.date,
-      )
+      );
+      const persistedDisqualifications =
+        await ctx.db.topClippersDailyRankingEntry.findMany({
+          where: {
+            isDisqualified: true,
+            ranking: {
+              campaignId: input.campaignId,
+              rankingDate: new Date(`${input.date}T00:00:00.000Z`),
+            },
+          },
+          select: { applicationId: true },
+        });
+      const disqualifiedApplicationIds = persistedDisqualifications.map(
+        (entry) => entry.applicationId,
+      );
 
       type CampaignBreakdown = {
-        campaignId: string
-        campaignName: string
-        posts: number
-        views: number
-      }
+        campaignId: string;
+        campaignName: string;
+        posts: number;
+        views: number;
+      };
 
       type TopClipperAccumulator = {
-        clipperProfileId: string
-        clipperName: string
-        fullName: string
-        imageUrl: string | null
-        isCurrentUser: boolean
-        totalPosts: number
-        totalViews: number
-        campaigns: Map<string, CampaignBreakdown>
-      }
+        clipperProfileId: string;
+        clipperName: string;
+        fullName: string;
+        imageUrl: string | null;
+        isCurrentUser: boolean;
+        totalPosts: number;
+        totalViews: number;
+        campaigns: Map<string, CampaignBreakdown>;
+      };
 
-      const clippersMap = new Map<string, TopClipperAccumulator>()
-      let totalPostsInWindow = 0
-      let totalViewsInWindow = 0
+      const clippersMap = new Map<string, TopClipperAccumulator>();
+      let totalPostsInWindow = 0;
+      let totalViewsInWindow = 0;
 
       const addClipperPost = (post: {
-        clipperProfileId: string
-        clipperName: string
-        fullName: string
-        imageUrl: string | null
-        userId: string
-        campaignId: string
-        campaignName: string
-        views: number
+        clipperProfileId: string;
+        clipperName: string;
+        fullName: string;
+        imageUrl: string | null;
+        userId: string;
+        campaignId: string;
+        campaignName: string;
+        views: number;
       }) => {
         const current = clippersMap.get(post.clipperProfileId) ?? {
           clipperProfileId: post.clipperProfileId,
@@ -2883,31 +2897,32 @@ export const campaignRouter = createTRPCRouter({
           totalPosts: 0,
           totalViews: 0,
           campaigns: new Map<string, CampaignBreakdown>(),
-        }
+        };
         const campaignBreakdown = current.campaigns.get(post.campaignId) ?? {
           campaignId: post.campaignId,
           campaignName: post.campaignName,
           posts: 0,
           views: 0,
-        }
+        };
 
         current.isCurrentUser =
-          current.isCurrentUser || post.userId === ctx.userId
-        current.totalPosts += 1
-        current.totalViews += post.views
-        campaignBreakdown.posts += 1
-        campaignBreakdown.views += post.views
-        current.campaigns.set(post.campaignId, campaignBreakdown)
-        clippersMap.set(post.clipperProfileId, current)
-        totalPostsInWindow += 1
-        totalViewsInWindow += post.views
-      }
+          current.isCurrentUser || post.userId === ctx.userId;
+        current.totalPosts += 1;
+        current.totalViews += post.views;
+        campaignBreakdown.posts += 1;
+        campaignBreakdown.views += post.views;
+        current.campaigns.set(post.campaignId, campaignBreakdown);
+        clippersMap.set(post.clipperProfileId, current);
+        totalPostsInWindow += 1;
+        totalViewsInWindow += post.views;
+      };
 
       const livePosts = await ctx.db.clipPost.findMany({
         where: {
           campaignId: input.campaignId,
           status: ClipPostStatus.ELIGIBLE,
           postedAt: { gte: startDate, lt: endDate },
+          applicationId: { notIn: disqualifiedApplicationIds },
         },
         select: {
           campaignId: true,

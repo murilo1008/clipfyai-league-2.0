@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createTRPCRouter, adminProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
@@ -153,6 +154,119 @@ async function findUnreversedTopPostersPrize(
   }
 
   return null;
+}
+
+function topClippersRankingDate(date: string) {
+  return new Date(`${date}T00:00:00.000Z`);
+}
+
+function topClippersPaymentPlanFingerprint(
+  rows: Array<{
+    rankingEntryId: string;
+    position: number;
+    clipperProfileId: string;
+    amount: number;
+    totalPosts: number;
+    totalViews: number;
+  }>,
+) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        rows.map((row) => [
+          row.rankingEntryId,
+          row.position,
+          row.clipperProfileId,
+          Math.round(row.amount * 100),
+          row.totalPosts,
+          row.totalViews,
+        ]),
+      ),
+    )
+    .digest("hex");
+}
+
+async function getTopClippersSnapshotState(
+  db: Prisma.TransactionClient,
+  campaignId: string,
+  date: string,
+) {
+  const ranking = await db.topClippersDailyRanking.upsert({
+    where: {
+      campaignId_rankingDate: {
+        campaignId,
+        rankingDate: topClippersRankingDate(date),
+      },
+    },
+    create: { campaignId, rankingDate: topClippersRankingDate(date) },
+    update: { calculatedAt: new Date() },
+    select: {
+      id: true,
+      entries: {
+        where: { isDisqualified: true },
+        select: { applicationId: true },
+      },
+    },
+  });
+  return {
+    rankingId: ranking.id,
+    disqualifiedApplicationIds: ranking.entries.map(
+      (entry) => entry.applicationId,
+    ),
+  };
+}
+
+async function persistTopClippersEntries(
+  db: Prisma.TransactionClient,
+  rankingId: string,
+  rows: Array<{
+    applicationId: string;
+    clipperProfileId: string;
+    position: number;
+    totalPosts: number;
+    totalViews: number;
+    prizeAmount: number;
+  }>,
+) {
+  const existingEntries = await db.topClippersDailyRankingEntry.findMany({
+    where: {
+      topClippersDailyRankingId: rankingId,
+      applicationId: { in: rows.map((row) => row.applicationId) },
+    },
+    select: {
+      applicationId: true,
+      isDisqualified: true,
+      prizeStatus: true,
+    },
+  });
+  const existingByApplication = new Map(
+    existingEntries.map((entry) => [entry.applicationId, entry]),
+  );
+  await Promise.all(
+    rows.map((row) => {
+      const existing = existingByApplication.get(row.applicationId);
+      const isFrozen =
+        existing?.isDisqualified || existing?.prizeStatus === "PAID";
+      return db.topClippersDailyRankingEntry.upsert({
+        where: {
+          topClippersDailyRankingId_applicationId: {
+            topClippersDailyRankingId: rankingId,
+            applicationId: row.applicationId,
+          },
+        },
+        create: { topClippersDailyRankingId: rankingId, ...row },
+        update: isFrozen
+          ? {}
+          : {
+              clipperProfileId: row.clipperProfileId,
+              position: row.position,
+              totalPosts: row.totalPosts,
+              totalViews: row.totalViews,
+              prizeAmount: row.prizeAmount,
+            },
+      });
+    }),
+  );
 }
 
 function isRetryablePrismaTransactionError(error: unknown) {
@@ -9618,6 +9732,11 @@ export const adminRouter = createTRPCRouter({
         }
         const topCount = Math.max(...prizeTable.map((entry) => entry.position));
 
+        const snapshot = await getTopClippersSnapshotState(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
         const { startDate, endDate } = getTopPostersDailyWindowBrt(input.date);
         const grouped = await ctx.db.clipPost.groupBy({
           by: ["applicationId"],
@@ -9625,13 +9744,14 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
-            applicationId: { notIn: input.excludedApplicationIds },
+            applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
           _sum: { views: true },
           orderBy: [
             { _count: { applicationId: "desc" } },
             { _sum: { views: "desc" } },
+            { applicationId: "asc" },
           ],
           take: topCount,
         });
@@ -9689,8 +9809,42 @@ export const adminRouter = createTRPCRouter({
             };
           });
 
+        await persistTopClippersEntries(
+          ctx.db,
+          snapshot.rankingId,
+          entriesBase.map((entry) => ({
+            applicationId: entry.applicationId,
+            clipperProfileId: entry.clipperProfileId,
+            position: entry.position,
+            totalPosts: entry.totalPosts,
+            totalViews: entry.totalViews,
+            prizeAmount: entry.prize,
+          })),
+        );
+        const persistedEntries =
+          await ctx.db.topClippersDailyRankingEntry.findMany({
+            where: {
+              topClippersDailyRankingId: snapshot.rankingId,
+              applicationId: {
+                in: entriesBase.map((entry) => entry.applicationId),
+              },
+            },
+            select: {
+              id: true,
+              applicationId: true,
+              prizeAmount: true,
+              prizeStatus: true,
+            },
+          });
+        const persistedEntryByApplication = new Map(
+          persistedEntries.map((entry) => [entry.applicationId, entry]),
+        );
+
         const entries = await Promise.all(
           entriesBase.map(async (entry) => {
+            const persistedEntry = persistedEntryByApplication.get(
+              entry.applicationId,
+            )!;
             const priorPrize = await findUnreversedTopPostersPrize(ctx.db, {
               where: {
                 campaignId: input.campaignId,
@@ -9698,6 +9852,7 @@ export const adminRouter = createTRPCRouter({
                 status: "COMPLETED",
                 rankingPosition: entry.position,
                 clipPostId: null,
+                wallet: { clipperProfileId: entry.clipperProfileId },
                 OR: [
                   {
                     metadata: {
@@ -9718,13 +9873,47 @@ export const adminRouter = createTRPCRouter({
               },
             });
 
+            if (priorPrize && persistedEntry.prizeStatus !== "PAID") {
+              await ctx.db.topClippersDailyRankingEntry.update({
+                where: { id: persistedEntry.id },
+                data: {
+                  prizeStatus: "PAID",
+                  prizeAmount: priorPrize.amount,
+                  paidAt: priorPrize.processedAt ?? priorPrize.createdAt,
+                  transactionId: priorPrize.id,
+                },
+              });
+            }
+
             return {
               ...entry,
-              prizeStatus: priorPrize ? "PAID" : "PENDING",
+              rankingEntryId: persistedEntry.id,
+              prize: persistedEntry.prizeAmount,
+              prizeStatus:
+                persistedEntry.prizeStatus === "PAID" || priorPrize
+                  ? "PAID"
+                  : "PENDING",
               prizeAmountPaid: priorPrize?.amount ?? 0,
             };
           }),
         );
+        const disqualifiedEntries =
+          await ctx.db.topClippersDailyRankingEntry.findMany({
+            where: {
+              topClippersDailyRankingId: snapshot.rankingId,
+              isDisqualified: true,
+            },
+            include: {
+              application: {
+                select: {
+                  clipperProfile: {
+                    select: { fullName: true, artisticName: true },
+                  },
+                },
+              },
+            },
+            orderBy: [{ disqualifiedAt: "asc" }, { position: "asc" }],
+          });
 
         const [totalPostsInWindow, totalViewsInWindow] = await Promise.all([
           ctx.db.clipPost.count({
@@ -9751,6 +9940,21 @@ export const adminRouter = createTRPCRouter({
           windowStart: startDate.toISOString(),
           windowEnd: endDate.toISOString(),
           entries,
+          disqualifiedEntries: disqualifiedEntries.map((entry) => ({
+            rankingEntryId: entry.id,
+            applicationId: entry.applicationId,
+            position: entry.position,
+            clipperName: getClipperRankingDisplayName(
+              entry.application.clipperProfile,
+            ),
+            fullName:
+              getFirstName(entry.application.clipperProfile.fullName) ||
+              "Clipador",
+            totalPosts: entry.totalPosts,
+            totalViews: Number(entry.totalViews),
+            reason: entry.disqualificationReason,
+            disqualifiedAt: entry.disqualifiedAt?.toISOString() ?? null,
+          })),
           canPayTopPosters: entries.some(
             (entry) => entry.prize > 0 && entry.prizeStatus !== "PAID",
           ),
@@ -9775,13 +9979,135 @@ export const adminRouter = createTRPCRouter({
       }
     }),
 
+  disqualifyTopClippersDailyRankingEntry: adminProcedure
+    .input(
+      z.object({
+        rankingEntryId: z.string(),
+        reason: z.string().trim().max(1000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const entry = await ctx.db.topClippersDailyRankingEntry.findUnique({
+        where: { id: input.rankingEntryId },
+        include: { ranking: { select: { campaignId: true } } },
+      });
+      if (!entry) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Entrada do Top Clipadores não encontrada",
+        });
+      }
+      await ctx.db.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT id FROM "TopClippersDailyRankingEntry" WHERE id = ${entry.id} FOR UPDATE`;
+        const currentEntry = await tx.topClippersDailyRankingEntry.findUnique({
+          where: { id: entry.id },
+          select: { prizeStatus: true, transactionId: true },
+        });
+        if (
+          !currentEntry ||
+          currentEntry.prizeStatus === "PAID" ||
+          currentEntry.transactionId
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Não é possível desclassificar após o crédito do prêmio. Faça o estorno primeiro.",
+          });
+        }
+        await tx.topClippersDailyRankingEntry.update({
+          where: { id: entry.id },
+          data: {
+            isDisqualified: true,
+            disqualificationReason:
+              input.reason || "Desclassificado pelo administrador.",
+            disqualifiedAt: new Date(),
+            disqualifiedBy: ctx.userId,
+            prizeAmount: 0,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId: ctx.userId,
+            action: "UPDATE",
+            entityType: "TopClippersDailyRankingEntry",
+            entityId: entry.id,
+            campaignId: entry.ranking.campaignId,
+            changes: {
+              action: "disqualify_top_clippers_daily_ranking_entry",
+              applicationId: entry.applicationId,
+              previousPosition: entry.position,
+              reason: input.reason || "Desclassificado pelo administrador.",
+            },
+          },
+        });
+      });
+      return {
+        success: true,
+        message: "Clipador desclassificado deste ranking.",
+      };
+    }),
+
+  undoDisqualifyTopClippersDailyRankingEntry: adminProcedure
+    .input(z.object({ rankingEntryId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const entry = await ctx.db.topClippersDailyRankingEntry.findUnique({
+        where: { id: input.rankingEntryId },
+        include: { ranking: { select: { campaignId: true } } },
+      });
+      if (!entry) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Entrada do Top Clipadores não encontrada",
+        });
+      }
+      await ctx.db.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT id FROM "TopClippersDailyRankingEntry" WHERE id = ${entry.id} FOR UPDATE`;
+        const currentEntry = await tx.topClippersDailyRankingEntry.findUnique({
+          where: { id: entry.id },
+          select: { prizeStatus: true, transactionId: true },
+        });
+        if (
+          !currentEntry ||
+          currentEntry.prizeStatus === "PAID" ||
+          currentEntry.transactionId
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Não é possível alterar uma entrada já paga.",
+          });
+        }
+        await tx.topClippersDailyRankingEntry.update({
+          where: { id: entry.id },
+          data: {
+            isDisqualified: false,
+            disqualificationReason: null,
+            disqualifiedAt: null,
+            disqualifiedBy: null,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId: ctx.userId,
+            action: "UPDATE",
+            entityType: "TopClippersDailyRankingEntry",
+            entityId: entry.id,
+            campaignId: entry.ranking.campaignId,
+            changes: {
+              action: "undo_disqualify_top_clippers_daily_ranking_entry",
+            },
+          },
+        });
+      });
+      return { success: true, message: "Desclassificação revertida." };
+    }),
+
   payTopPostersDailyRankByDate: adminProcedure
     .input(
       z.object({
         campaignId: z.string(),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         dryRun: z.boolean(),
-        excludedApplicationIds: z.array(z.string()).max(100).default([]),
+        expectedPlanFingerprint: z.string().length(64).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -9825,6 +10151,11 @@ export const adminRouter = createTRPCRouter({
         }
         const topCount = Math.max(...prizeTable.map((entry) => entry.position));
 
+        const snapshot = await getTopClippersSnapshotState(
+          ctx.db,
+          input.campaignId,
+          input.date,
+        );
         const { startDate, endDate } = getTopPostersDailyWindowBrt(input.date);
         const dateFormatted = new Date(
           `${input.date}T12:00:00.000Z`,
@@ -9841,13 +10172,14 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
-            applicationId: { notIn: input.excludedApplicationIds },
+            applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
           _sum: { views: true },
           orderBy: [
             { _count: { applicationId: "desc" } },
             { _sum: { views: "desc" } },
+            { applicationId: "asc" },
           ],
           take: topCount,
         });
@@ -9878,6 +10210,7 @@ export const adminRouter = createTRPCRouter({
               kind: "payable";
               position: number;
               applicationId: string;
+              rankingEntryId: string;
               clipperProfileId: string;
               clipperName: string;
               fullName: string;
@@ -9966,10 +10299,54 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
+          await persistTopClippersEntries(ctx.db, snapshot.rankingId, [
+            {
+              applicationId: row.applicationId,
+              clipperProfileId: app.clipperProfileId,
+              position,
+              totalPosts: Number(row._count?.applicationId ?? 0),
+              totalViews: Number(row._sum?.views ?? 0),
+              prizeAmount: amount,
+            },
+          ]);
+          const rankingEntry =
+            await ctx.db.topClippersDailyRankingEntry.findUniqueOrThrow({
+              where: {
+                topClippersDailyRankingId_applicationId: {
+                  topClippersDailyRankingId: snapshot.rankingId,
+                  applicationId: row.applicationId,
+                },
+              },
+              select: { id: true, isDisqualified: true, prizeStatus: true },
+            });
+          if (rankingEntry.isDisqualified) {
+            plan.push({
+              kind: "skip",
+              position,
+              clipperName,
+              fullName,
+              amount,
+              skipReason: "Clipador desclassificado deste ranking",
+            });
+            continue;
+          }
+          if (rankingEntry.prizeStatus === "PAID") {
+            plan.push({
+              kind: "skip",
+              position,
+              clipperName,
+              fullName,
+              amount,
+              skipReason: "Prêmio de Top Postadores já creditado",
+            });
+            continue;
+          }
+
           plan.push({
             kind: "payable",
             position,
             applicationId: row.applicationId,
+            rankingEntryId: rankingEntry.id,
             clipperProfileId: app.clipperProfileId,
             clipperName,
             fullName,
@@ -9987,6 +10364,23 @@ export const adminRouter = createTRPCRouter({
           (p): p is Extract<PlanRow, { kind: "skip" }> => p.kind === "skip",
         );
         const totalAmount = payable.reduce((sum, row) => sum + row.amount, 0);
+        const planFingerprint = topClippersPaymentPlanFingerprint(payable);
+
+        if (!input.dryRun) {
+          if (!input.expectedPlanFingerprint) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "Simule o pagamento novamente antes de confirmar.",
+            });
+          }
+          if (input.expectedPlanFingerprint !== planFingerprint) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "O Top Clipadores mudou depois da simulação. Revise o novo plano antes de pagar.",
+            });
+          }
+        }
 
         if (input.dryRun) {
           return {
@@ -9995,6 +10389,7 @@ export const adminRouter = createTRPCRouter({
             campaignId: campaign.id,
             campaignName: campaign.name,
             totalAmount,
+            planFingerprint,
             payableCount: payable.length,
             skippedCount: skipped.length,
             payable: payable.map((p) => ({
@@ -10036,11 +10431,24 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             date: input.date,
             rankingPosition: line.position,
+            topClippersDailyRankingEntryId: line.rankingEntryId,
           };
 
           try {
             let newTransactionId = "";
             await ctx.db.$transaction(async (tx) => {
+              await tx.$executeRaw`SELECT id FROM "TopClippersDailyRankingEntry" WHERE id = ${line.rankingEntryId} FOR UPDATE`;
+              const currentEntry =
+                await tx.topClippersDailyRankingEntry.findUnique({
+                  where: { id: line.rankingEntryId },
+                  select: { isDisqualified: true, prizeStatus: true },
+                });
+              if (!currentEntry || currentEntry.isDisqualified) {
+                throw new Error("Entrada do Top Clipadores desclassificada");
+              }
+              if (currentEntry.prizeStatus === "PAID") {
+                throw new Error("Prêmio de Top Postadores já creditado");
+              }
               let wallet = await tx.wallet.findUnique({
                 where: { clipperProfileId: line.clipperProfileId },
               });
@@ -10088,6 +10496,7 @@ export const adminRouter = createTRPCRouter({
                   campaignId: input.campaignId,
                   clipPostId: null,
                   rankingPosition: line.position,
+                  idempotencyKey: `top-clippers-prize:entry:${line.rankingEntryId}`,
                   processedBy: ctx.userId,
                   processedAt: new Date(),
                   metadata: topPostersMeta,
@@ -10100,6 +10509,15 @@ export const adminRouter = createTRPCRouter({
                 data: {
                   balance: { increment: line.amount },
                   totalEarned: { increment: line.amount },
+                },
+              });
+
+              await tx.topClippersDailyRankingEntry.update({
+                where: { id: line.rankingEntryId },
+                data: {
+                  prizeStatus: "PAID",
+                  paidAt: new Date(),
+                  transactionId: txRow.id,
                 },
               });
 
@@ -13527,7 +13945,13 @@ export const adminRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       const campaign = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
-        select: { id: true, startDate: true, endDate: true },
+        select: {
+          id: true,
+          startDate: true,
+          endDate: true,
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: true,
+        },
       });
 
       if (!campaign) {
@@ -13588,7 +14012,64 @@ export const adminRouter = createTRPCRouter({
         processingPixByDailyRankingId.set(dailyRankingId, current);
       }
 
+      const topPostersPrizeByDate = new Map<string, number>();
+      if (campaign.topClippersRankingEnabled) {
+        const topPostersPrizeTable = parseTopClippersPrizeTable(
+          campaign.topClippersPrizeTable,
+        );
+        const topPostersCount = Math.max(
+          0,
+          ...topPostersPrizeTable.map((entry) => entry.position),
+        );
+
+        if (topPostersCount > 0) {
+          await Promise.all(
+            dailyRankings.map(async (dailyRanking) => {
+              const dateStr = dailyRanking.rankingDate
+                .toISOString()
+                .split("T")[0]!;
+              const { startDate, endDate } =
+                getTopPostersDailyWindowBrt(dateStr);
+              const topClippersDisqualified =
+                await ctx.db.topClippersDailyRankingEntry.findMany({
+                  where: {
+                    isDisqualified: true,
+                    ranking: {
+                      campaignId: input.campaignId,
+                      rankingDate: topClippersRankingDate(dateStr),
+                    },
+                  },
+                  select: { applicationId: true },
+                });
+              const rankedClippers = await ctx.db.clipPost.groupBy({
+                by: ["applicationId"],
+                where: {
+                  campaignId: input.campaignId,
+                  status: "ELIGIBLE",
+                  postedAt: { gte: startDate, lt: endDate },
+                  applicationId: {
+                    notIn: topClippersDisqualified.map(
+                      (entry) => entry.applicationId,
+                    ),
+                  },
+                },
+                _count: { applicationId: true },
+                orderBy: { _count: { applicationId: "desc" } },
+                take: topPostersCount,
+              });
+              const total = rankedClippers.reduce(
+                (sum, _row, index) =>
+                  sum + getTopClippersPrize(topPostersPrizeTable, index + 1),
+                0,
+              );
+              topPostersPrizeByDate.set(dateStr, total);
+            }),
+          );
+        }
+      }
+
       const days = dailyRankings.map((dr) => {
+        const dateStr = dr.rankingDate.toISOString().split("T")[0]!;
         const activeEntries = dr.entries.filter((e) => !e.isDisqualified);
         const prizeEntries = activeEntries.filter(
           (e) => e.dailyPrizeAmount > 0,
@@ -13600,10 +14081,13 @@ export const adminRouter = createTRPCRouter({
         const pendingEntries = prizeEntries.filter(
           (e) => e.dailyPrizeStatus !== "PAID",
         ).length;
-        const totalPrizeAmount = prizeEntries.reduce(
+        const dailyRankingPrizeAmount = prizeEntries.reduce(
           (sum, e) => sum + e.dailyPrizeAmount,
           0,
         );
+        const topPostersPrizeAmount = topPostersPrizeByDate.get(dateStr) ?? 0;
+        const totalPrizeAmount =
+          dailyRankingPrizeAmount + topPostersPrizeAmount;
         const paidPrizeAmount = prizeEntries
           .filter((e) => e.dailyPrizeStatus === "PAID")
           .reduce((sum, e) => sum + e.dailyPrizeAmount, 0);
@@ -13617,13 +14101,15 @@ export const adminRouter = createTRPCRouter({
 
         return {
           date: dr.rankingDate.toISOString(),
-          dateStr: dr.rankingDate.toISOString().split("T")[0]!,
+          dateStr,
           totalPosts: dr.totalPosts,
           totalDailyViews: Number(dr.totalDailyViews),
           totalClippers: dr.totalClippers,
           totalEntries,
           paidEntries,
           pendingEntries,
+          dailyRankingPrizeAmount,
+          topPostersPrizeAmount,
           totalPrizeAmount,
           paidPrizeAmount,
           paymentStatus,
