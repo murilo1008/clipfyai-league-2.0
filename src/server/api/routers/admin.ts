@@ -121,7 +121,7 @@ async function findUnreversedTopPostersPrize(
 ) {
   const candidates = await db.transaction.findMany({
     where: input.where,
-    select: { id: true, amount: true },
+    select: { id: true, amount: true, processedAt: true, createdAt: true },
     orderBy: { createdAt: "desc" },
   });
 

@@ -1814,7 +1814,6 @@ export function DailyRankResultModal({
             setTopPostersPreviewData(null)
             setTopPostersExportModalOpen(false)
             setTopPostersExportText("")
-            setTopPostersExcludedApplicationIds([])
             setTopPostersPayDialogOpen(false)
             setTopPostersPayPlan(null)
             setTopPostersPayInput("")
