@@ -11751,6 +11751,10 @@ export const adminRouter = createTRPCRouter({
       if (gate.processingTransactionCount > 0) {
         return { status: "PROCESSING" as const };
       }
+      const queued = await ctx.db.dailyRankingEntry.count({
+        where: { dailyRankingId: gate.core.dailyRankingId, dailyPixStatus: "QUEUED" },
+      });
+      if (queued > 0) return { status: "QUEUED" as const };
       if (gate.unsettledCount < gate.prizeCount) {
         return { status: "PARTIAL" as const };
       }
@@ -12036,6 +12040,7 @@ export const adminRouter = createTRPCRouter({
             asaasTransferId: z.string().optional(),
             asaasPayoutReceiptUrl: z.string().nullable().optional(),
             error: z.string().optional(),
+            nextAttemptAt: z.string().optional(),
           }),
         ),
       });
@@ -12164,6 +12169,17 @@ export const adminRouter = createTRPCRouter({
               status: line.status,
               prizeAmount: line.prizeAmount,
               skipped: "Serviço indicou PIX ignorado para este perfil; ledger local não alterado.",
+            });
+            continue;
+          }
+
+          if (line.status === "QUEUED") {
+            ledgerLines.push({
+              entryId: line.entryId,
+              position: line.position,
+              status: line.status,
+              prizeAmount: line.prizeAmount,
+              skipped: `PIX agendado para ${line.nextAttemptAt ?? "após a janela do Asaas"}.`,
             });
             continue;
           }
@@ -12565,7 +12581,7 @@ export const adminRouter = createTRPCRouter({
             return (
               entry?.dailyPrizePaid ||
               entry?.dailyPixStatus === "PAID" ||
-              entry?.dailyPixStatus === "PROCESSING"
+              (entry?.dailyPixStatus === "PROCESSING" || entry?.dailyPixStatus === "QUEUED")
             );
           })
           .map((line) => ({
@@ -12732,7 +12748,7 @@ export const adminRouter = createTRPCRouter({
                 if (
                   entry.dailyPrizePaid ||
                   entry.dailyPixStatus === "PAID" ||
-                  entry.dailyPixStatus === "PROCESSING"
+                  (entry.dailyPixStatus === "PROCESSING" || entry.dailyPixStatus === "QUEUED")
                 ) {
                   throw new TRPCError({
                     code: "BAD_REQUEST",

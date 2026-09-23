@@ -192,6 +192,7 @@ function PixPaymentStatusBadge({
     | "NOT_READY"
     | "PENDING"
     | "PROCESSING"
+    | "QUEUED"
     | "PARTIAL"
     | "FAILED"
     | "COMPLETED";
@@ -200,6 +201,7 @@ function PixPaymentStatusBadge({
     NOT_READY: "aguardando crédito",
     PENDING: "pendente",
     PROCESSING: "processando",
+    QUEUED: "agendado",
     PARTIAL: "parcial",
     FAILED: "falhou",
     COMPLETED: "pago",
@@ -211,7 +213,7 @@ function PixPaymentStatusBadge({
         "gap-1.5 rounded-full font-semibold",
         status === "COMPLETED" &&
           "border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300",
-        status === "PROCESSING" &&
+        (status === "PROCESSING" || status === "QUEUED") &&
           "border-blue-500/40 bg-blue-500/15 text-blue-600 dark:text-blue-300",
         status === "PARTIAL" &&
           "border-amber-500/40 bg-amber-500/15 text-amber-600 dark:text-amber-300",
@@ -362,6 +364,9 @@ export function DailyRankResultModal({
       ) ?? [];
     if (eligible.some((entry) => entry.dailyPixStatus === "PROCESSING")) {
       return "PROCESSING" as const;
+    }
+    if (eligible.some((entry) => entry.dailyPixStatus === "QUEUED")) {
+      return "QUEUED" as const;
     }
     const paid = eligible.filter(
       (entry) => entry.dailyPixStatus === "PAID",
@@ -1096,6 +1101,8 @@ export function DailyRankResultModal({
                           ? "COMPLETED"
                           : entry.dailyPixStatus === "PROCESSING"
                             ? "PROCESSING"
+                            : entry.dailyPixStatus === "QUEUED"
+                              ? "QUEUED"
                             : entry.dailyPixStatus === "FAILED"
                               ? "FAILED"
                               : "PENDING"
