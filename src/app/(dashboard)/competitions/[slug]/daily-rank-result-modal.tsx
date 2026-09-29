@@ -92,6 +92,7 @@ import {
   getPostEmbedUrl,
   InstagramBrowserEmbed,
   TikTokBrowserEmbed,
+  warmTikTokEmbed,
 } from "./tab-posts";
 
 /* ============================================================
@@ -303,6 +304,12 @@ export function DailyRankResultModal({
   const [disqualifyInput, setDisqualifyInput] = React.useState("");
   const [disqualifyReason, setDisqualifyReason] = React.useState("");
   const [playerEntryId, setPlayerEntryId] = React.useState<string | null>(null);
+  const hasTikTokEntries =
+    preview?.entries.some((entry) => entry.platform === "TIKTOK") ?? false;
+
+  React.useEffect(() => {
+    if (open && hasTikTokEntries) warmTikTokEmbed();
+  }, [open, hasTikTokEntries]);
 
   /* Ao fechar o modal principal, zera todos os sub-estados. */
   React.useEffect(() => {
@@ -1876,6 +1883,7 @@ export function DailyRankResultModal({
               <TikTokBrowserEmbed
                 key={playerEntry.dailyRankingEntryId}
                 url={playerUrl}
+                thumbnailUrl={playerEntry.thumbnailUrl}
               />
             ) : playerEmbedUrl ? (
               <iframe

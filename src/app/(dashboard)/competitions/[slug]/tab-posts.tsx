@@ -410,8 +410,41 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
   )
 }
 
-export function TikTokBrowserEmbed({ url }: { url: string }) {
+const TIKTOK_EMBED_SCRIPT_URL = "https://www.tiktok.com/embed.js"
+
+/** Aquece a conexão e baixa o script sem executar o embed antes do clique. */
+export function warmTikTokEmbed() {
+  if (typeof document === "undefined") return
+
+  if (!document.querySelector('link[data-clipfy-tiktok-preconnect="true"]')) {
+    const connection = document.createElement("link")
+    connection.rel = "preconnect"
+    connection.href = "https://www.tiktok.com"
+    connection.dataset.clipfyTiktokPreconnect = "true"
+    document.head.appendChild(connection)
+  }
+
+  if (!document.querySelector('link[data-clipfy-tiktok-preload="true"]')) {
+    const preload = document.createElement("link")
+    preload.rel = "preload"
+    preload.as = "script"
+    preload.href = TIKTOK_EMBED_SCRIPT_URL
+    preload.dataset.clipfyTiktokPreload = "true"
+    document.head.appendChild(preload)
+  }
+}
+
+export function TikTokBrowserEmbed({
+  url,
+  thumbnailUrl,
+}: {
+  url: string
+  thumbnailUrl?: string | null
+}) {
   const [isLoading, setIsLoading] = React.useState(true)
+  const [hasFailed, setHasFailed] = React.useState(false)
+  const [attempt, setAttempt] = React.useState(0)
+  const containerRef = React.useRef<HTMLDivElement>(null)
   const videoId = React.useMemo(() => {
     try {
       const parts = new URL(url).pathname.split("/").filter(Boolean)
@@ -430,35 +463,115 @@ export function TikTokBrowserEmbed({ url }: { url: string }) {
       return
     }
 
-    const previousScript = document.querySelector<HTMLScriptElement>(
-      'script[data-clipfy-tiktok-embed="true"]',
-    )
-    previousScript?.remove()
+    let cancelled = false
+    let embedReady = false
+    setIsLoading(true)
+    setHasFailed(false)
 
+    const handleEmbedMessage = (event: MessageEvent) => {
+      if (cancelled || event.origin !== "https://www.tiktok.com") return
+      const iframe = containerRef.current?.querySelector("iframe")
+      if (!iframe || event.source !== iframe.contentWindow) return
+      if (typeof event.data !== "string") return
+
+      try {
+        const message = JSON.parse(event.data) as {
+          signalSource?: string
+          height?: number
+        }
+        if (
+          message.signalSource?.startsWith("__tt_embed__") &&
+          typeof message.height === "number" &&
+          message.height > 0
+        ) {
+          embedReady = true
+          setIsLoading(false)
+        }
+      } catch {
+        // Mensagens de outros recursos do TikTok não indicam embed pronto.
+      }
+    }
+    window.addEventListener("message", handleEmbedMessage)
+
+    const retryOrFail = () => {
+      if (cancelled || embedReady) return
+      if (attempt === 0) {
+        setAttempt(1)
+      } else {
+        setIsLoading(false)
+        setHasFailed(true)
+      }
+    }
+
+    document.querySelector('script[data-clipfy-tiktok-embed="true"]')?.remove()
     const script = document.createElement("script")
     script.async = true
-    script.src = "https://www.tiktok.com/embed.js"
+    script.fetchPriority = "high"
+    script.src = TIKTOK_EMBED_SCRIPT_URL
     script.dataset.clipfyTiktokEmbed = "true"
-    script.onload = () => window.setTimeout(() => setIsLoading(false), 800)
-    script.onerror = () => setIsLoading(false)
+    script.onerror = retryOrFail
     document.body.appendChild(script)
 
+    // O iframe dispara load até quando o TikTok responde com erro. A mensagem
+    // de altura chega somente depois de o embed renderizar seu conteúdo.
+    const timeout = window.setTimeout(retryOrFail, 7000)
+
     return () => {
-      script.onload = null
+      cancelled = true
+      window.clearTimeout(timeout)
+      window.removeEventListener("message", handleEmbedMessage)
       script.onerror = null
+      script.remove()
     }
-  }, [videoId])
+  }, [videoId, attempt])
 
   return (
-    <div className="relative h-full w-full overflow-y-auto bg-white px-1 py-3 sm:px-4">
-      {isLoading && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
-          <Spinner className="size-7 animate-spin text-white" />
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-y-auto bg-white px-1 py-3 sm:px-4"
+    >
+      {isLoading && videoId && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black text-white">
+          {thumbnailUrl && (
+            <Image
+              src={thumbnailUrl}
+              alt=""
+              fill
+              sizes="160px"
+              className="object-contain opacity-50 blur-sm"
+            />
+          )}
+          <Spinner className="relative size-7 animate-spin" />
+          <span className="relative text-sm">
+            {attempt === 0 ? "Carregando vídeo..." : "Tentando novamente..."}
+          </span>
+        </div>
+      )}
+      {hasFailed && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center text-white">
+          <Warning className="size-8 text-amber-400" weight="fill" />
+          <p className="font-semibold">Não foi possível carregar este vídeo</p>
+          <button
+            type="button"
+            onClick={() => setAttempt((current) => current + 1)}
+            className="flex cursor-pointer items-center gap-1.5 text-sm underline"
+          >
+            <ArrowsClockwise className="size-4" />
+            Tentar novamente
+          </button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm underline"
+          >
+            Abrir no TikTok
+          </a>
         </div>
       )}
       {videoId ? (
         <blockquote
-          key={url}
+          key={`${url}-${attempt}`}
           className="tiktok-embed mx-auto! max-w-[605px]! min-w-0!"
           cite={url}
           data-video-id={videoId}
@@ -727,6 +840,12 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
       placeholderData: (prev) => prev,
     },
   )
+
+  const hasTikTokPosts =
+    postsData?.posts.some((post) => post.platform === "TIKTOK") ?? false
+  React.useEffect(() => {
+    if (hasTikTokPosts) warmTikTokEmbed()
+  }, [hasTikTokPosts])
 
   const { data: reassignTargetsData, isLoading: isLoadingReassignTargets } =
     api.admin.getClipPostReassignmentTargets.useQuery(
@@ -1678,7 +1797,11 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
             ) : playerPost?.platform === "INSTAGRAM" ? (
               <InstagramBrowserEmbed key={playerPost.id} url={playerPost.url} />
             ) : playerPost?.platform === "TIKTOK" ? (
-              <TikTokBrowserEmbed key={playerPost.id} url={playerPost.url} />
+              <TikTokBrowserEmbed
+                key={playerPost.id}
+                url={playerPost.url}
+                thumbnailUrl={playerPost.thumbnail}
+              />
             ) : playerEmbedUrl ? (
               <>
                 {isPlayerLoading && (
