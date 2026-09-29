@@ -43,6 +43,8 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
+import { ExportCompetitionPostsCsvDialog } from "@/components/posts/export-competition-posts-csv-dialog";
+
 import { PostMetricsHistoryDialog } from "./post-metrics-history-dialog";
 
 type Platform = PlatformKey;
@@ -248,17 +250,23 @@ export default function Posts() {
                 )}
               </div>
             </div>
-            {activeFilterCount > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="text-muted-foreground hover:text-foreground h-9 cursor-pointer rounded-xl text-xs"
-              >
-                <Broom className="size-3.5" />
-                Limpar tudo
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              <ExportCompetitionPostsCsvDialog
+                campaignId={campaignId}
+                campaignName={activeCampaignName ?? undefined}
+              />
+              {activeFilterCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearFilters}
+                  className="text-muted-foreground hover:text-foreground h-9 cursor-pointer rounded-xl text-xs"
+                >
+                  <Broom className="size-3.5" />
+                  Limpar tudo
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="relative grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

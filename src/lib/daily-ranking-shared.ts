@@ -165,7 +165,7 @@ export function rankLiveDailyPosts(params: {
   topCount: number;
   dailyPrizeTable: unknown;
 }): DailyClipperRankingItem[] {
-  const prizeTable = parsePrizeTable(params.dailyPrizeTable);
+  const prizeTable = parsePrizeTable(params.dailyPrizeTable, { allowEmpty: true });
   return params.posts
     .map((post) => {
       const engagementRate = calculateEngagementRate(

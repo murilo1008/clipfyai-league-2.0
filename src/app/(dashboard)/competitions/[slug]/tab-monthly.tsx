@@ -63,7 +63,7 @@ export function MonthlyTab(props: CompetitionTabProps) {
   const postsInWindow = data.todayPostsCount ?? 0
 
   const monthlyPrizeTable = React.useMemo(
-    () => parsePrizeTable(data.rankingRule?.monthlyPrizeTable ?? null),
+    () => parsePrizeTable(data.rankingRule?.monthlyPrizeTable ?? null, { allowEmpty: true }),
     [data.rankingRule?.monthlyPrizeTable],
   )
 

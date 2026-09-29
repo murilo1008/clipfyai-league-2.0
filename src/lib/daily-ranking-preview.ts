@@ -45,7 +45,10 @@ function getDefaultPrizeTable(): PrizeTableEntry[] {
 /**
  * Parseia a tabela de prêmios do RankingRule (JSON string, objeto ou array).
  */
-export function parsePrizeTable(prizeTable: unknown): PrizeTableEntry[] {
+export function parsePrizeTable(
+  prizeTable: unknown,
+  options: { allowEmpty?: boolean } = {},
+): PrizeTableEntry[] {
   if (prizeTable === null || prizeTable === undefined || prizeTable === "") {
     return getDefaultPrizeTable();
   }
@@ -70,7 +73,9 @@ export function parsePrizeTable(prizeTable: unknown): PrizeTableEntry[] {
       throw new Error(`Valor de prêmio inválido para a posição ${position}.`);
     }
     if (result.some((entry) => entry.position === position)) {
-      throw new Error(`A posição ${position} está duplicada na tabela de prêmios.`);
+      throw new Error(
+        `A posição ${position} está duplicada na tabela de prêmios.`,
+      );
     }
     result.push({ position, prize: Math.round(prize * 100) / 100 });
   };
@@ -114,6 +119,7 @@ export function parsePrizeTable(prizeTable: unknown): PrizeTableEntry[] {
   }
 
   if (result.length === 0) {
+    if (options.allowEmpty) return [];
     throw new Error("A tabela de prêmios não pode estar vazia.");
   }
   return result.sort((left, right) => left.position - right.position);
@@ -389,6 +395,7 @@ export async function getTotalViewsOfCampaign(
     SELECT COALESCE(SUM(cp."views"), 0)::bigint AS sum
     FROM "ClipPost" cp
     WHERE cp."campaignId" = ${campaignId}
+      AND cp."status" = 'ELIGIBLE'
   `;
   return result[0]?.sum ?? BigInt(0);
 }
@@ -1018,10 +1025,7 @@ export async function computeDailyPixPayoutSettledGate(
       expectedPrize: getPrizeForPosition(prizeTable, idx + 1),
       dre: dreMap.get(row.dailyRankingEntryId),
     }))
-    .filter(
-      (entry) =>
-        entry.expectedPrize > 0 && entry.row.pixPayoutEligible,
-    );
+    .filter((entry) => entry.expectedPrize > 0 && entry.row.pixPayoutEligible);
 
   const isSettledEntry = (entry: {
     dre: (typeof dreRows)[number] | undefined;

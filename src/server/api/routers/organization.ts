@@ -67,14 +67,14 @@ export const organizationRouter = createTRPCRouter({
           const totalViews = campaigns.reduce((acc, campaign) => {
             const campaignViews = campaign.clipPosts.reduce(
               (sum, post) => sum + Number(post.views),
-              0
+              0,
             );
             return acc + campaignViews;
           }, 0);
 
           const totalClippers = campaigns.reduce(
             (acc, campaign) => acc + campaign._count.applications,
-            0
+            0,
           );
 
           // Buscar quota usage do mês atual
@@ -98,7 +98,7 @@ export const organizationRouter = createTRPCRouter({
             currentIngestUsage: quotaUsage?.used || 0,
             members: org.members.length,
           };
-        })
+        }),
       );
 
       return orgsWithMetrics;
@@ -169,7 +169,7 @@ export const organizationRouter = createTRPCRouter({
           .min(2, "Slug deve ter pelo menos 2 caracteres")
           .regex(
             /^[a-z0-9-]+$/,
-            "Slug deve conter apenas letras minúsculas, números e hífens"
+            "Slug deve conter apenas letras minúsculas, números e hífens",
           ),
         description: z.string().optional(),
         logoUrl: z.string().url().optional().or(z.literal("")),
@@ -179,7 +179,7 @@ export const organizationRouter = createTRPCRouter({
         quotaMonthlyIngest: z.number().int().positive().default(100000),
         quotaActiveCampaigns: z.number().int().positive().default(5),
         quotaCreatorsPerCampaign: z.number().int().positive().default(1000),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const user = await currentUser();
@@ -285,7 +285,7 @@ export const organizationRouter = createTRPCRouter({
         quotaMonthlyIngest: z.number().int().positive().optional(),
         quotaActiveCampaigns: z.number().int().positive().optional(),
         quotaCreatorsPerCampaign: z.number().int().positive().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const user = await currentUser();
@@ -358,9 +358,9 @@ export const organizationRouter = createTRPCRouter({
       const activeOrgs = await ctx.db.organization.count({
         where: { isActive: true },
       });
-      
+
       const allMembers = await ctx.db.organizationMember.count();
-      
+
       const activeCampaigns = await ctx.db.campaign.count({
         where: { status: "ACTIVE" },
       });
@@ -380,7 +380,7 @@ export const organizationRouter = createTRPCRouter({
       const totalViews = allCampaigns.reduce((acc, campaign) => {
         const campaignViews = campaign.clipPosts.reduce(
           (sum, post) => sum + Number(post.views),
-          0
+          0,
         );
         return acc + campaignViews;
       }, 0);
@@ -409,7 +409,7 @@ export const organizationRouter = createTRPCRouter({
         organizationId: z.string(),
         userId: z.string(),
         role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const user = await currentUser();
@@ -484,7 +484,7 @@ export const organizationRouter = createTRPCRouter({
       z.object({
         memberId: z.string(),
         role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const user = await currentUser();
@@ -558,4 +558,3 @@ export const organizationRouter = createTRPCRouter({
       }
     }),
 });
-

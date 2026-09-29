@@ -27,11 +27,13 @@ function getClientCreationClerkError(error: unknown): TRPCError {
   if (!detail) {
     return new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: "Erro ao comunicar com o sistema de autenticação. Tente novamente.",
+      message:
+        "Erro ao comunicar com o sistema de autenticação. Tente novamente.",
     })
   }
 
-  const message = `${detail.message ?? ""} ${detail.longMessage ?? ""}`.toLowerCase()
+  const message =
+    `${detail.message ?? ""} ${detail.longMessage ?? ""}`.toLowerCase()
 
   switch (detail.code) {
     case "form_identifier_exists":
@@ -48,13 +50,15 @@ function getClientCreationClerkError(error: unknown): TRPCError {
     case "form_password_pwned":
       return new TRPCError({
         code: "BAD_REQUEST",
-        message: "Esta senha aparece em vazamentos conhecidos. Escolha uma senha diferente.",
+        message:
+          "Esta senha aparece em vazamentos conhecidos. Escolha uma senha diferente.",
       })
     case "form_password_not_strong_enough":
     case "form_password_validation_failed":
       return new TRPCError({
         code: "BAD_REQUEST",
-        message: "A senha não é forte o suficiente. Use maiúsculas, minúsculas, números e símbolos.",
+        message:
+          "A senha não é forte o suficiente. Use maiúsculas, minúsculas, números e símbolos.",
       })
     case "form_param_format_invalid":
       return new TRPCError({
@@ -72,7 +76,10 @@ function getClientCreationClerkError(error: unknown): TRPCError {
 
   return new TRPCError({
     code: "BAD_REQUEST",
-    message: detail.longMessage || detail.message || "Não foi possível validar os dados do cliente.",
+    message:
+      detail.longMessage ||
+      detail.message ||
+      "Não foi possível validar os dados do cliente.",
   })
 }
 
@@ -186,6 +193,90 @@ export const clientRouter = createTRPCRouter({
               ? (aggregateSavings / totals.equivalentAdsCost) * 100
               : 0,
         },
+      }
+    }),
+
+  exportCompetitionPostsCsv: privateProcedure
+    .input(
+      z.object({
+        campaignId: z.string().optional(),
+        includeAllPosts: z.boolean().default(true),
+        postedAtFrom: z.string().datetime().optional(),
+        postedAtTo: z.string().datetime().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const dbUser = await ctx.db.user.findUnique({
+        where: { id: ctx.userId },
+        select: { role: true },
+      })
+
+      if (!dbUser || (dbUser.role !== "CLIENT" && dbUser.role !== "ADMIN")) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para exportar estes clipposts",
+        })
+      }
+
+      if (dbUser.role === "ADMIN" && !input.campaignId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Selecione uma competição para exportar",
+        })
+      }
+
+      const campaigns = await ctx.db.campaign.findMany({
+        where: {
+          ...(input.campaignId ? { id: input.campaignId } : {}),
+          ...(dbUser.role === "CLIENT" ? { clientId: ctx.userId } : {}),
+        },
+        select: { id: true, name: true, slug: true },
+      })
+
+      if (input.campaignId && campaigns.length === 0) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Competição não encontrada ou sem acesso",
+        })
+      }
+
+      const postedAt = input.includeAllPosts
+        ? undefined
+        : {
+            ...(input.postedAtFrom
+              ? { gte: new Date(input.postedAtFrom) }
+              : {}),
+            ...(input.postedAtTo ? { lte: new Date(input.postedAtTo) } : {}),
+          }
+
+      const posts = await ctx.db.clipPost.findMany({
+        where: {
+          campaignId: { in: campaigns.map((campaign) => campaign.id) },
+          status: "ELIGIBLE",
+          ...(postedAt && Object.keys(postedAt).length > 0 ? { postedAt } : {}),
+        },
+        orderBy: [{ views: "desc" }, { postedAt: "desc" }],
+        select: {
+          submittedUrl: true,
+          postedAt: true,
+          views: true,
+          likes: true,
+          comments: true,
+        },
+      })
+
+      return {
+        campaignName:
+          campaigns.length === 1 ? campaigns[0]!.name : "todas-as-competicoes",
+        campaignSlug:
+          campaigns.length === 1 ? campaigns[0]!.slug : "todas-as-competicoes",
+        posts: posts.map((post) => ({
+          videoUrl: post.submittedUrl,
+          postedAt: post.postedAt?.toISOString() ?? null,
+          views: post.views.toString(),
+          likes: post.likes,
+          comments: post.comments,
+        })),
       }
     }),
 
@@ -503,7 +594,7 @@ export const clientRouter = createTRPCRouter({
         notes: z.string().optional(),
         hasStore: z.boolean().optional(),
         hasKiwifyStore: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Buscar role do usuário no banco
@@ -564,7 +655,8 @@ export const clientRouter = createTRPCRouter({
               role: "CLIENT",
               onboardingCompleted: true,
               hasStore: input.hasStore || false,
-              hasKiwifyStore: input.hasStore === true && input.hasKiwifyStore === true,
+              hasKiwifyStore:
+                input.hasStore === true && input.hasKiwifyStore === true,
             },
           })
 
@@ -659,7 +751,11 @@ export const clientRouter = createTRPCRouter({
       z.object({
         id: z.string(),
         name: z.string().optional(),
-        password: z.string().min(8, "Senha deve ter no mínimo 8 caracteres").optional().or(z.literal("")),
+        password: z
+          .string()
+          .min(8, "Senha deve ter no mínimo 8 caracteres")
+          .optional()
+          .or(z.literal("")),
         phone: z.string().optional(),
         company: z.string().optional(),
         position: z.string().optional(),
@@ -670,7 +766,7 @@ export const clientRouter = createTRPCRouter({
         notes: z.string().optional(),
         hasStore: z.boolean().optional(),
         hasKiwifyStore: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Buscar role do usuário no banco
@@ -727,8 +823,10 @@ export const clientRouter = createTRPCRouter({
         // 1. Atualizar usuário
         const userUpdateData: any = {}
         if (input.name) userUpdateData.name = input.name
-        if (input.hasStore !== undefined) userUpdateData.hasStore = input.hasStore
-        if (input.hasKiwifyStore !== undefined) userUpdateData.hasKiwifyStore = input.hasKiwifyStore
+        if (input.hasStore !== undefined)
+          userUpdateData.hasStore = input.hasStore
+        if (input.hasKiwifyStore !== undefined)
+          userUpdateData.hasKiwifyStore = input.hasKiwifyStore
 
         // Se hasStore for false, também desabilita hasKiwifyStore
         if (input.hasStore === false) {
@@ -748,14 +846,36 @@ export const clientRouter = createTRPCRouter({
             where: { userId: input.id },
             data: {
               fullName: input.name || user.clientProfile.fullName,
-              phone: input.phone !== undefined ? input.phone : user.clientProfile.phone,
-              company: input.company !== undefined ? input.company : user.clientProfile.company,
-              position: input.position !== undefined ? input.position : user.clientProfile.position,
-              website: input.website !== undefined ? (input.website || null) : user.clientProfile.website,
-              country: input.country !== undefined ? input.country : user.clientProfile.country,
-              city: input.city !== undefined ? input.city : user.clientProfile.city,
-              status: input.status !== undefined ? input.status : user.clientProfile.status,
-              notes: input.notes !== undefined ? input.notes : user.clientProfile.notes,
+              phone:
+                input.phone !== undefined
+                  ? input.phone
+                  : user.clientProfile.phone,
+              company:
+                input.company !== undefined
+                  ? input.company
+                  : user.clientProfile.company,
+              position:
+                input.position !== undefined
+                  ? input.position
+                  : user.clientProfile.position,
+              website:
+                input.website !== undefined
+                  ? input.website || null
+                  : user.clientProfile.website,
+              country:
+                input.country !== undefined
+                  ? input.country
+                  : user.clientProfile.country,
+              city:
+                input.city !== undefined ? input.city : user.clientProfile.city,
+              status:
+                input.status !== undefined
+                  ? input.status
+                  : user.clientProfile.status,
+              notes:
+                input.notes !== undefined
+                  ? input.notes
+                  : user.clientProfile.notes,
             },
           })
         } else {
@@ -845,7 +965,9 @@ export const clientRouter = createTRPCRouter({
 
       // Verificar se tem campanhas ativas
       const org = user.organizations[0]?.organization
-      const hasActiveCampaigns = org?.campaigns.some((c) => c.status === "ACTIVE")
+      const hasActiveCampaigns = org?.campaigns.some(
+        (c) => c.status === "ACTIVE",
+      )
 
       if (hasActiveCampaigns) {
         throw new TRPCError({
@@ -885,7 +1007,10 @@ export const clientRouter = createTRPCRouter({
     })
 
     // Apenas ADMIN e ORGANIZER_ADMIN podem ver stats
-    if (!dbUser || (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")) {
+    if (
+      !dbUser ||
+      (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "Você não tem permissão para acessar esta funcionalidade",
@@ -960,7 +1085,7 @@ export const clientRouter = createTRPCRouter({
       z.object({
         clientId: z.string(),
         campaignIds: z.array(z.string()),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Buscar role do usuário no banco
@@ -1023,7 +1148,7 @@ export const clientRouter = createTRPCRouter({
       z.object({
         clientId: z.string(),
         campaignIds: z.array(z.string()),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Buscar role do usuário no banco
@@ -1129,12 +1254,13 @@ export const clientRouter = createTRPCRouter({
       campaigns.map(async (campaign) => {
         // ⚠️ FILTRO ESPECIAL: Competição Tarcísio De Freitas - Novembro
         // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
-        const isTarcisioCompetition = campaign.slug === "tarcisio-de-freitas-novembro";
-        const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00"); // 07/11/2025 22:00 BRT
+        const isTarcisioCompetition =
+          campaign.slug === "tarcisio-de-freitas-novembro"
+        const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00") // 07/11/2025 22:00 BRT
 
         const postDateFilter = isTarcisioCompetition
           ? { postedAt: { gte: tarcisioStartDate } }
-          : {};
+          : {}
 
         // Buscar contagem real de posts (TODOS, independente do status)
         const totalPostsCount = isTarcisioCompetition
@@ -1150,9 +1276,9 @@ export const clientRouter = createTRPCRouter({
                 campaignId: campaign.id,
                 // ✅ Removido filtro de status - conta TODOS os posts
               },
-            });
+            })
 
-        // Buscar métricas totais da campanha (TODOS os posts, independente do status)
+        // Buscar métricas totais da campanha apenas em posts elegíveis
         const metrics = await ctx.db.clipPost.aggregate({
           where: {
             campaignId: campaign.id,
@@ -1168,7 +1294,7 @@ export const clientRouter = createTRPCRouter({
           },
         })
 
-        // Buscar crescimento nos últimos 7 dias (TODOS os posts, independente do status)
+        // Buscar crescimento nos últimos 7 dias apenas em posts elegíveis
         const sevenDaysAgo = new Date()
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
@@ -1190,7 +1316,8 @@ export const clientRouter = createTRPCRouter({
         const now = new Date()
         const growthStartDate = new Date(campaign.startDate)
         growthStartDate.setHours(0, 0, 0, 0)
-        const growthEndDate = campaign.endDate < now ? new Date(campaign.endDate) : now
+        const growthEndDate =
+          campaign.endDate < now ? new Date(campaign.endDate) : now
         growthEndDate.setHours(23, 59, 59, 999)
 
         const [postsInRange, allCampaignPlatforms] = await Promise.all([
@@ -1199,7 +1326,9 @@ export const clientRouter = createTRPCRouter({
               campaignId: campaign.id,
               status: "ELIGIBLE",
               createdAt: { gte: growthStartDate, lte: growthEndDate },
-              ...(isTarcisioCompetition ? { postedAt: { gte: tarcisioStartDate } } : {}),
+              ...(isTarcisioCompetition
+                ? { postedAt: { gte: tarcisioStartDate } }
+                : {}),
             },
             select: { platform: true, views: true, createdAt: true },
           }),
@@ -1208,15 +1337,22 @@ export const clientRouter = createTRPCRouter({
             where: {
               campaignId: campaign.id,
               status: "ELIGIBLE",
-              ...(isTarcisioCompetition ? { postedAt: { gte: tarcisioStartDate } } : {}),
+              ...(isTarcisioCompetition
+                ? { postedAt: { gte: tarcisioStartDate } }
+                : {}),
             },
             _sum: { views: true },
           }),
         ])
 
-        const growthPlatforms = allCampaignPlatforms.map((p) => p.platform).sort()
+        const growthPlatforms = allCampaignPlatforms
+          .map((p) => p.platform)
+          .sort()
 
-        const totalDays = Math.ceil((growthEndDate.getTime() - growthStartDate.getTime()) / (1000 * 60 * 60 * 24))
+        const totalDays = Math.ceil(
+          (growthEndDate.getTime() - growthStartDate.getTime()) /
+            (1000 * 60 * 60 * 24),
+        )
         const dayMap = new Map<string, Record<string, number>>()
         for (let i = 0; i < totalDays; i++) {
           const d = new Date(growthStartDate)
@@ -1282,7 +1418,7 @@ export const clientRouter = createTRPCRouter({
           where: {
             campaignId: campaign.id,
             status: {
-              not: "DISQUALIFIED",
+              equals: "ELIGIBLE",
             },
             ...postDateFilter,
           },
@@ -1349,7 +1485,7 @@ export const clientRouter = createTRPCRouter({
               totalComments: acc._sum.comments || 0,
               postsCount: acc._count.id,
             }
-          })
+          }),
         )
 
         // Calcular engagement rate
@@ -1363,7 +1499,7 @@ export const clientRouter = createTRPCRouter({
           totalLikes,
           totalComments,
           totalShares,
-          totalSaves
+          totalSaves,
         )
 
         return {
@@ -1411,7 +1547,7 @@ export const clientRouter = createTRPCRouter({
           })),
           topAccounts,
         }
-      })
+      }),
     )
 
     return {
@@ -1430,13 +1566,19 @@ export const clientRouter = createTRPCRouter({
       z.object({
         page: z.number().min(1).default(1),
         limit: z.number().min(1).max(100).default(24),
-        platform: z.enum(["INSTAGRAM", "TIKTOK", "YOUTUBE", "KWAI", "FACEBOOK", "ALL"]).optional(),
-        status: z.enum(["PENDING", "ELIGIBLE", "INELIGIBLE", "DISQUALIFIED", "ALL"]).optional(),
+        platform: z
+          .enum(["INSTAGRAM", "TIKTOK", "YOUTUBE", "KWAI", "FACEBOOK", "ALL"])
+          .optional(),
+        status: z
+          .enum(["PENDING", "ELIGIBLE", "INELIGIBLE", "DISQUALIFIED", "ALL"])
+          .optional(),
         campaignId: z.string().optional(),
         search: z.string().optional(), // Buscar por username
-        orderBy: z.enum(["views", "likes", "comments", "shares", "createdAt"]).default("views"),
+        orderBy: z
+          .enum(["views", "likes", "comments", "shares", "createdAt"])
+          .default("views"),
         orderDirection: z.enum(["asc", "desc"]).default("desc"),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       // Buscar role do usuário no banco
@@ -1453,7 +1595,16 @@ export const clientRouter = createTRPCRouter({
         })
       }
 
-      const { page, limit, platform, status, campaignId, search, orderBy, orderDirection } = input
+      const {
+        page,
+        limit,
+        platform,
+        status,
+        campaignId,
+        search,
+        orderBy,
+        orderDirection,
+      } = input
       const skip = (page - 1) * limit
 
       // Buscar campanhas do cliente
@@ -1484,13 +1635,14 @@ export const clientRouter = createTRPCRouter({
 
       // ⚠️ FILTRO ESPECIAL: Competição Tarcísio De Freitas - Novembro
       // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
-      const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00"); // 07/11/2025 22:00 BRT
+      const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00") // 07/11/2025 22:00 BRT
 
       // Verificar se está filtrando especificamente pela campanha do Tarcísio
-      let isTarcisioCompetition = false;
+      let isTarcisioCompetition = false
       if (campaignId) {
-        const campaign = clientCampaigns.find(c => c.id === campaignId);
-        isTarcisioCompetition = campaign?.slug === "tarcisio-de-freitas-novembro";
+        const campaign = clientCampaigns.find((c) => c.id === campaignId)
+        isTarcisioCompetition =
+          campaign?.slug === "tarcisio-de-freitas-novembro"
       }
 
       const where: any = {
@@ -1501,7 +1653,7 @@ export const clientRouter = createTRPCRouter({
 
       // Aplicar filtro de data se for a competição do Tarcísio
       if (isTarcisioCompetition) {
-        where.postedAt = { gte: tarcisioStartDate };
+        where.postedAt = { gte: tarcisioStartDate }
       }
 
       if (platform && platform !== "ALL") {
@@ -1515,7 +1667,7 @@ export const clientRouter = createTRPCRouter({
       } else {
         // Por padrão, NÃO mostrar posts desqualificados
         where.status = {
-          not: "DISQUALIFIED"
+          not: "DISQUALIFIED",
         }
       }
 
@@ -1584,7 +1736,10 @@ export const clientRouter = createTRPCRouter({
         platform: post.platform,
         username: post.username || "",
         caption: post.caption || "",
-        clipperName: post.application?.clipperProfile?.artisticName || post.application?.clipperProfile?.fullName || "Clipador",
+        clipperName:
+          post.application?.clipperProfile?.artisticName ||
+          post.application?.clipperProfile?.fullName ||
+          "Clipador",
         clipperImage: post.application?.clipperProfile?.user?.imageUrl || null,
         views: Number(post.views),
         likes: post.likes,
@@ -1696,11 +1851,17 @@ export const clientRouter = createTRPCRouter({
       })
 
       if (!post) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Post não encontrado" })
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Post não encontrado",
+        })
       }
 
       if (post.campaign.clientId !== ctx.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para acessar este post" })
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Sem permissão para acessar este post",
+        })
       }
 
       const engagementRate = calculateEngagementRate(
@@ -1708,7 +1869,7 @@ export const clientRouter = createTRPCRouter({
         post.likes,
         post.comments,
         post.shares,
-        post.saves ?? 0
+        post.saves ?? 0,
       )
 
       return {
@@ -1800,11 +1961,17 @@ export const clientRouter = createTRPCRouter({
       })
 
       if (!post) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Post não encontrado" })
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Post não encontrado",
+        })
       }
 
       if (post.campaign.clientId !== ctx.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para acessar este post" })
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Sem permissão para acessar este post",
+        })
       }
 
       const metricType = post.campaign.rankingMetricType as RankingMetricType
@@ -1833,8 +2000,21 @@ export const clientRouter = createTRPCRouter({
         const comments = m.comments
         const shares = m.shares
         const saves = m.saves ?? 0
-        const engagementRate = calculateEngagementRate(views, likes, comments, shares, saves)
-        const rankingScore = calculateRankingScore(metricType, views, likes, comments, shares, saves)
+        const engagementRate = calculateEngagementRate(
+          views,
+          likes,
+          comments,
+          shares,
+          saves,
+        )
+        const rankingScore = calculateRankingScore(
+          metricType,
+          views,
+          likes,
+          comments,
+          shares,
+          saves,
+        )
         return {
           id: m.id,
           collectedAt: m.collectedAt.toISOString(),
@@ -1910,7 +2090,7 @@ export const clientRouter = createTRPCRouter({
         kiwifyClientId: z.string().min(1, "Client ID é obrigatório"),
         kiwifySecretKey: z.string().min(1, "Secret Key é obrigatória"),
         kiwifyAccountId: z.string().min(1, "Account ID é obrigatório"),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const dbUser = await ctx.db.user.findUnique({
@@ -1935,27 +2115,36 @@ export const clientRouter = createTRPCRouter({
       // Testar as credenciais antes de salvar
       try {
         // Kiwify Public API v1 - enviar client_id e client_secret no body
-        const tokenResponse = await fetch("https://public-api.kiwify.com/v1/oauth/token", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+        const tokenResponse = await fetch(
+          "https://public-api.kiwify.com/v1/oauth/token",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              client_id: input.kiwifyClientId,
+              client_secret: input.kiwifySecretKey,
+            }),
           },
-          body: new URLSearchParams({
-            client_id: input.kiwifyClientId,
-            client_secret: input.kiwifySecretKey,
-          }),
-        })
+        )
 
         if (!tokenResponse.ok) {
           const errorText = await tokenResponse.text()
           console.error("Erro ao validar credenciais Kiwify:", errorText)
 
           // Mensagem mais específica baseada no erro
-          let message = "Credenciais inválidas. Verifique o Client ID e Secret Key."
-          if (errorText.includes("TOKEN_INVALID") || errorText.includes("invalid_client")) {
-            message = "Client ID ou Secret Key inválidos. Verifique as credenciais no painel da Kiwify."
+          let message =
+            "Credenciais inválidas. Verifique o Client ID e Secret Key."
+          if (
+            errorText.includes("TOKEN_INVALID") ||
+            errorText.includes("invalid_client")
+          ) {
+            message =
+              "Client ID ou Secret Key inválidos. Verifique as credenciais no painel da Kiwify."
           } else if (errorText.includes("unauthorized")) {
-            message = "Credenciais não autorizadas. Verifique se a API Key está ativa."
+            message =
+              "Credenciais não autorizadas. Verifique se a API Key está ativa."
           }
 
           throw new TRPCError({
@@ -1983,7 +2172,7 @@ export const clientRouter = createTRPCRouter({
               Authorization: `Bearer ${accessToken}`,
               "x-kiwify-account-id": input.kiwifyAccountId,
             },
-          }
+          },
         )
 
         if (!testResponse.ok) {
@@ -1991,7 +2180,8 @@ export const clientRouter = createTRPCRouter({
           console.error("Erro ao validar Account ID Kiwify:", errorText)
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Account ID inválido. Verifique o ID da conta no painel da Kiwify.",
+            message:
+              "Account ID inválido. Verifique o ID da conta no painel da Kiwify.",
           })
         }
       } catch (error: any) {
@@ -2023,16 +2213,29 @@ export const clientRouter = createTRPCRouter({
       z.object({
         startDate: z.string(),
         endDate: z.string(),
-        status: z.enum([
-          "approved", "authorized", "chargedback", "paid", "pending",
-          "pending_refund", "processing", "refunded", "refund_requested",
-          "refused", "waiting_payment", "all"
-        ]).optional(),
-        paymentMethod: z.enum(["boleto", "credit_card", "pix", "all"]).optional(),
+        status: z
+          .enum([
+            "approved",
+            "authorized",
+            "chargedback",
+            "paid",
+            "pending",
+            "pending_refund",
+            "processing",
+            "refunded",
+            "refund_requested",
+            "refused",
+            "waiting_payment",
+            "all",
+          ])
+          .optional(),
+        paymentMethod: z
+          .enum(["boleto", "credit_card", "pix", "all"])
+          .optional(),
         productId: z.string().optional(),
         pageSize: z.number().min(1).max(100).default(50),
         pageNumber: z.number().min(1).default(1),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       // Buscar dados do usuário
@@ -2063,32 +2266,41 @@ export const clientRouter = createTRPCRouter({
         })
       }
 
-      if (!dbUser.kiwifyClientId || !dbUser.kiwifySecretKey || !dbUser.kiwifyAccountId) {
+      if (
+        !dbUser.kiwifyClientId ||
+        !dbUser.kiwifySecretKey ||
+        !dbUser.kiwifyAccountId
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Credenciais da Kiwify não configuradas. Entre em contato com o suporte.",
+          message:
+            "Credenciais da Kiwify não configuradas. Entre em contato com o suporte.",
         })
       }
 
       try {
         // Obter token de acesso da Kiwify Public API v1
-        const tokenResponse = await fetch("https://public-api.kiwify.com/v1/oauth/token", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+        const tokenResponse = await fetch(
+          "https://public-api.kiwify.com/v1/oauth/token",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              client_id: dbUser.kiwifyClientId,
+              client_secret: dbUser.kiwifySecretKey,
+            }),
           },
-          body: new URLSearchParams({
-            client_id: dbUser.kiwifyClientId,
-            client_secret: dbUser.kiwifySecretKey,
-          }),
-        })
+        )
 
         if (!tokenResponse.ok) {
           const errorText = await tokenResponse.text()
           console.error("Erro ao obter token Kiwify:", errorText)
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: "Erro ao autenticar com a Kiwify. Verifique suas credenciais.",
+            message:
+              "Erro ao autenticar com a Kiwify. Verifique suas credenciais.",
           })
         }
 
@@ -2149,7 +2361,13 @@ export const clientRouter = createTRPCRouter({
           page_number: "1",
         })
 
-        const [salesResponse, statsResponse, paidSalesResponse, refundedSalesResponse, pendingSalesResponse] = await Promise.all([
+        const [
+          salesResponse,
+          statsResponse,
+          paidSalesResponse,
+          refundedSalesResponse,
+          pendingSalesResponse,
+        ] = await Promise.all([
           // Buscar vendas da Kiwify Public API v1 (paginada para tabela)
           fetch(`https://public-api.kiwify.com/v1/sales?${params}`, {
             method: "GET",
@@ -2175,25 +2393,34 @@ export const clientRouter = createTRPCRouter({
             },
           }),
           // Buscar contagem de vendas reembolsadas
-          fetch(`https://public-api.kiwify.com/v1/sales?${refundedSalesParams}`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
+          fetch(
+            `https://public-api.kiwify.com/v1/sales?${refundedSalesParams}`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "x-kiwify-account-id": dbUser.kiwifyAccountId,
+              },
             },
-          }),
+          ),
           // Buscar contagem de vendas pendentes
-          fetch(`https://public-api.kiwify.com/v1/sales?${pendingSalesParams}`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
+          fetch(
+            `https://public-api.kiwify.com/v1/sales?${pendingSalesParams}`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "x-kiwify-account-id": dbUser.kiwifyAccountId,
+              },
             },
-          }),
+          ),
         ])
 
         if (!salesResponse.ok) {
-          console.error("Erro ao buscar vendas Kiwify:", await salesResponse.text())
+          console.error(
+            "Erro ao buscar vendas Kiwify:",
+            await salesResponse.text(),
+          )
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
             message: "Erro ao buscar vendas da Kiwify",
@@ -2217,7 +2444,10 @@ export const clientRouter = createTRPCRouter({
         if (statsResponse.ok) {
           statsData = await statsResponse.json()
         } else {
-          console.warn("Erro ao buscar estatísticas Kiwify:", await statsResponse.text())
+          console.warn(
+            "Erro ao buscar estatísticas Kiwify:",
+            await statsResponse.text(),
+          )
         }
 
         // Processar vendas pagas para calcular receita total
@@ -2233,7 +2463,8 @@ export const clientRouter = createTRPCRouter({
           const totalPages = Math.ceil(totalPaidCount / 100)
           if (totalPages > 1) {
             const additionalRequests = []
-            for (let page = 2; page <= Math.min(totalPages, 10); page++) { // Limitar a 10 páginas (1000 vendas)
+            for (let page = 2; page <= Math.min(totalPages, 10); page++) {
+              // Limitar a 10 páginas (1000 vendas)
               const pageParams = new URLSearchParams({
                 start_date: input.startDate,
                 end_date: input.endDate,
@@ -2248,7 +2479,7 @@ export const clientRouter = createTRPCRouter({
                     Authorization: `Bearer ${accessToken}`,
                     "x-kiwify-account-id": dbUser.kiwifyAccountId,
                   },
-                })
+                }),
               )
             }
 
@@ -2265,7 +2496,7 @@ export const clientRouter = createTRPCRouter({
         // Calcular receita total a partir das vendas pagas
         const calculatedTotalRevenue = allPaidSalesData.reduce(
           (sum: number, sale: any) => sum + (sale.net_amount || 0),
-          0
+          0,
         )
 
         // Processar contagem de vendas reembolsadas
@@ -2284,7 +2515,11 @@ export const clientRouter = createTRPCRouter({
 
         // Processar e retornar dados
         const sales = salesData.data || []
-        const pagination = salesData.pagination || { count: 0, page_number: 1, page_size: 50 }
+        const pagination = salesData.pagination || {
+          count: 0,
+          page_number: 1,
+          page_size: 50,
+        }
 
         // Usar estatísticas da API para contagem, mas receita calculada das vendas
         const totalSalesFromStats = statsData.total_sales ?? 0
@@ -2296,21 +2531,28 @@ export const clientRouter = createTRPCRouter({
           totalPaidCount,
           calculatedTotalRevenue: calculatedTotalRevenue / 100,
           refundRate,
-          chargebackRate
+          chargebackRate,
         })
 
         // Métricas da página atual (para contagem local)
         const paidSales = sales.filter((s: any) => s.status === "paid")
-        const refundedSales = sales.filter((s: any) => s.status === "refunded" || s.status === "chargedback")
-        const pendingSales = sales.filter((s: any) => s.status === "waiting_payment" || s.status === "pending")
+        const refundedSales = sales.filter(
+          (s: any) => s.status === "refunded" || s.status === "chargedback",
+        )
+        const pendingSales = sales.filter(
+          (s: any) => s.status === "waiting_payment" || s.status === "pending",
+        )
 
         // Agrupar vendas por dia para gráfico (usando TODAS as vendas pagas do período)
         // Converter para fuso horário de Brasília (America/Sao_Paulo)
-        const salesByDate: Record<string, { count: number; revenue: number }> = {}
+        const salesByDate: Record<string, { count: number; revenue: number }> =
+          {}
         allPaidSalesData.forEach((sale: any) => {
           // Usar toLocaleString para converter para o fuso brasileiro
           const saleDate = new Date(sale.created_at)
-          const brazilDate = saleDate.toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" }) // Formato yyyy-MM-dd
+          const brazilDate = saleDate.toLocaleDateString("sv-SE", {
+            timeZone: "America/Sao_Paulo",
+          }) // Formato yyyy-MM-dd
           if (brazilDate) {
             if (!salesByDate[brazilDate]) {
               salesByDate[brazilDate] = { count: 0, revenue: 0 }
@@ -2336,12 +2578,19 @@ export const clientRouter = createTRPCRouter({
         })
 
         // Agrupar por produto (usando TODAS as vendas pagas do período)
-        const salesByProduct: Record<string, { count: number; revenue: number; name: string }> = {}
+        const salesByProduct: Record<
+          string,
+          { count: number; revenue: number; name: string }
+        > = {}
         allPaidSalesData.forEach((sale: any) => {
           const productId = sale.product?.id || "unknown"
           const productName = sale.product?.name || "Produto"
           if (!salesByProduct[productId]) {
-            salesByProduct[productId] = { count: 0, revenue: 0, name: productName }
+            salesByProduct[productId] = {
+              count: 0,
+              revenue: 0,
+              name: productName,
+            }
           }
           salesByProduct[productId].count += 1
           salesByProduct[productId].revenue += sale.net_amount || 0
@@ -2366,15 +2615,19 @@ export const clientRouter = createTRPCRouter({
             currency: sale.currency || "BRL",
             createdAt: sale.created_at,
             updatedAt: sale.updated_at,
-            product: sale.product ? {
-              id: sale.product.id,
-              name: sale.product.name,
-            } : null,
-            customer: sale.customer ? {
-              id: sale.customer.id,
-              name: sale.customer.name,
-              email: sale.customer.email,
-            } : null,
+            product: sale.product
+              ? {
+                  id: sale.product.id,
+                  name: sale.product.name,
+                }
+              : null,
+            customer: sale.customer
+              ? {
+                  id: sale.customer.id,
+                  name: sale.customer.name,
+                  email: sale.customer.email,
+                }
+              : null,
           })),
           pagination: {
             total: pagination.count,
@@ -2388,7 +2641,10 @@ export const clientRouter = createTRPCRouter({
             // Receita calculada a partir das vendas pagas
             totalRevenue: calculatedTotalRevenue / 100, // Converter centavos para reais
             // Ticket médio baseado nas vendas pagas
-            averageTicket: totalPaidCount > 0 ? (calculatedTotalRevenue / totalPaidCount) / 100 : 0,
+            averageTicket:
+              totalPaidCount > 0
+                ? calculatedTotalRevenue / totalPaidCount / 100
+                : 0,
             paidSalesCount: totalPaidCount,
             refundRate,
             chargebackRate,
@@ -2398,10 +2654,12 @@ export const clientRouter = createTRPCRouter({
             pendingCount: pendingCount,
           },
           chartData,
-          paymentMethodStats: Object.entries(salesByPaymentMethod).map(([method, count]) => ({
-            method,
-            count,
-          })),
+          paymentMethodStats: Object.entries(salesByPaymentMethod).map(
+            ([method, count]) => ({
+              method,
+              count,
+            }),
+          ),
           productStats,
         }
       } catch (error: any) {
@@ -2425,7 +2683,7 @@ export const clientRouter = createTRPCRouter({
         status: z.enum(["active", "inactive", "all"]).optional(),
         productId: z.string().optional(),
         search: z.string().optional(),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       try {
@@ -2457,7 +2715,11 @@ export const clientRouter = createTRPCRouter({
           })
         }
 
-        if (!dbUser.kiwifyClientId || !dbUser.kiwifySecretKey || !dbUser.kiwifyAccountId) {
+        if (
+          !dbUser.kiwifyClientId ||
+          !dbUser.kiwifySecretKey ||
+          !dbUser.kiwifyAccountId
+        ) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Credenciais Kiwify não configuradas",
@@ -2465,16 +2727,19 @@ export const clientRouter = createTRPCRouter({
         }
 
         // Obter token de acesso
-        const tokenResponse = await fetch("https://public-api.kiwify.com/v1/oauth/token", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+        const tokenResponse = await fetch(
+          "https://public-api.kiwify.com/v1/oauth/token",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              client_id: dbUser.kiwifyClientId,
+              client_secret: dbUser.kiwifySecretKey,
+            }),
           },
-          body: new URLSearchParams({
-            client_id: dbUser.kiwifyClientId,
-            client_secret: dbUser.kiwifySecretKey,
-          }),
-        })
+        )
 
         if (!tokenResponse.ok) {
           const errorText = await tokenResponse.text()
@@ -2507,13 +2772,16 @@ export const clientRouter = createTRPCRouter({
         }
 
         // Buscar afiliados da API oficial da Kiwify
-        const affiliatesResponse = await fetch(`https://public-api.kiwify.com/v1/affiliates?${params}`, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "x-kiwify-account-id": dbUser.kiwifyAccountId,
+        const affiliatesResponse = await fetch(
+          `https://public-api.kiwify.com/v1/affiliates?${params}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "x-kiwify-account-id": dbUser.kiwifyAccountId,
+            },
           },
-        })
+        )
 
         if (!affiliatesResponse.ok) {
           const errorText = await affiliatesResponse.text()
@@ -2526,7 +2794,11 @@ export const clientRouter = createTRPCRouter({
 
         const affiliatesData = await affiliatesResponse.json()
         const affiliates = affiliatesData.data || []
-        const pagination = affiliatesData.pagination || { count: 0, page_number: 1, page_size: 50 }
+        const pagination = affiliatesData.pagination || {
+          count: 0,
+          page_number: 1,
+          page_size: 50,
+        }
 
         // Mapear dados para o formato do frontend
         const formattedAffiliates = affiliates.map((affiliate: any) => ({
@@ -2536,10 +2808,12 @@ export const clientRouter = createTRPCRouter({
           companyName: affiliate.company_name || "",
           cpf: affiliate.director_cpf || "",
           cnpj: affiliate.company_cnpj || "",
-          product: affiliate.product ? {
-            id: affiliate.product.id,
-            name: affiliate.product.name,
-          } : null,
+          product: affiliate.product
+            ? {
+                id: affiliate.product.id,
+                name: affiliate.product.name,
+              }
+            : null,
           commission: (affiliate.commission || 0) / 100, // Converter centavos para porcentagem (4600 = 46%)
           status: affiliate.status || "inactive",
           createdAt: affiliate.created_at,
@@ -2547,9 +2821,17 @@ export const clientRouter = createTRPCRouter({
 
         // Calcular métricas
         const totalAffiliates = pagination.count || affiliates.length
-        const activeAffiliates = formattedAffiliates.filter((a: any) => a.status === "active").length
-        const totalCommissions = formattedAffiliates.reduce((sum: number, a: any) => sum + a.commission, 0)
-        const averageCommission = formattedAffiliates.length > 0 ? totalCommissions / formattedAffiliates.length : 0
+        const activeAffiliates = formattedAffiliates.filter(
+          (a: any) => a.status === "active",
+        ).length
+        const totalCommissions = formattedAffiliates.reduce(
+          (sum: number, a: any) => sum + a.commission,
+          0,
+        )
+        const averageCommission =
+          formattedAffiliates.length > 0
+            ? totalCommissions / formattedAffiliates.length
+            : 0
 
         // Buscar também as vendas para ter dados de performance dos afiliados
         // Vamos fazer isso em paralelo para vendas dos últimos 30 dias
@@ -2566,16 +2848,22 @@ export const clientRouter = createTRPCRouter({
         })
 
         // Buscar vendas com afiliados para calcular performance
-        const salesResponse = await fetch(`https://public-api.kiwify.com/v1/sales?${salesParams}`, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "x-kiwify-account-id": dbUser.kiwifyAccountId,
+        const salesResponse = await fetch(
+          `https://public-api.kiwify.com/v1/sales?${salesParams}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "x-kiwify-account-id": dbUser.kiwifyAccountId,
+            },
           },
-        })
+        )
 
         // Processar vendas por afiliado
-        const affiliateSalesMap: Record<string, { salesCount: number; totalRevenue: number; totalCommission: number }> = {}
+        const affiliateSalesMap: Record<
+          string,
+          { salesCount: number; totalRevenue: number; totalCommission: number }
+        > = {}
 
         if (salesResponse.ok) {
           const salesData = await salesResponse.json()
@@ -2585,18 +2873,29 @@ export const clientRouter = createTRPCRouter({
             if (sale.affiliate?.document) {
               const affiliateDoc = sale.affiliate.document
               if (!affiliateSalesMap[affiliateDoc]) {
-                affiliateSalesMap[affiliateDoc] = { salesCount: 0, totalRevenue: 0, totalCommission: 0 }
+                affiliateSalesMap[affiliateDoc] = {
+                  salesCount: 0,
+                  totalRevenue: 0,
+                  totalCommission: 0,
+                }
               }
               affiliateSalesMap[affiliateDoc].salesCount += 1
-              affiliateSalesMap[affiliateDoc].totalRevenue += (sale.net_amount || 0) / 100
-              affiliateSalesMap[affiliateDoc].totalCommission += (sale.affiliate_amount || 0) / 100
+              affiliateSalesMap[affiliateDoc].totalRevenue +=
+                (sale.net_amount || 0) / 100
+              affiliateSalesMap[affiliateDoc].totalCommission +=
+                (sale.affiliate_amount || 0) / 100
             }
           })
         }
 
         // Enriquecer dados dos afiliados com performance de vendas
         const enrichedAffiliates = formattedAffiliates.map((affiliate: any) => {
-          const salesData = affiliateSalesMap[affiliate.cpf] || affiliateSalesMap[affiliate.cnpj] || { salesCount: 0, totalRevenue: 0, totalCommission: 0 }
+          const salesData = affiliateSalesMap[affiliate.cpf] ||
+            affiliateSalesMap[affiliate.cnpj] || {
+              salesCount: 0,
+              totalRevenue: 0,
+              totalCommission: 0,
+            }
           return {
             ...affiliate,
             salesCount: salesData.salesCount,
@@ -2609,8 +2908,14 @@ export const clientRouter = createTRPCRouter({
         enrichedAffiliates.sort((a: any, b: any) => b.salesCount - a.salesCount)
 
         // Calcular total de vendas por afiliados
-        const totalSales = Object.values(affiliateSalesMap).reduce((sum, a) => sum + a.salesCount, 0)
-        const totalEarnedCommissions = Object.values(affiliateSalesMap).reduce((sum, a) => sum + a.totalCommission, 0)
+        const totalSales = Object.values(affiliateSalesMap).reduce(
+          (sum, a) => sum + a.salesCount,
+          0,
+        )
+        const totalEarnedCommissions = Object.values(affiliateSalesMap).reduce(
+          (sum, a) => sum + a.totalCommission,
+          0,
+        )
 
         return {
           affiliates: enrichedAffiliates,
@@ -2618,7 +2923,8 @@ export const clientRouter = createTRPCRouter({
           activeAffiliates,
           totalSales,
           totalCommissions: totalEarnedCommissions,
-          averageCommission: totalSales > 0 ? totalEarnedCommissions / totalSales : 0,
+          averageCommission:
+            totalSales > 0 ? totalEarnedCommissions / totalSales : 0,
           pagination: {
             pageNumber: pagination.page_number,
             pageSize: pagination.page_size,

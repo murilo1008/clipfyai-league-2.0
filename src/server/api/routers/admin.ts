@@ -85,9 +85,8 @@ function assertPrizeTableMatchesTotal(input: {
       message: `${input.label}: a posição ${outOfRange.position} excede o top ${input.topCount}.`,
     });
   }
-  const calculatedCents = Array.from(
-    { length: input.topCount },
-    (_, index) => getPrizeForPosition(entries, index + 1),
+  const calculatedCents = Array.from({ length: input.topCount }, (_, index) =>
+    getPrizeForPosition(entries, index + 1),
   ).reduce((total, value) => total + Math.round(value * 100), 0);
   const configuredCents = Math.round(input.totalPrize * 100);
   if (calculatedCents !== configuredCents) {
@@ -1203,7 +1202,6 @@ export const adminRouter = createTRPCRouter({
         };
       }
     }),
-
   canTriggerManualMetricsExtraction: adminProcedure.query(({ ctx }) => {
     return {
       allowed: canTriggerManualMetricsExtraction(ctx.userId),
@@ -3047,15 +3045,23 @@ export const adminRouter = createTRPCRouter({
               dailyEnabled: z.boolean().optional(),
               dailyTopCount: z.number().int().positive().max(100).optional(),
               dailyTotalPrize: z.number().finite().nonnegative().optional(),
-              dailyPrizeTable: z.record(z.number().finite().nonnegative()).optional(),
+              dailyPrizeTable: z
+                .record(z.number().finite().nonnegative())
+                .optional(),
               bonusEnabled: z.boolean().optional(),
               bonusMilestone: z.number().int().positive().optional(),
               bonusAmount: z.number().finite().nonnegative().optional(),
-              bonusMonthlyBudgetCap: z.number().finite().nonnegative().optional(),
+              bonusMonthlyBudgetCap: z
+                .number()
+                .finite()
+                .nonnegative()
+                .optional(),
               monthlyEnabled: z.boolean().optional(),
               monthlyTopCount: z.number().int().positive().max(100).optional(),
               monthlyTotalPrize: z.number().finite().nonnegative().optional(),
-              monthlyPrizeTable: z.record(z.number().finite().nonnegative()).optional(),
+              monthlyPrizeTable: z
+                .record(z.number().finite().nonnegative())
+                .optional(),
             })
             .optional(),
         }),
@@ -8652,6 +8658,99 @@ export const adminRouter = createTRPCRouter({
       }
     }),
 
+  // Deletar vários ClipPosts de uma vez. A confirmação é feita no frontend,
+  // enquanto esta mutation garante que todos os IDs existem antes de apagar.
+  deleteClipPostsBulk: adminProcedure
+    .input(
+      z.object({
+        clipPostIds: z
+          .array(z.string())
+          .min(1, "Selecione ao menos um post")
+          .max(100, "É possível excluir no máximo 100 posts por vez")
+          .refine(
+            (ids) => new Set(ids).size === ids.length,
+            "A lista de posts contém itens duplicados",
+          ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const clipPosts = await ctx.db.clipPost.findMany({
+          where: { id: { in: input.clipPostIds } },
+          include: {
+            campaign: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            application: {
+              include: {
+                clipperProfile: {
+                  select: {
+                    fullName: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (clipPosts.length !== input.clipPostIds.length) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Um ou mais posts selecionados não foram encontrados",
+          });
+        }
+
+        await ctx.db.$transaction(async (tx) => {
+          await tx.clipPost.deleteMany({
+            where: { id: { in: input.clipPostIds } },
+          });
+
+          await tx.auditLog.createMany({
+            data: clipPosts.map((clipPost) => ({
+              userId: ctx.userId,
+              action: "DELETE",
+              entityType: "ClipPost",
+              entityId: clipPost.id,
+              campaignId: clipPost.campaignId,
+              changes: {
+                action: "post_deleted",
+                clipPostId: clipPost.id,
+                clipperName: clipPost.application.clipperProfile.fullName,
+                campaignName: clipPost.campaign.name,
+                postUrl: clipPost.submittedUrl,
+                platform: clipPost.platform,
+                views: Number(clipPost.views),
+                status: clipPost.status,
+                bulkDelete: true,
+              },
+            })),
+          });
+        });
+
+        console.log(
+          `🗑️ ${clipPosts.length} ClipPosts deletados em lote por ${ctx.userId}`,
+        );
+
+        return {
+          success: true,
+          deletedCount: clipPosts.length,
+          message: `${clipPosts.length} posts deletados com sucesso!`,
+        };
+      } catch (error: any) {
+        console.error("Erro ao deletar ClipPosts em lote:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message || "Erro ao deletar posts selecionados",
+        });
+      }
+    }),
+
   // Buscar TODAS as transações de um clipper (não apenas desta campanha)
   getClipperAllTransactions: adminProcedure
     .input(
@@ -10022,8 +10121,7 @@ export const adminRouter = createTRPCRouter({
           (e) => e.effectivePrize > 0,
         );
         const withPixExpectedPrize = withExpectedPrize.filter(
-          (e) =>
-            e.pixPayoutEligible,
+          (e) => e.pixPayoutEligible,
         );
         const canUndoRankPayments =
           withExpectedPrize.length > 0 &&
@@ -10119,7 +10217,6 @@ export const adminRouter = createTRPCRouter({
       z.object({
         campaignId: z.string(),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-        excludedApplicationIds: z.array(z.string()).max(100).default([]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -10129,6 +10226,7 @@ export const adminRouter = createTRPCRouter({
           select: {
             id: true,
             name: true,
+            dailyPix: true,
             topClippersRankingEnabled: true,
             topClippersPrizeTable: true,
           },
@@ -11672,10 +11770,7 @@ export const adminRouter = createTRPCRouter({
                 },
               })
               .catch((auditError: unknown) => {
-                console.error(
-                  "payDailyRankByDate failure audit:",
-                  auditError,
-                );
+                console.error("payDailyRankByDate failure audit:", auditError);
               });
             console.error("payDailyRankByDate item:", err);
           }
@@ -12180,7 +12275,10 @@ export const adminRouter = createTRPCRouter({
         return { status: "PROCESSING" as const };
       }
       const queued = await ctx.db.dailyRankingEntry.count({
-        where: { dailyRankingId: gate.core.dailyRankingId, dailyPixStatus: "QUEUED" },
+        where: {
+          dailyRankingId: gate.core.dailyRankingId,
+          dailyPixStatus: "QUEUED",
+        },
       });
       if (queued > 0) return { status: "QUEUED" as const };
       if (gate.unsettledCount < gate.prizeCount) {
@@ -12276,8 +12374,12 @@ export const adminRouter = createTRPCRouter({
           failureReason: payout?.failureReason ?? null,
         };
       });
-      const completed = lines.filter((line) => line.status === "COMPLETED").length;
-      const processing = lines.filter((line) => line.status === "PROCESSING").length;
+      const completed = lines.filter(
+        (line) => line.status === "COMPLETED",
+      ).length;
+      const processing = lines.filter(
+        (line) => line.status === "PROCESSING",
+      ).length;
       const failed = lines.filter((line) => line.status === "FAILED").length;
       const pending = lines.filter((line) => line.status === "PENDING").length;
       let status:
@@ -12319,23 +12421,33 @@ export const adminRouter = createTRPCRouter({
         select: { dailyPix: true, topClippersRankingEnabled: true },
       });
       if (!campaign) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Campanha não encontrada",
+        });
       }
       if (!campaign.dailyPix || !campaign.topClippersRankingEnabled) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "O PIX diário e o Top Postadores precisam estar habilitados.",
+          message:
+            "O PIX diário e o Top Postadores precisam estar habilitados.",
         });
       }
       try {
         return await fetchTopPostersPayoutPreview(input.campaignId, input.date);
       } catch (error) {
         if (error instanceof DailyPayoutConfigError) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: error instanceof Error ? error.message : "Erro na prévia PIX do Top Postadores",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro na prévia PIX do Top Postadores",
         });
       }
     }),
@@ -12353,23 +12465,33 @@ export const adminRouter = createTRPCRouter({
         select: { dailyPix: true, topClippersRankingEnabled: true },
       });
       if (!campaign) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Campanha não encontrada" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Campanha não encontrada",
+        });
       }
       if (!campaign.dailyPix || !campaign.topClippersRankingEnabled) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "O PIX diário e o Top Postadores precisam estar habilitados.",
+          message:
+            "O PIX diário e o Top Postadores precisam estar habilitados.",
         });
       }
       try {
         return await fetchTopPostersPayoutPay(input.campaignId, input.date);
       } catch (error) {
         if (error instanceof DailyPayoutConfigError) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: error instanceof Error ? error.message : "Erro no PIX do Top Postadores",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro no PIX do Top Postadores",
         });
       }
     }),
@@ -12596,7 +12718,8 @@ export const adminRouter = createTRPCRouter({
               position: line.position,
               status: line.status,
               prizeAmount: line.prizeAmount,
-              skipped: "Serviço indicou PIX ignorado para este perfil; ledger local não alterado.",
+              skipped:
+                "Serviço indicou PIX ignorado para este perfil; ledger local não alterado.",
             });
             continue;
           }
@@ -12620,7 +12743,8 @@ export const adminRouter = createTRPCRouter({
               prizeAmount: line.prizeAmount,
               asaasTransferId: line.asaasTransferId,
               asaasPayoutReceiptUrl: line.asaasPayoutReceiptUrl ?? null,
-              skipped: "Transferência criada na Asaas; aguardando confirmação via webhook.",
+              skipped:
+                "Transferência criada na Asaas; aguardando confirmação via webhook.",
             });
             continue;
           }
@@ -12824,7 +12948,9 @@ export const adminRouter = createTRPCRouter({
         );
         await ctx.db.dailyRanking.update({
           where: { id: core.dailyRankingId },
-          data: { dailyPixPayoutCompleted: pixGateAfterReconcile?.isSettled ?? false },
+          data: {
+            dailyPixPayoutCompleted: pixGateAfterReconcile?.isSettled ?? false,
+          },
         });
 
         return {
@@ -13009,7 +13135,8 @@ export const adminRouter = createTRPCRouter({
             return (
               entry?.dailyPrizePaid ||
               entry?.dailyPixStatus === "PAID" ||
-              (entry?.dailyPixStatus === "PROCESSING" || entry?.dailyPixStatus === "QUEUED")
+              entry?.dailyPixStatus === "PROCESSING" ||
+              entry?.dailyPixStatus === "QUEUED"
             );
           })
           .map((line) => ({
@@ -13176,7 +13303,8 @@ export const adminRouter = createTRPCRouter({
                 if (
                   entry.dailyPrizePaid ||
                   entry.dailyPixStatus === "PAID" ||
-                  (entry.dailyPixStatus === "PROCESSING" || entry.dailyPixStatus === "QUEUED")
+                  entry.dailyPixStatus === "PROCESSING" ||
+                  entry.dailyPixStatus === "QUEUED"
                 ) {
                   throw new TRPCError({
                     code: "BAD_REQUEST",
@@ -14574,8 +14702,7 @@ export const adminRouter = createTRPCRouter({
                   : null;
                 if (!entry) return true;
                 return !(
-                  entry.dailyPixStatus === "PAID" &&
-                  entry.dailyPrizePaid
+                  entry.dailyPixStatus === "PAID" && entry.dailyPrizePaid
                 );
               }).length === 0 &&
               pixRequiredEntries.every(

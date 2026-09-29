@@ -1,11 +1,11 @@
-import { z } from "zod"
+import { z } from "zod";
 import {
   createTRPCRouter,
   adminProcedure,
   privateProcedure,
-} from "@/server/api/trpc"
-import { TRPCError } from "@trpc/server"
-import { calculateEngagementRate } from "@/lib/ranking-helpers"
+} from "@/server/api/trpc";
+import { TRPCError } from "@trpc/server";
+import { calculateEngagementRate } from "@/lib/ranking-helpers";
 
 function isClanManager(
   clipper: { id: string } | null | undefined,
@@ -13,7 +13,7 @@ function isClanManager(
 ) {
   return (
     !!clipper && (clan.ownerId === clipper.id || clan.adminId === clipper.id)
-  )
+  );
 }
 
 export const clanRouter = createTRPCRouter({
@@ -28,7 +28,7 @@ export const clanRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { search, status, sortBy } = input
+      const { search, status, sortBy } = input;
 
       const where = {
         ...(status === "active" && { isActive: true }),
@@ -39,18 +39,18 @@ export const clanRouter = createTRPCRouter({
             { tag: { contains: search, mode: "insensitive" as const } },
           ],
         }),
-      }
+      };
 
       const orderBy = (() => {
         switch (sortBy) {
           case "name":
-            return { name: "asc" as const }
+            return { name: "asc" as const };
           case "recent":
-            return { createdAt: "desc" as const }
+            return { createdAt: "desc" as const };
           default:
-            return { createdAt: "desc" as const }
+            return { createdAt: "desc" as const };
         }
-      })()
+      })();
 
       const clans = await ctx.db.clan.findMany({
         where,
@@ -84,7 +84,7 @@ export const clanRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       const enriched = clans.map((clan) => {
         const totalViews = clan.members.reduce(
@@ -100,13 +100,13 @@ export const clanRouter = createTRPCRouter({
               0,
             ),
           0,
-        )
+        );
 
         const topMembers = clan.members.slice(0, 5).map((m) => ({
           id: m.id,
           name: m.artisticName ?? m.fullName,
           imageUrl: m.user?.imageUrl ?? null,
-        }))
+        }));
 
         return {
           id: clan.id,
@@ -121,16 +121,16 @@ export const clanRouter = createTRPCRouter({
           memberCount: clan._count.members,
           totalViews,
           topMembers,
-        }
-      })
+        };
+      });
 
       if (sortBy === "members") {
-        enriched.sort((a, b) => b.memberCount - a.memberCount)
+        enriched.sort((a, b) => b.memberCount - a.memberCount);
       } else if (sortBy === "views") {
-        enriched.sort((a, b) => b.totalViews - a.totalViews)
+        enriched.sort((a, b) => b.totalViews - a.totalViews);
       }
 
-      return enriched
+      return enriched;
     }),
 
   getStats: adminProcedure.query(async ({ ctx }) => {
@@ -138,14 +138,14 @@ export const clanRouter = createTRPCRouter({
       ctx.db.clan.count(),
       ctx.db.clan.count({ where: { isActive: true } }),
       ctx.db.clipperProfile.count({ where: { clanId: { not: null } } }),
-    ])
+    ]);
 
     return {
       totalClans,
       activeClans,
       totalMembers,
       avgMembers: totalClans > 0 ? Math.round(totalMembers / totalClans) : 0,
-    }
+    };
   }),
 
   getById: adminProcedure
@@ -179,16 +179,16 @@ export const clanRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
-      return clan
+      return clan;
     }),
 
   create: adminProcedure
@@ -212,13 +212,13 @@ export const clanRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const existing = await ctx.db.clan.findUnique({
         where: { tag: input.tag },
-      })
+      });
 
       if (existing) {
         throw new TRPCError({
           code: "CONFLICT",
           message: `Já existe um clã com a tag "${input.tag}"`,
-        })
+        });
       }
 
       return ctx.db.clan.create({
@@ -230,7 +230,7 @@ export const clanRouter = createTRPCRouter({
           imageUrl: input.imageUrl,
           description: input.description,
         },
-      })
+      });
     }),
 
   update: adminProcedure
@@ -255,24 +255,24 @@ export const clanRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { id, ...data } = input
+      const { id, ...data } = input;
 
       if (data.tag) {
         const existing = await ctx.db.clan.findFirst({
           where: { tag: data.tag, id: { not: id } },
-        })
+        });
         if (existing) {
           throw new TRPCError({
             code: "CONFLICT",
             message: `Já existe um clã com a tag "${data.tag}"`,
-          })
+          });
         }
       }
 
       return ctx.db.clan.update({
         where: { id },
         data,
-      })
+      });
     }),
 
   delete: adminProcedure
@@ -281,11 +281,11 @@ export const clanRouter = createTRPCRouter({
       await ctx.db.clipperProfile.updateMany({
         where: { clanId: input.id },
         data: { clanId: null },
-      })
+      });
 
       return ctx.db.clan.delete({
         where: { id: input.id },
-      })
+      });
     }),
 
   toggleActive: adminProcedure
@@ -294,19 +294,19 @@ export const clanRouter = createTRPCRouter({
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.id },
         select: { isActive: true },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
       return ctx.db.clan.update({
         where: { id: input.id },
         data: { isActive: !clan.isActive },
-      })
+      });
     }),
 
   addMember: adminProcedure
@@ -320,26 +320,26 @@ export const clanRouter = createTRPCRouter({
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { id: input.clipperId },
         select: { clanId: true },
-      })
+      });
 
       if (!clipper) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clipador não encontrado",
-        })
+        });
       }
 
       if (clipper.clanId) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Clipador já pertence a um clã",
-        })
+        });
       }
 
       return ctx.db.clipperProfile.update({
         where: { id: input.clipperId },
         data: { clanId: input.clanId },
-      })
+      });
     }),
 
   removeMember: adminProcedure
@@ -352,12 +352,12 @@ export const clanRouter = createTRPCRouter({
       await ctx.db.clan.updateMany({
         where: { adminId: input.clipperId },
         data: { adminId: null },
-      })
+      });
 
       return ctx.db.clipperProfile.update({
         where: { id: input.clipperId },
         data: { clanId: null },
-      })
+      });
     }),
 
   removeMemberAsOwner: privateProcedure
@@ -371,23 +371,23 @@ export const clanRouter = createTRPCRouter({
       const ownerProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
       if (!ownerProfile) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Perfil de clipper não encontrado",
-        })
+        });
       }
 
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.clanId },
         select: { ownerId: true, adminId: true },
-      })
+      });
       if (!clan || !isClanManager(ownerProfile, clan)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Apenas administradores do clã podem remover membros",
-        })
+        });
       }
 
       if (
@@ -399,29 +399,29 @@ export const clanRouter = createTRPCRouter({
           code: "BAD_REQUEST",
           message:
             "Administradores do clã não podem ser removidos por este fluxo",
-        })
+        });
       }
 
       const member = await ctx.db.clipperProfile.findUnique({
         where: { id: input.clipperId },
         select: { clanId: true },
-      })
+      });
       if (!member || member.clanId !== input.clanId) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Membro não encontrado neste clã",
-        })
+        });
       }
 
       await ctx.db.clan.updateMany({
         where: { adminId: input.clipperId },
         data: { adminId: null },
-      })
+      });
 
       return ctx.db.clipperProfile.update({
         where: { id: input.clipperId },
         data: { clanId: null },
-      })
+      });
     }),
 
   getByTag: adminProcedure
@@ -487,33 +487,33 @@ export const clanRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
       const membersEnriched = clan.members.map((m) => {
-        let totalViews = 0
-        let totalLikes = 0
-        let totalComments = 0
-        let totalShares = 0
-        let totalSaves = 0
-        let totalPosts = 0
-        const campaigns = new Set<string>()
+        let totalViews = 0;
+        let totalLikes = 0;
+        let totalComments = 0;
+        let totalShares = 0;
+        let totalSaves = 0;
+        let totalPosts = 0;
+        const campaigns = new Set<string>();
 
         for (const app of m.applications) {
-          if (app.campaign) campaigns.add(app.campaign.name)
+          if (app.campaign) campaigns.add(app.campaign.name);
           for (const post of app.clipPosts) {
-            totalPosts++
-            totalViews += Number(post.views ?? 0)
-            totalLikes += post.likes ?? 0
-            totalComments += post.comments ?? 0
-            totalShares += post.shares ?? 0
-            totalSaves += post.saves ?? 0
+            totalPosts++;
+            totalViews += Number(post.views ?? 0);
+            totalLikes += post.likes ?? 0;
+            totalComments += post.comments ?? 0;
+            totalShares += post.shares ?? 0;
+            totalSaves += post.saves ?? 0;
           }
         }
 
@@ -523,7 +523,7 @@ export const clanRouter = createTRPCRouter({
           totalComments,
           totalShares,
           totalSaves,
-        )
+        );
 
         return {
           id: m.id,
@@ -542,44 +542,44 @@ export const clanRouter = createTRPCRouter({
           engagement,
           campaignCount: campaigns.size,
           campaigns: Array.from(campaigns),
-        }
-      })
+        };
+      });
 
       const clanTotalViews = membersEnriched.reduce(
         (a, m) => a + m.totalViews,
         0,
-      )
+      );
       const clanTotalPosts = membersEnriched.reduce(
         (a, m) => a + m.totalPosts,
         0,
-      )
+      );
       const clanTotalLikes = membersEnriched.reduce(
         (a, m) => a + m.totalLikes,
         0,
-      )
+      );
       const clanTotalComments = membersEnriched.reduce(
         (a, m) => a + m.totalComments,
         0,
-      )
+      );
       const clanTotalShares = membersEnriched.reduce(
         (a, m) => a + m.totalShares,
         0,
-      )
+      );
       const clanTotalSaves = membersEnriched.reduce(
         (a, m) => a + m.totalSaves,
         0,
-      )
+      );
       const clanEngagement = calculateEngagementRate(
         clanTotalViews,
         clanTotalLikes,
         clanTotalComments,
         clanTotalShares,
         clanTotalSaves,
-      )
+      );
 
       const pendingApplications = await ctx.db.clanApplication.count({
         where: { clanId: clan.id, status: "PENDING" },
-      })
+      });
 
       return {
         id: clan.id,
@@ -627,7 +627,7 @@ export const clanRouter = createTRPCRouter({
               : 0,
         },
         members: membersEnriched,
-      }
+      };
     }),
 
   getByTagPublic: privateProcedure
@@ -696,71 +696,71 @@ export const clanRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
       if (!clan.isActive) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Este clã não está ativo",
-        })
+        });
       }
 
       const clipperProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
-      const isOwner = isClanManager(clipperProfile, clan)
+      const isOwner = isClanManager(clipperProfile, clan);
 
-      let pendingApplications = 0
+      let pendingApplications = 0;
       if (isOwner) {
         pendingApplications = await ctx.db.clanApplication.count({
           where: { clanId: clan.id, status: "PENDING" },
-        })
+        });
       }
 
-      const today = new Date()
-      today.setHours(0, 0, 0, 0)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
       const campaignMap = new Map<
         string,
         {
-          id: string
-          name: string
-          coverImageUrl: string | null
-          totalViews: number
-          totalPosts: number
+          id: string;
+          name: string;
+          coverImageUrl: string | null;
+          totalViews: number;
+          totalPosts: number;
         }
-      >()
+      >();
 
       const membersEnriched = clan.members.map((m) => {
-        let totalViews = 0
-        let totalLikes = 0
-        let totalComments = 0
-        let totalShares = 0
-        let totalSaves = 0
-        let totalPosts = 0
-        let todayViews = 0
-        let todayPosts = 0
+        let totalViews = 0;
+        let totalLikes = 0;
+        let totalComments = 0;
+        let totalShares = 0;
+        let totalSaves = 0;
+        let totalPosts = 0;
+        let todayViews = 0;
+        let todayPosts = 0;
 
         for (const app of m.applications) {
           if (app.campaign && app.campaign.status !== "ARCHIVED") {
             const campViews = app.clipPosts.reduce(
               (acc, p) => acc + Number(p.views ?? 0),
               0,
-            )
-            const campPosts = app.clipPosts.length
-            const existing = campaignMap.get(app.campaign.id)
+            );
+            const campPosts = app.clipPosts.length;
+            const existing = campaignMap.get(app.campaign.id);
             if (existing) {
-              existing.totalViews += campViews
-              existing.totalPosts += campPosts
+              existing.totalViews += campViews;
+              existing.totalPosts += campPosts;
             } else {
               campaignMap.set(app.campaign.id, {
                 id: app.campaign.id,
@@ -768,22 +768,22 @@ export const clanRouter = createTRPCRouter({
                 coverImageUrl: app.campaign.coverImageUrl ?? null,
                 totalViews: campViews,
                 totalPosts: campPosts,
-              })
+              });
             }
           }
 
           for (const post of app.clipPosts) {
-            totalPosts++
-            const views = Number(post.views ?? 0)
-            totalViews += views
-            totalLikes += post.likes ?? 0
-            totalComments += post.comments ?? 0
-            totalShares += post.shares ?? 0
-            totalSaves += post.saves ?? 0
+            totalPosts++;
+            const views = Number(post.views ?? 0);
+            totalViews += views;
+            totalLikes += post.likes ?? 0;
+            totalComments += post.comments ?? 0;
+            totalShares += post.shares ?? 0;
+            totalSaves += post.saves ?? 0;
 
             if (post.postedAt && new Date(post.postedAt) >= today) {
-              todayViews += views
-              todayPosts++
+              todayViews += views;
+              todayPosts++;
             }
           }
         }
@@ -794,7 +794,7 @@ export const clanRouter = createTRPCRouter({
           totalComments,
           totalShares,
           totalSaves,
-        )
+        );
 
         return {
           id: m.id,
@@ -812,44 +812,44 @@ export const clanRouter = createTRPCRouter({
           todayViews,
           todayPosts,
           engagement,
-        }
-      })
+        };
+      });
 
       const clanTotalViews = membersEnriched.reduce(
         (a, m) => a + m.totalViews,
         0,
-      )
+      );
       const clanTotalPosts = membersEnriched.reduce(
         (a, m) => a + m.totalPosts,
         0,
-      )
+      );
       const clanTotalLikes = membersEnriched.reduce(
         (a, m) => a + m.totalLikes,
         0,
-      )
+      );
       const clanTotalComments = membersEnriched.reduce(
         (a, m) => a + m.totalComments,
         0,
-      )
+      );
       const clanTotalShares = membersEnriched.reduce(
         (a, m) => a + m.totalShares,
         0,
-      )
+      );
       const clanTotalSaves = membersEnriched.reduce(
         (a, m) => a + m.totalSaves,
         0,
-      )
+      );
       const clanEngagement = calculateEngagementRate(
         clanTotalViews,
         clanTotalLikes,
         clanTotalComments,
         clanTotalShares,
         clanTotalSaves,
-      )
+      );
 
       const topCampaigns = Array.from(campaignMap.values())
         .sort((a, b) => b.totalViews - a.totalViews)
-        .slice(0, 5)
+        .slice(0, 5);
 
       return {
         id: clan.id,
@@ -891,7 +891,7 @@ export const clanRouter = createTRPCRouter({
         },
         members: membersEnriched,
         topCampaigns,
-      }
+      };
     }),
 
   listPublic: privateProcedure
@@ -909,7 +909,7 @@ export const clanRouter = createTRPCRouter({
             { tag: { contains: input.search, mode: "insensitive" as const } },
           ],
         }),
-      }
+      };
 
       const clans = await ctx.db.clan.findMany({
         where,
@@ -934,7 +934,7 @@ export const clanRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       return clans.map((clan) => ({
         id: clan.id,
@@ -957,7 +957,7 @@ export const clanRouter = createTRPCRouter({
           name: m.artisticName || m.fullName,
           imageUrl: m.user?.imageUrl ?? null,
         })),
-      }))
+      }));
     }),
 
   myClan: privateProcedure.query(async ({ ctx }) => {
@@ -981,13 +981,13 @@ export const clanRouter = createTRPCRouter({
           },
         },
       },
-    })
+    });
 
-    if (!clipper) return null
+    if (!clipper) return null;
 
-    if (!clipper.clan) return { clipperId: clipper.id, clan: null }
+    if (!clipper.clan) return { clipperId: clipper.id, clan: null };
 
-    const clan = clipper.clan
+    const clan = clipper.clan;
     return {
       clipperId: clipper.id,
       clan: {
@@ -1005,7 +1005,7 @@ export const clanRouter = createTRPCRouter({
           imageUrl: m.user?.imageUrl ?? null,
         })),
       },
-    }
+    };
   }),
 
   // ── Ranking público dos clãs ──
@@ -1045,26 +1045,26 @@ export const clanRouter = createTRPCRouter({
           },
         },
       },
-    })
+    });
 
     const ranked = clans
       .map((clan) => {
-        let totalViews = 0
-        let totalLikes = 0
-        let totalComments = 0
-        let totalShares = 0
-        let totalSaves = 0
-        let totalPosts = 0
+        let totalViews = 0;
+        let totalLikes = 0;
+        let totalComments = 0;
+        let totalShares = 0;
+        let totalSaves = 0;
+        let totalPosts = 0;
 
         for (const member of clan.members) {
           for (const app of member.applications) {
             for (const post of app.clipPosts) {
-              totalPosts++
-              totalViews += Number(post.views ?? 0)
-              totalLikes += post.likes ?? 0
-              totalComments += post.comments ?? 0
-              totalShares += post.shares ?? 0
-              totalSaves += post.saves ?? 0
+              totalPosts++;
+              totalViews += Number(post.views ?? 0);
+              totalLikes += post.likes ?? 0;
+              totalComments += post.comments ?? 0;
+              totalShares += post.shares ?? 0;
+              totalSaves += post.saves ?? 0;
             }
           }
         }
@@ -1075,7 +1075,7 @@ export const clanRouter = createTRPCRouter({
           totalComments,
           totalShares,
           totalSaves,
-        )
+        );
 
         return {
           id: clan.id,
@@ -1107,21 +1107,21 @@ export const clanRouter = createTRPCRouter({
                     0,
                   ),
                 0,
-              )
+              );
               return {
                 id: m.id,
                 name: m.artisticName ?? m.fullName,
                 imageUrl: m.user?.imageUrl ?? null,
                 views: mViews,
-              }
+              };
             })
             .sort((a, b) => b.views - a.views)
             .slice(0, 5),
-        }
+        };
       })
-      .sort((a, b) => b.totalViews - a.totalViews)
+      .sort((a, b) => b.totalViews - a.totalViews);
 
-    return { clans: ranked }
+    return { clans: ranked };
   }),
 
   // ── Clipper: se inscrever em um clã ──
@@ -1136,13 +1136,13 @@ export const clanRouter = createTRPCRouter({
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true, clanId: true },
-      })
+      });
 
       if (!clipper) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Perfil de clipador não encontrado",
-        })
+        });
       }
 
       if (clipper.clanId) {
@@ -1150,32 +1150,32 @@ export const clanRouter = createTRPCRouter({
           code: "CONFLICT",
           message:
             "Você já pertence a um clã. Saia primeiro para se inscrever em outro.",
-        })
+        });
       }
 
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.clanId },
         select: { isActive: true },
-      })
+      });
 
       if (!clan || !clan.isActive) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado ou inativo",
-        })
+        });
       }
 
       const existing = await ctx.db.clanApplication.findUnique({
         where: {
           clanId_clipperId: { clanId: input.clanId, clipperId: clipper.id },
         },
-      })
+      });
 
       if (existing && existing.status === "PENDING") {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Você já tem uma inscrição pendente neste clã.",
-        })
+        });
       }
 
       if (existing) {
@@ -1187,7 +1187,7 @@ export const clanRouter = createTRPCRouter({
             reviewedAt: null,
             reviewedBy: null,
           },
-        })
+        });
       }
 
       return ctx.db.clanApplication.create({
@@ -1196,7 +1196,7 @@ export const clanRouter = createTRPCRouter({
           clipperId: clipper.id,
           message: input.message ?? null,
         },
-      })
+      });
     }),
 
   // ── Clipper: cancelar inscrição pendente ──
@@ -1206,29 +1206,29 @@ export const clanRouter = createTRPCRouter({
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       if (!clipper) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Perfil de clipador não encontrado",
-        })
+        });
       }
 
       const application = await ctx.db.clanApplication.findUnique({
         where: {
           clanId_clipperId: { clanId: input.clanId, clipperId: clipper.id },
         },
-      })
+      });
 
       if (!application || application.status !== "PENDING") {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Inscrição pendente não encontrada",
-        })
+        });
       }
 
-      return ctx.db.clanApplication.delete({ where: { id: application.id } })
+      return ctx.db.clanApplication.delete({ where: { id: application.id } });
     }),
 
   // ── Clipper: verificar status da inscrição em um clã ──
@@ -1236,9 +1236,9 @@ export const clanRouter = createTRPCRouter({
     const clipper = await ctx.db.clipperProfile.findUnique({
       where: { userId: ctx.userId },
       select: { id: true },
-    })
+    });
 
-    if (!clipper) return []
+    if (!clipper) return [];
 
     return ctx.db.clanApplication.findMany({
       where: { clipperId: clipper.id },
@@ -1255,7 +1255,7 @@ export const clanRouter = createTRPCRouter({
         },
       },
       orderBy: { createdAt: "desc" },
-    })
+    });
   }),
 
   // ── Clipper: sair do clã ──
@@ -1263,20 +1263,20 @@ export const clanRouter = createTRPCRouter({
     const clipper = await ctx.db.clipperProfile.findUnique({
       where: { userId: ctx.userId },
       select: { id: true, clanId: true },
-    })
+    });
 
     if (!clipper) {
       throw new TRPCError({
         code: "NOT_FOUND",
         message: "Perfil de clipador não encontrado",
-      })
+      });
     }
 
     if (!clipper.clanId) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "Você não pertence a nenhum clã",
-      })
+      });
     }
 
     await Promise.all([
@@ -1287,12 +1287,12 @@ export const clanRouter = createTRPCRouter({
         where: { adminId: clipper.id },
         data: { adminId: null },
       }),
-    ])
+    ]);
 
     return ctx.db.clipperProfile.update({
       where: { id: clipper.id },
       data: { clanId: null },
-    })
+    });
   }),
 
   // ── Owner/Admin: listar inscrições pendentes de um clã ──
@@ -1307,33 +1307,33 @@ export const clanRouter = createTRPCRouter({
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       const user = await ctx.db.user.findUnique({
         where: { id: ctx.userId },
         select: { role: true },
-      })
+      });
 
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.clanId },
         select: { ownerId: true, adminId: true },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
-      const isOwner = isClanManager(clipper, clan)
-      const isAdmin = user?.role === "ADMIN"
+      const isOwner = isClanManager(clipper, clan);
+      const isAdmin = user?.role === "ADMIN";
 
       if (!isOwner && !isAdmin) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Apenas o dono do clã ou admins podem ver inscrições",
-        })
+        });
       }
 
       return ctx.db.clanApplication.findMany({
@@ -1350,7 +1350,7 @@ export const clanRouter = createTRPCRouter({
           },
         },
         orderBy: { createdAt: "asc" },
-      })
+      });
     }),
 
   // ── Owner/Admin: aprovar inscrição ──
@@ -1360,53 +1360,53 @@ export const clanRouter = createTRPCRouter({
       const application = await ctx.db.clanApplication.findUnique({
         where: { id: input.applicationId },
         include: { clan: { select: { ownerId: true, adminId: true } } },
-      })
+      });
 
       if (!application) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Inscrição não encontrada",
-        })
+        });
       }
 
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       const user = await ctx.db.user.findUnique({
         where: { id: ctx.userId },
         select: { role: true },
-      })
+      });
 
-      const isOwner = isClanManager(clipper, application.clan)
-      const isAdmin = user?.role === "ADMIN"
+      const isOwner = isClanManager(clipper, application.clan);
+      const isAdmin = user?.role === "ADMIN";
 
       if (!isOwner && !isAdmin) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Apenas o dono do clã ou admins podem aprovar inscrições",
-        })
+        });
       }
 
       if (application.status !== "PENDING") {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Esta inscrição já foi processada",
-        })
+        });
       }
 
       // Verifica se clipper já pertence a outro clã
       const applicantProfile = await ctx.db.clipperProfile.findUnique({
         where: { id: application.clipperId },
         select: { clanId: true },
-      })
+      });
 
       if (applicantProfile?.clanId) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "Este clipador já pertence a outro clã",
-        })
+        });
       }
 
       // Aprova e adiciona ao clã
@@ -1417,12 +1417,12 @@ export const clanRouter = createTRPCRouter({
           reviewedAt: new Date(),
           reviewedBy: ctx.userId,
         },
-      })
+      });
 
       return ctx.db.clipperProfile.update({
         where: { id: application.clipperId },
         data: { clanId: application.clanId },
-      })
+      });
     }),
 
   // ── Owner/Admin: rejeitar inscrição (remove para o clipador poder aplicar novamente) ──
@@ -1432,46 +1432,46 @@ export const clanRouter = createTRPCRouter({
       const application = await ctx.db.clanApplication.findUnique({
         where: { id: input.applicationId },
         include: { clan: { select: { ownerId: true, adminId: true } } },
-      })
+      });
 
       if (!application) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Inscrição não encontrada",
-        })
+        });
       }
 
       const clipper = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       const user = await ctx.db.user.findUnique({
         where: { id: ctx.userId },
         select: { role: true },
-      })
+      });
 
-      const isOwner = isClanManager(clipper, application.clan)
-      const isAdmin = user?.role === "ADMIN"
+      const isOwner = isClanManager(clipper, application.clan);
+      const isAdmin = user?.role === "ADMIN";
 
       if (!isOwner && !isAdmin) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Apenas o dono do clã ou admins podem rejeitar inscrições",
-        })
+        });
       }
 
       if (application.status !== "PENDING") {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Esta inscrição já foi processada",
-        })
+        });
       }
 
       // Remove a application para o clipador poder aplicar novamente
       return ctx.db.clanApplication.delete({
         where: { id: input.applicationId },
-      })
+      });
     }),
 
   // ── Admin: definir dono de um clã ──
@@ -1485,26 +1485,26 @@ export const clanRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.clanId },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
       if (input.clipperId) {
         const clipper = await ctx.db.clipperProfile.findUnique({
           where: { id: input.clipperId },
           select: { id: true, clanId: true },
-        })
+        });
 
         if (!clipper) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Clipador não encontrado",
-          })
+          });
         }
 
         // Se o clipper não é membro do clã, adiciona automaticamente
@@ -1512,7 +1512,7 @@ export const clanRouter = createTRPCRouter({
           await ctx.db.clipperProfile.update({
             where: { id: input.clipperId },
             data: { clanId: input.clanId },
-          })
+          });
         }
       }
 
@@ -1524,7 +1524,7 @@ export const clanRouter = createTRPCRouter({
             ? { adminId: null }
             : {}),
         },
-      })
+      });
     }),
 
   // ── Admin: definir administrador secundário de um clã ──
@@ -1538,13 +1538,13 @@ export const clanRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const clan = await ctx.db.clan.findUnique({
         where: { id: input.clanId },
-      })
+      });
 
       if (!clan) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Clã não encontrado",
-        })
+        });
       }
 
       if (input.clipperId) {
@@ -1552,40 +1552,40 @@ export const clanRouter = createTRPCRouter({
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "O dono do clã já é administrador principal",
-          })
+          });
         }
 
         const clipper = await ctx.db.clipperProfile.findUnique({
           where: { id: input.clipperId },
           select: { id: true, clanId: true },
-        })
+        });
 
         if (!clipper) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Clipador não encontrado",
-          })
+          });
         }
 
         if (clipper.clanId !== input.clanId) {
           await ctx.db.clipperProfile.update({
             where: { id: input.clipperId },
             data: { clanId: input.clanId },
-          })
+          });
         }
       }
 
       return ctx.db.clan.update({
         where: { id: input.clanId },
         data: { adminId: input.clipperId },
-      })
+      });
     }),
 
   // ── Admin: listar clipadores para selecionar como dono ──
   searchClippers: adminProcedure
     .input(z.object({ search: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
-      const q = input.search
+      const q = input.search;
 
       return ctx.db.clipperProfile.findMany({
         where: {
@@ -1604,19 +1604,19 @@ export const clanRouter = createTRPCRouter({
           clanId: true,
           user: { select: { imageUrl: true } },
         },
-      })
+      });
     }),
 
   getReports: adminProcedure.query(async ({ ctx }) => {
-    const now = new Date()
-    const ninetyDaysAgo = new Date(now)
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90)
-    const sevenDaysAgo = new Date(now)
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const thirtyDaysAgo = new Date(now)
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-    const todayStart = new Date(now)
-    todayStart.setHours(0, 0, 0, 0)
+    const now = new Date();
+    const ninetyDaysAgo = new Date(now);
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const thirtyDaysAgo = new Date(now);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
 
     const [clans, allApprovedApps, totalPending] = await Promise.all([
       ctx.db.clan.findMany({
@@ -1643,83 +1643,83 @@ export const clanRouter = createTRPCRouter({
         orderBy: { createdAt: "asc" },
       }),
       ctx.db.clanApplication.count({ where: { status: "PENDING" } }),
-    ])
+    ]);
 
-    const totalMembers = clans.reduce((s, c) => s + c._count.members, 0)
+    const totalMembers = clans.reduce((s, c) => s + c._count.members, 0);
     const todayApproved = allApprovedApps.filter((a) => {
-      const d = a.reviewedAt ?? a.createdAt
-      return d >= todayStart
-    }).length
+      const d = a.reviewedAt ?? a.createdAt;
+      return d >= todayStart;
+    }).length;
     const last7dApproved = allApprovedApps.filter((a) => {
-      const d = a.reviewedAt ?? a.createdAt
-      return d >= sevenDaysAgo
-    }).length
+      const d = a.reviewedAt ?? a.createdAt;
+      return d >= sevenDaysAgo;
+    }).length;
     const last30dApproved = allApprovedApps.filter((a) => {
-      const d = a.reviewedAt ?? a.createdAt
-      return d >= thirtyDaysAgo
-    }).length
+      const d = a.reviewedAt ?? a.createdAt;
+      return d >= thirtyDaysAgo;
+    }).length;
 
-    const clanById = new Map(clans.map((c) => [c.id, c]))
+    const clanById = new Map(clans.map((c) => [c.id, c]));
 
-    const dateRange: string[] = []
+    const dateRange: string[] = [];
     for (
       let d = new Date(ninetyDaysAgo);
       d <= now;
       d.setDate(d.getDate() + 1)
     ) {
-      dateRange.push(d.toISOString().slice(0, 10))
+      dateRange.push(d.toISOString().slice(0, 10));
     }
 
-    const dailyCumulative = new Map<string, Map<string, number>>()
+    const dailyCumulative = new Map<string, Map<string, number>>();
     for (const clan of clans) {
-      dailyCumulative.set(clan.id, new Map())
+      dailyCumulative.set(clan.id, new Map());
     }
 
-    const clanApprovedByDate = new Map<string, Map<string, number>>()
+    const clanApprovedByDate = new Map<string, Map<string, number>>();
     for (const app of allApprovedApps) {
       const joinDate = (app.reviewedAt ?? app.createdAt)
         .toISOString()
-        .slice(0, 10)
+        .slice(0, 10);
       if (!clanApprovedByDate.has(app.clanId)) {
-        clanApprovedByDate.set(app.clanId, new Map())
+        clanApprovedByDate.set(app.clanId, new Map());
       }
-      const m = clanApprovedByDate.get(app.clanId)!
-      m.set(joinDate, (m.get(joinDate) ?? 0) + 1)
+      const m = clanApprovedByDate.get(app.clanId)!;
+      m.set(joinDate, (m.get(joinDate) ?? 0) + 1);
     }
 
-    const memberGrowthData: Array<Record<string, string | number>> = []
-    const clanCumulatives = new Map<string, number>()
+    const memberGrowthData: Array<Record<string, string | number>> = [];
+    const clanCumulatives = new Map<string, number>();
     for (const clan of clans) {
       const beforeRange = allApprovedApps.filter((a) => {
-        const d = (a.reviewedAt ?? a.createdAt).toISOString().slice(0, 10)
-        return a.clanId === clan.id && d < dateRange[0]!
-      }).length
-      clanCumulatives.set(clan.id, beforeRange)
+        const d = (a.reviewedAt ?? a.createdAt).toISOString().slice(0, 10);
+        return a.clanId === clan.id && d < dateRange[0]!;
+      }).length;
+      clanCumulatives.set(clan.id, beforeRange);
     }
 
     for (const date of dateRange) {
-      const entry: Record<string, string | number> = { date }
+      const entry: Record<string, string | number> = { date };
       for (const clan of clans) {
-        const dayCount = clanApprovedByDate.get(clan.id)?.get(date) ?? 0
-        const prev = clanCumulatives.get(clan.id) ?? 0
-        const newTotal = prev + dayCount
-        clanCumulatives.set(clan.id, newTotal)
-        entry[clan.id] = newTotal
+        const dayCount = clanApprovedByDate.get(clan.id)?.get(date) ?? 0;
+        const prev = clanCumulatives.get(clan.id) ?? 0;
+        const newTotal = prev + dayCount;
+        clanCumulatives.set(clan.id, newTotal);
+        entry[clan.id] = newTotal;
       }
-      memberGrowthData.push(entry)
+      memberGrowthData.push(entry);
     }
 
     const clanCards = clans
       .map((clan) => {
-        const clanApps = allApprovedApps.filter((a) => a.clanId === clan.id)
+        const clanApps = allApprovedApps.filter((a) => a.clanId === clan.id);
         const last7d = clanApps.filter((a) => {
-          const d = a.reviewedAt ?? a.createdAt
-          return d >= sevenDaysAgo
-        }).length
+          const d = a.reviewedAt ?? a.createdAt;
+          return d >= sevenDaysAgo;
+        }).length;
         const last30d = clanApps.filter((a) => {
-          const d = a.reviewedAt ?? a.createdAt
-          return d >= thirtyDaysAgo
-        }).length
+          const d = a.reviewedAt ?? a.createdAt;
+          return d >= thirtyDaysAgo;
+        }).length;
 
         return {
           id: clan.id,
@@ -1734,28 +1734,28 @@ export const clanRouter = createTRPCRouter({
           totalApproved: clanApps.length,
           last7dApproved: last7d,
           last30dApproved: last30d,
-        }
+        };
       })
-      .sort((a, b) => b.memberCount - a.memberCount)
+      .sort((a, b) => b.memberCount - a.memberCount);
 
     const totalClanCreations = clans.reduce<Record<string, number>>(
       (acc, clan) => {
-        const d = clan.createdAt.toISOString().slice(0, 10)
-        acc[d] = (acc[d] ?? 0) + 1
-        return acc
+        const d = clan.createdAt.toISOString().slice(0, 10);
+        acc[d] = (acc[d] ?? 0) + 1;
+        return acc;
       },
       {},
-    )
-    const clanCreationGrowth: Array<{ date: string; total: number }> = []
-    let cum = 0
+    );
+    const clanCreationGrowth: Array<{ date: string; total: number }> = [];
+    let cum = 0;
     for (const date of dateRange) {
-      cum += totalClanCreations[date] ?? 0
-      clanCreationGrowth.push({ date, total: cum })
+      cum += totalClanCreations[date] ?? 0;
+      clanCreationGrowth.push({ date, total: cum });
     }
     if (cum === 0) {
-      cum = clans.filter((c) => c.createdAt < ninetyDaysAgo).length
+      cum = clans.filter((c) => c.createdAt < ninetyDaysAgo).length;
       for (const entry of clanCreationGrowth) {
-        entry.total += cum
+        entry.total += cum;
       }
     }
 
@@ -1778,6 +1778,6 @@ export const clanRouter = createTRPCRouter({
         emoji: c.emoji,
         emojiColor: c.emojiColor,
       })),
-    }
+    };
   }),
-})
+});

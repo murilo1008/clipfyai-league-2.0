@@ -34,6 +34,7 @@ import {
 import { toast } from "sonner"
 
 import { generateCompetitionExcel } from "@/components/excel/competition-excel-generator"
+import { ExportCompetitionPostsCsvDialog } from "@/components/posts/export-competition-posts-csv-dialog"
 import { generateCompetitionReport } from "@/components/pdf/competition-report-generator"
 import { StatTile } from "@/components/home/stat-tile"
 import { Reveal } from "@/components/shared/reveal"
@@ -339,7 +340,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
               </div>
 
               {/* Título */}
-              <Bone delay={200} className="h-9 w-4/5 max-w-lg sm:h-10 lg:h-11" />
+              <Bone
+                delay={200}
+                className="h-9 w-4/5 max-w-lg sm:h-10 lg:h-11"
+              />
 
               {/* Descrição */}
               <div className="flex max-w-3xl flex-col gap-2">
@@ -396,7 +400,11 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
               A competição que você está procurando não existe.
             </p>
           </div>
-          <Button asChild variant="outline" className="cursor-pointer rounded-xl">
+          <Button
+            asChild
+            variant="outline"
+            className="cursor-pointer rounded-xl"
+          >
             <Link href="/competitions">
               <ArrowLeft className="size-4" />
               Voltar para Competições
@@ -449,7 +457,7 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
                 className="arena-aurora absolute -bottom-24 left-[18%] size-72 rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--brand-green)_18%,transparent),transparent_66%)] blur-2xl"
                 style={{ animationDelay: "-6s" }}
               />
-              <div className="hero-grid absolute inset-0 opacity-35 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)]" />
+              <div className="hero-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_75%_40%,#000_25%,transparent_75%)] opacity-35" />
               <div className="absolute inset-y-0 left-1/3 w-28 overflow-visible">
                 <span className="hero-sweep block h-full w-full bg-gradient-to-r from-transparent via-[color-mix(in_oklab,var(--brand-cyan)_12%,transparent)] to-transparent" />
               </div>
@@ -681,6 +689,12 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
                       )}
                       {isGeneratingExcel ? "Gerando..." : "Excel"}
                     </Button>
+                    <ExportCompetitionPostsCsvDialog
+                      campaignId={campaign.id}
+                      campaignName={campaign.name}
+                      triggerLabel="CSV"
+                      triggerClassName="border-white/12"
+                    />
                   </div>
                 </div>
 
@@ -771,7 +785,9 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
                       <Sparkle className="size-4" weight="fill" />
                       {typeof campaign.totalPrize === "number"
                         ? formatCurrency(campaign.totalPrize)
-                        : maskText(formatPrizeLabel(String(campaign.totalPrize)))}
+                        : maskText(
+                            formatPrizeLabel(String(campaign.totalPrize)),
+                          )}
                     </span>
                   )}
                 </div>

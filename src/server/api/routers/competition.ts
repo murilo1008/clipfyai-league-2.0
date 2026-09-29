@@ -1,17 +1,17 @@
-import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc"
-import { z } from "zod"
-import { TRPCError } from "@trpc/server"
+import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import {
   calculateEngagementRate,
   calculateRankingScore,
   type RankingMetricType,
-} from "@/lib/ranking-helpers"
+} from "@/lib/ranking-helpers";
 import {
   getPostedAtWindowUtc,
   getPrizeForPosition,
   loadDailyRankingDateContext,
   parsePrizeTable,
-} from "@/lib/daily-ranking-preview"
+} from "@/lib/daily-ranking-preview";
 import {
   getClipperDailyReferenceDateYmd,
   getLiveDailyWindowByReferenceDate,
@@ -19,62 +19,62 @@ import {
   pickMetricsForDailyRank,
   rankLiveDailyPosts,
   type DailyClipperRankingItem,
-} from "@/lib/daily-ranking-shared"
+} from "@/lib/daily-ranking-shared";
 import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
-} from "@/lib/top-clippers-ranking"
-import { ClipPostStatus } from "@prisma/client"
+} from "@/lib/top-clippers-ranking";
+import { ClipPostStatus } from "@prisma/client";
 
 function getFirstName(name?: string | null) {
-  return name?.trim().split(/\s+/)[0] || ""
+  return name?.trim().split(/\s+/)[0] || "";
 }
 
 // Nome exibido no ranking: nome artístico, senão só o primeiro nome (evita expor nome completo)
 function getClipperRankingDisplayName(profile: {
-  artisticName?: string | null
-  fullName?: string | null
+  artisticName?: string | null;
+  fullName?: string | null;
 }) {
   return (
     profile.artisticName?.trim() || getFirstName(profile.fullName) || "Clipador"
-  )
+  );
 }
 
 async function buildSnapshotDailyRankingForClipper(params: {
-  db: any
-  campaignId: string
-  dateYmd: string
-  userId: string
+  db: any;
+  campaignId: string;
+  dateYmd: string;
+  userId: string;
 }): Promise<{
-  posts: DailyClipperRankingItem[]
-  totalPosts: number
-  hasSnapshot: boolean
+  posts: DailyClipperRankingItem[];
+  totalPosts: number;
+  hasSnapshot: boolean;
 }> {
   const core = await loadDailyRankingDateContext(
     params.db,
     params.campaignId,
     params.dateYmd,
-  )
+  );
   if (!core) {
-    return { posts: [], totalPosts: 0, hasSnapshot: false }
+    return { posts: [], totalPosts: 0, hasSnapshot: false };
   }
 
-  const prizeTable = parsePrizeTable(core.dailyPrizeTable)
-  const entryIds = core.rawRows.map((row) => row.dailyRankingEntryId)
+  const prizeTable = parsePrizeTable(core.dailyPrizeTable);
+  const entryIds = core.rawRows.map((row) => row.dailyRankingEntryId);
   const dreRows = await params.db.dailyRankingEntry.findMany({
     where: { id: { in: entryIds } },
     select: { id: true, isDisqualified: true },
-  })
+  });
   const disqualifiedMap = new Map(
     dreRows.map((row: { id: string; isDisqualified: boolean }) => [
       row.id,
       row.isDisqualified,
     ]),
-  )
+  );
 
   const appIds = Array.from(
     new Set(core.rawRows.map((row) => row.applicationId)),
-  )
+  );
   const appRows = await params.db.clipperApplication.findMany({
     where: { id: { in: appIds } },
     select: {
@@ -87,15 +87,15 @@ async function buildSnapshotDailyRankingForClipper(params: {
         },
       },
     },
-  })
-  const appMap = new Map<string, any>(appRows.map((row: any) => [row.id, row]))
+  });
+  const appMap = new Map<string, any>(appRows.map((row: any) => [row.id, row]));
 
-  let effectiveRank = 0
+  let effectiveRank = 0;
   const posts = core.rawRows
     .filter((row) => !disqualifiedMap.get(row.dailyRankingEntryId))
     .map((row) => {
-      effectiveRank += 1
-      const profile = appMap.get(row.applicationId)?.clipperProfile
+      effectiveRank += 1;
+      const profile = appMap.get(row.applicationId)?.clipperProfile;
       return {
         position: effectiveRank,
         postId: row.clipPostId,
@@ -120,15 +120,15 @@ async function buildSnapshotDailyRankingForClipper(params: {
         clanTag: profile?.clan?.tag ?? null,
         clanEmoji: profile?.clan?.emoji ?? null,
         clanEmojiColor: profile?.clan?.emojiColor ?? null,
-      } satisfies DailyClipperRankingItem
+      } satisfies DailyClipperRankingItem;
     })
-    .slice(0, core.topCount)
+    .slice(0, core.topCount);
 
   return {
     posts,
     totalPosts: core.stats.totalPosts,
     hasSnapshot: true,
-  }
+  };
 }
 
 export const campaignRouter = createTRPCRouter({
@@ -150,14 +150,14 @@ export const campaignRouter = createTRPCRouter({
           startDate: "desc",
         },
         take: 10,
-      })
-      return activeCampaigns
+      });
+      return activeCampaigns;
     } catch (error: any) {
-      console.error("Erro ao buscar campanhas ativas:", error)
+      console.error("Erro ao buscar campanhas ativas:", error);
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: error.message || "Erro ao buscar campanhas ativas",
-      })
+      });
     }
   }),
 
@@ -175,14 +175,14 @@ export const campaignRouter = createTRPCRouter({
         orderBy: {
           createdAt: "desc",
         },
-      })
-      return campaigns
+      });
+      return campaigns;
     } catch (error: any) {
-      console.error("Erro ao buscar campanhas:", error)
+      console.error("Erro ao buscar campanhas:", error);
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: error.message || "Erro ao buscar campanhas",
-      })
+      });
     }
   }),
 
@@ -372,21 +372,21 @@ export const campaignRouter = createTRPCRouter({
                 likes: true,
                 comments: true,
               },
-            })
+            });
 
-            const platforms = [...new Set(posts.map((p) => p.platform))]
-            const totalViews = Number(acc._sum.views || 0)
-            const totalLikes = acc._sum.likes || 0
-            const totalComments = acc._sum.comments || 0
-            const totalShares = acc._sum.shares || 0
-            const totalSaves = acc._sum.saves || 0
+            const platforms = [...new Set(posts.map((p) => p.platform))];
+            const totalViews = Number(acc._sum.views || 0);
+            const totalLikes = acc._sum.likes || 0;
+            const totalComments = acc._sum.comments || 0;
+            const totalShares = acc._sum.shares || 0;
+            const totalSaves = acc._sum.saves || 0;
             const avgEngagement = calculateEngagementRate(
               totalViews,
               totalLikes,
               totalComments,
               totalShares,
               totalSaves,
-            )
+            );
 
             return {
               username: acc.username || "",
@@ -421,15 +421,15 @@ export const campaignRouter = createTRPCRouter({
           orderBy: {
             collectedAt: "asc",
           },
-        })
+        });
 
         // Agrupar métricas por data
         const metricsGroupedByDate = metricsHistory.reduce(
           (acc: Record<string, any>, metric) => {
             const date = new Date(metric.collectedAt)
               .toISOString()
-              .split("T")[0]
-            if (!date) return acc
+              .split("T")[0];
+            if (!date) return acc;
 
             if (!acc[date]) {
               acc[date] = {
@@ -438,17 +438,17 @@ export const campaignRouter = createTRPCRouter({
                 comments: 0,
                 shares: 0,
                 count: 0,
-              }
+              };
             }
-            acc[date].views += metric.views
-            acc[date].likes += metric.likes
-            acc[date].comments += metric.comments
-            acc[date].shares += metric.shares
-            acc[date].count += 1
-            return acc
+            acc[date].views += metric.views;
+            acc[date].likes += metric.likes;
+            acc[date].comments += metric.comments;
+            acc[date].shares += metric.shares;
+            acc[date].count += 1;
+            return acc;
           },
           {} as Record<string, any>,
-        )
+        );
 
         const growthData = Object.entries(metricsGroupedByDate).map(
           ([date, data]: [string, any]) => ({
@@ -493,7 +493,7 @@ export const campaignRouter = createTRPCRouter({
           _count: {
             id: true,
           },
-        })
+        });
 
         return {
           campaign,
@@ -548,17 +548,17 @@ export const campaignRouter = createTRPCRouter({
             totalComments: stat._sum.comments || 0,
             postsCount: stat._count.id,
           })),
-        }
+        };
       } catch (error: any) {
-        console.error("Erro ao buscar relatórios:", error)
+        console.error("Erro ao buscar relatórios:", error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar relatórios",
-        })
+        });
       }
     }),
 
-  // Query paginada para TODOS os posts de uma campanha (infinite scroll)
+  // Query paginada para posts elegíveis de uma campanha (infinite scroll)
   // Somente ADMIN: posts do relatório da campanha.
   getReportsPosts: adminProcedure
     .input(
@@ -613,12 +613,12 @@ export const campaignRouter = createTRPCRouter({
           },
           skip,
           take: limit + 1, // +1 para verificar se tem próxima página
-        })
+        });
 
-        let nextCursor: number | undefined = undefined
+        let nextCursor: number | undefined = undefined;
         if (posts.length > limit) {
-          posts.pop() // Remove o último item
-          nextCursor = skip + limit
+          posts.pop(); // Remove o último item
+          nextCursor = skip + limit;
         }
 
         return {
@@ -635,17 +635,17 @@ export const campaignRouter = createTRPCRouter({
             postedAt: post.postedAt?.toISOString() || new Date().toISOString(),
           })),
           nextCursor,
-        }
+        };
       } catch (error: any) {
-        console.error("Erro ao buscar posts paginados:", error)
+        console.error("Erro ao buscar posts paginados:", error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar posts",
-        })
+        });
       }
     }),
 
-  // Query paginada para TODAS as contas de uma campanha (infinite scroll)
+  // Query paginada para contas com posts elegíveis (infinite scroll)
   // Somente ADMIN: contas do relatório da campanha.
   getReportsAccounts: adminProcedure
     .input(
@@ -731,44 +731,44 @@ export const campaignRouter = createTRPCRouter({
               totalSaves,
               postsCount: acc._count.id,
               avgEngagement,
-            }
+            };
           }),
-        )
+        );
 
         // Filtrar por plataforma se especificado
         if (platform && platform !== "all") {
           accounts = accounts.filter((acc) =>
             acc.platforms.some((p) => p === platform),
-          )
+          );
         }
 
         // Ordenar
         if (sortBy === "views") {
-          accounts.sort((a, b) => b.totalViews - a.totalViews)
+          accounts.sort((a, b) => b.totalViews - a.totalViews);
         } else if (sortBy === "posts") {
-          accounts.sort((a, b) => b.postsCount - a.postsCount)
+          accounts.sort((a, b) => b.postsCount - a.postsCount);
         } else if (sortBy === "engagement") {
-          accounts.sort((a, b) => b.avgEngagement - a.avgEngagement)
+          accounts.sort((a, b) => b.avgEngagement - a.avgEngagement);
         }
 
         // Paginar manualmente
-        const paginatedAccounts = accounts.slice(skip, skip + limit + 1)
-        let nextCursor: number | undefined = undefined
+        const paginatedAccounts = accounts.slice(skip, skip + limit + 1);
+        let nextCursor: number | undefined = undefined;
         if (paginatedAccounts.length > limit) {
-          paginatedAccounts.pop()
-          nextCursor = skip + limit
+          paginatedAccounts.pop();
+          nextCursor = skip + limit;
         }
 
         return {
           accounts: paginatedAccounts,
           nextCursor,
-        }
+        };
       } catch (error: any) {
-        console.error("Erro ao buscar contas paginadas:", error)
+        console.error("Erro ao buscar contas paginadas:", error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar contas",
-        })
+        });
       }
     }),
 
@@ -780,7 +780,7 @@ export const campaignRouter = createTRPCRouter({
       const clipperProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       // Buscar IDs de campanhas privadas em que o clipper está inscrito
       const privateEnrolledCampaignIds = clipperProfile
@@ -794,7 +794,7 @@ export const campaignRouter = createTRPCRouter({
               select: { campaignId: true },
             })
           ).map((a) => a.campaignId)
-        : []
+        : [];
 
       const scheduledCampaigns = await ctx.db.campaign.findMany({
         where: {
@@ -842,7 +842,7 @@ export const campaignRouter = createTRPCRouter({
         orderBy: {
           startDate: "asc",
         },
-      })
+      });
 
       return scheduledCampaigns.map((campaign) => ({
         id: campaign.id,
@@ -873,13 +873,13 @@ export const campaignRouter = createTRPCRouter({
         rankingMetricType: campaign.rankingMetricType,
         isProOnly: campaign.isProOnly,
         isPrivate: campaign.isPrivate,
-      }))
+      }));
     } catch (error: any) {
-      console.error("Erro ao buscar competições agendadas:", error)
+      console.error("Erro ao buscar competições agendadas:", error);
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: error.message || "Erro ao buscar competições agendadas",
-      })
+      });
     }
   }),
 
@@ -898,14 +898,14 @@ export const campaignRouter = createTRPCRouter({
         // Buscar perfil do clipper
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
           where: { userId: ctx.userId },
-        })
+        });
 
         if (!clipperProfile) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message:
               "Perfil de clipper não encontrado. Complete o onboarding primeiro.",
-          })
+          });
         }
 
         // Verificar se a campanha existe
@@ -921,13 +921,13 @@ export const campaignRouter = createTRPCRouter({
             isPrivate: true,
             isProOnly: true,
           },
-        })
+        });
 
         if (!campaign) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Competição não encontrada",
-          })
+          });
         }
 
         // Bloquear autoinscrição em competições privadas
@@ -936,7 +936,7 @@ export const campaignRouter = createTRPCRouter({
             code: "FORBIDDEN",
             message:
               "Esta competição é privada. Apenas administradores podem inscrever participantes.",
-          })
+          });
         }
 
         // Bloquear inscrição em competições PRO-only para não-assinantes
@@ -944,13 +944,13 @@ export const campaignRouter = createTRPCRouter({
           const user = await ctx.db.user.findUnique({
             where: { id: ctx.userId },
             select: { subscriptionStatus: true },
-          })
+          });
           if (!user || user.subscriptionStatus !== "ACTIVE") {
             throw new TRPCError({
               code: "FORBIDDEN",
               message:
                 "Esta competição é exclusiva para assinantes PRO. Assine o PRO para participar.",
-            })
+            });
           }
         }
 
@@ -962,13 +962,13 @@ export const campaignRouter = createTRPCRouter({
               clipperProfileId: clipperProfile.id,
             },
           },
-        })
+        });
 
         if (existingApplication) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Você já se inscreveu nesta competição",
-          })
+          });
         }
 
         // Verificar se as contas sociais pertencem ao clipper
@@ -979,13 +979,13 @@ export const campaignRouter = createTRPCRouter({
             },
             clipperProfileId: clipperProfile.id,
           },
-        })
+        });
 
         if (socialAccounts.length !== input.socialAccountIds.length) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Uma ou mais contas sociais não foram encontradas",
-          })
+          });
         }
 
         // Criar aplicação com contas sociais
@@ -1008,7 +1008,7 @@ export const campaignRouter = createTRPCRouter({
               })),
             },
           },
-        })
+        });
 
         return {
           success: true,
@@ -1016,16 +1016,16 @@ export const campaignRouter = createTRPCRouter({
           message: campaign.requiresApproval
             ? "Inscrição enviada! Aguarde aprovação."
             : "Inscrição realizada com sucesso!",
-        }
+        };
       } catch (error: any) {
-        console.error("Erro ao inscrever em competição:", error)
+        console.error("Erro ao inscrever em competição:", error);
         if (error instanceof TRPCError) {
-          throw error
+          throw error;
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao realizar inscrição",
-        })
+        });
       }
     }),
 
@@ -1052,13 +1052,13 @@ export const campaignRouter = createTRPCRouter({
               },
             },
           },
-        })
+        });
 
         if (!application) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Inscrição não encontrada",
-          })
+          });
         }
 
         // Verificar se a application pertence ao usuário
@@ -1066,19 +1066,19 @@ export const campaignRouter = createTRPCRouter({
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Você não tem permissão para ver esta inscrição",
-          })
+          });
         }
 
-        return application.socialAccounts.map((acc) => acc.socialAccount)
+        return application.socialAccounts.map((acc) => acc.socialAccount);
       } catch (error: any) {
-        console.error("Erro ao buscar contas da inscrição:", error)
+        console.error("Erro ao buscar contas da inscrição:", error);
         if (error instanceof TRPCError) {
-          throw error
+          throw error;
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar contas da inscrição",
-        })
+        });
       }
     }),
 
@@ -1088,10 +1088,10 @@ export const campaignRouter = createTRPCRouter({
     try {
       const clipperProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
-      })
+      });
 
       if (!clipperProfile) {
-        return []
+        return [];
       }
 
       // Buscar IDs de campanhas privadas em que o clipper está inscrito
@@ -1104,7 +1104,7 @@ export const campaignRouter = createTRPCRouter({
           },
           select: { campaignId: true },
         })
-      ).map((a) => a.campaignId)
+      ).map((a) => a.campaignId);
 
       // Buscar TODAS as campanhas ativas (não arquivadas)
       // Excluir competições privadas onde o clipper NÃO está inscrito
@@ -1134,11 +1134,11 @@ export const campaignRouter = createTRPCRouter({
         orderBy: {
           startDate: "desc",
         },
-      })
+      });
 
-      if (activeCampaigns.length === 0) return []
+      if (activeCampaigns.length === 0) return [];
 
-      const campaignIds = activeCampaigns.map((c) => c.id)
+      const campaignIds = activeCampaigns.map((c) => c.id);
 
       // Batch: 4 queries paralelas que substituem N×6 queries
       const [applications, participantCounts, postCounts, prizeTransactions] =
@@ -1187,9 +1187,9 @@ export const campaignRouter = createTRPCRouter({
             },
             select: { campaignId: true, amount: true, status: true },
           }),
-        ])
+        ]);
 
-      const applicationIds = applications.map((a) => a.id)
+      const applicationIds = applications.map((a) => a.id);
 
       // Buscar melhores rankings e último post por application (parallel)
       const [rankings, lastPosts] =
@@ -1215,26 +1215,26 @@ export const campaignRouter = createTRPCRouter({
                 select: { applicationId: true, postedAt: true },
               }),
             ])
-          : [[], []]
+          : [[], []];
 
       // Maps para lookup O(1)
-      const appByCampaign = new Map(applications.map((a) => [a.campaignId, a]))
+      const appByCampaign = new Map(applications.map((a) => [a.campaignId, a]));
       const participantCountMap = new Map(
         participantCounts.map((r) => [r.campaignId, r._count.id]),
-      )
+      );
       const postCountMap = new Map(
         postCounts.map((r) => [r.campaignId, r._count.id]),
-      )
-      const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]))
-      const lastPostByApp = new Map(lastPosts.map((p) => [p.applicationId, p]))
+      );
+      const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]));
+      const lastPostByApp = new Map(lastPosts.map((p) => [p.applicationId, p]));
 
-      const txByCampaign = new Map<string, number>()
+      const txByCampaign = new Map<string, number>();
       for (const tx of prizeTransactions) {
-        if (!tx.campaignId) continue
+        if (!tx.campaignId) continue;
         txByCampaign.set(
           tx.campaignId,
           (txByCampaign.get(tx.campaignId) ?? 0) + tx.amount,
-        )
+        );
       }
 
       const formatCurrency = (amount: number) =>
@@ -1242,12 +1242,12 @@ export const campaignRouter = createTRPCRouter({
           style: "currency",
           currency: "BRL",
           minimumFractionDigits: 0,
-        }).format(amount)
+        }).format(amount);
 
       const competitionsWithData = activeCampaigns.map((campaign) => {
-        const application = appByCampaign.get(campaign.id)
-        const totalParticipants = participantCountMap.get(campaign.id) ?? 0
-        const totalPosts = postCountMap.get(campaign.id) ?? 0
+        const application = appByCampaign.get(campaign.id);
+        const totalParticipants = participantCountMap.get(campaign.id) ?? 0;
+        const totalPosts = postCountMap.get(campaign.id) ?? 0;
         const totalPrize =
           campaign.prizeInfo &&
           typeof campaign.prizeInfo === "object" &&
@@ -1255,7 +1255,7 @@ export const campaignRouter = createTRPCRouter({
             ? typeof campaign.prizeInfo.total === "object"
               ? "R$ 0"
               : String(campaign.prizeInfo.total)
-            : "R$ 0"
+            : "R$ 0";
 
         if (!application) {
           return {
@@ -1285,40 +1285,40 @@ export const campaignRouter = createTRPCRouter({
             actualPrize: undefined,
             applicationStatus: null,
             lastPostDate: undefined,
-          }
+          };
         }
 
-        const bestRanking = rankingByApp.get(application.id)
-        const lastPost = lastPostByApp.get(application.id)
-        const myPrizeAmount = txByCampaign.get(campaign.id) ?? 0
+        const bestRanking = rankingByApp.get(application.id);
+        const lastPost = lastPostByApp.get(application.id);
+        const myPrizeAmount = txByCampaign.get(campaign.id) ?? 0;
 
         const myTotalViews = application.clipPosts.reduce(
           (sum, p) => sum + Number(p.views),
           0,
-        )
+        );
         const myTotalLikes = application.clipPosts.reduce(
           (sum, p) => sum + p.likes,
           0,
-        )
+        );
         const myTotalComments = application.clipPosts.reduce(
           (sum, p) => sum + p.comments,
           0,
-        )
+        );
         const myTotalShares = application.clipPosts.reduce(
           (sum, p) => sum + p.shares,
           0,
-        )
+        );
         const myTotalSaves = application.clipPosts.reduce(
           (sum, p) => sum + (p.saves ?? 0),
           0,
-        )
+        );
         const myEngagementRate = calculateEngagementRate(
           myTotalViews,
           myTotalLikes,
           myTotalComments,
           myTotalShares,
           myTotalSaves,
-        )
+        );
 
         return {
           id: campaign.id,
@@ -1351,16 +1351,16 @@ export const campaignRouter = createTRPCRouter({
           applicationStatus: application.status,
           lastPostDate: lastPost?.postedAt?.toISOString(),
           isProOnly: campaign.isProOnly,
-        }
-      })
+        };
+      });
 
-      return competitionsWithData
+      return competitionsWithData;
     } catch (error: any) {
-      console.error("Erro ao buscar competições ativas:", error)
+      console.error("Erro ao buscar competições ativas:", error);
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: error.message || "Erro ao buscar competições ativas",
-      })
+      });
     }
   }),
 
@@ -1370,10 +1370,10 @@ export const campaignRouter = createTRPCRouter({
       try {
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
           where: { userId: ctx.userId },
-        })
+        });
 
         if (!clipperProfile) {
-          return []
+          return [];
         }
 
         // Buscar applications aprovadas em campanhas ativas ou concluídas (excluir ARCHIVED)
@@ -1423,12 +1423,12 @@ export const campaignRouter = createTRPCRouter({
               startDate: "desc",
             },
           },
-        })
+        });
 
-        if (applications.length === 0) return []
+        if (applications.length === 0) return [];
 
-        const applicationIds = applications.map((a) => a.id)
-        const campaignIds = [...new Set(applications.map((a) => a.campaignId))]
+        const applicationIds = applications.map((a) => a.id);
+        const campaignIds = [...new Set(applications.map((a) => a.campaignId))];
 
         // Batch: substituir N×4 queries por 4 queries paralelas
         const [
@@ -1475,26 +1475,26 @@ export const campaignRouter = createTRPCRouter({
             distinct: ["applicationId"],
             select: { applicationId: true, postedAt: true },
           }),
-        ])
+        ]);
 
-        const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]))
+        const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]));
         const participantCountMap = new Map(
           participantCounts.map((r) => [r.campaignId, r._count.id]),
-        )
+        );
         const postCountMap = new Map(
           postCounts.map((r) => [r.campaignId, r._count.id]),
-        )
+        );
         const lastPostByApp = new Map(
           lastPosts.map((p) => [p.applicationId, p]),
-        )
+        );
 
-        const txByCampaign = new Map<string, number>()
+        const txByCampaign = new Map<string, number>();
         for (const tx of prizeTransactions) {
-          if (!tx.campaignId) continue
+          if (!tx.campaignId) continue;
           txByCampaign.set(
             tx.campaignId,
             (txByCampaign.get(tx.campaignId) ?? 0) + tx.amount,
-          )
+          );
         }
 
         const formatCurrency = (amount: number) =>
@@ -1502,42 +1502,43 @@ export const campaignRouter = createTRPCRouter({
             style: "currency",
             currency: "BRL",
             minimumFractionDigits: 0,
-          }).format(amount)
+          }).format(amount);
 
         const competitions = applications.map((app) => {
-          const bestRanking = rankingByApp.get(app.id)
-          const lastPost = lastPostByApp.get(app.id)
-          const totalParticipants = participantCountMap.get(app.campaignId) ?? 0
-          const totalPosts = postCountMap.get(app.campaignId) ?? 0
-          const myPrizeAmount = txByCampaign.get(app.campaignId) ?? 0
+          const bestRanking = rankingByApp.get(app.id);
+          const lastPost = lastPostByApp.get(app.id);
+          const totalParticipants =
+            participantCountMap.get(app.campaignId) ?? 0;
+          const totalPosts = postCountMap.get(app.campaignId) ?? 0;
+          const myPrizeAmount = txByCampaign.get(app.campaignId) ?? 0;
 
           const myTotalViews = app.clipPosts.reduce(
             (sum, p) => sum + Number(p.views),
             0,
-          )
+          );
           const myTotalLikes = app.clipPosts.reduce(
             (sum, p) => sum + p.likes,
             0,
-          )
+          );
           const myTotalComments = app.clipPosts.reduce(
             (sum, p) => sum + p.comments,
             0,
-          )
+          );
           const myTotalShares = app.clipPosts.reduce(
             (sum, p) => sum + p.shares,
             0,
-          )
+          );
           const myTotalSaves = app.clipPosts.reduce(
             (sum, p) => sum + (p.saves ?? 0),
             0,
-          )
+          );
           const myEngagementRate = calculateEngagementRate(
             myTotalViews,
             myTotalLikes,
             myTotalComments,
             myTotalShares,
             myTotalSaves,
-          )
+          );
 
           const totalPrize =
             app.campaign.prizeInfo &&
@@ -1546,7 +1547,7 @@ export const campaignRouter = createTRPCRouter({
               ? typeof app.campaign.prizeInfo.total === "object"
                 ? "R$ 0"
                 : String(app.campaign.prizeInfo.total)
-              : "R$ 0"
+              : "R$ 0";
 
           return {
             id: app.campaign.id,
@@ -1578,16 +1579,16 @@ export const campaignRouter = createTRPCRouter({
             rankingMetricType: app.campaign.rankingMetricType,
             applicationStatus: app.status,
             lastPostDate: lastPost?.postedAt?.toISOString(),
-          }
-        })
+          };
+        });
 
-        return competitions
+        return competitions;
       } catch (error: any) {
-        console.error("Erro ao buscar competições do clipper:", error)
+        console.error("Erro ao buscar competições do clipper:", error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar competições do clipper",
-        })
+        });
       }
     },
   ),
@@ -1597,10 +1598,10 @@ export const campaignRouter = createTRPCRouter({
     try {
       const clipperProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
-      })
+      });
 
       if (!clipperProfile) {
-        return []
+        return [];
       }
 
       // Buscar applications aprovadas em campanhas concluídas (excluir ARCHIVED)
@@ -1647,12 +1648,12 @@ export const campaignRouter = createTRPCRouter({
             endDate: "desc",
           },
         },
-      })
+      });
 
-      if (applications.length === 0) return []
+      if (applications.length === 0) return [];
 
-      const applicationIds = applications.map((a) => a.id)
-      const campaignIds = [...new Set(applications.map((a) => a.campaignId))]
+      const applicationIds = applications.map((a) => a.id);
+      const campaignIds = [...new Set(applications.map((a) => a.campaignId))];
 
       // Batch: substituir N×3 queries por 3 queries paralelas
       const [rankings, participantCounts, prizeTransactions] =
@@ -1676,60 +1677,60 @@ export const campaignRouter = createTRPCRouter({
             },
             select: { campaignId: true, amount: true, status: true },
           }),
-        ])
+        ]);
 
-      const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]))
+      const rankingByApp = new Map(rankings.map((r) => [r.applicationId, r]));
       const participantCountMap = new Map(
         participantCounts.map((r) => [r.campaignId, r._count.id]),
-      )
+      );
 
       const txByCampaign = new Map<
         string,
         { total: number; hasPaid: boolean }
-      >()
+      >();
       for (const tx of prizeTransactions) {
-        if (!tx.campaignId) continue
+        if (!tx.campaignId) continue;
         const cur = txByCampaign.get(tx.campaignId) ?? {
           total: 0,
           hasPaid: false,
-        }
+        };
         txByCampaign.set(tx.campaignId, {
           total: cur.total + tx.amount,
           hasPaid: cur.hasPaid || tx.status === "COMPLETED",
-        })
+        });
       }
 
       const completedCompetitions = applications.map((app) => {
-        const bestRanking = rankingByApp.get(app.id)
-        const totalParticipants = participantCountMap.get(app.campaignId) ?? 0
-        const txData = txByCampaign.get(app.campaignId)
-        const myPrizeAmount = txData?.total ?? 0
-        const prizePaid = txData?.hasPaid ?? false
+        const bestRanking = rankingByApp.get(app.id);
+        const totalParticipants = participantCountMap.get(app.campaignId) ?? 0;
+        const txData = txByCampaign.get(app.campaignId);
+        const myPrizeAmount = txData?.total ?? 0;
+        const prizePaid = txData?.hasPaid ?? false;
 
         const myTotalViews = app.clipPosts.reduce(
           (sum, p) => sum + Number(p.views),
           0,
-        )
-        const myTotalLikes = app.clipPosts.reduce((sum, p) => sum + p.likes, 0)
+        );
+        const myTotalLikes = app.clipPosts.reduce((sum, p) => sum + p.likes, 0);
         const myTotalComments = app.clipPosts.reduce(
           (sum, p) => sum + p.comments,
           0,
-        )
+        );
         const myTotalShares = app.clipPosts.reduce(
           (sum, p) => sum + p.shares,
           0,
-        )
+        );
         const myTotalSaves = app.clipPosts.reduce(
           (sum, p) => sum + (p.saves ?? 0),
           0,
-        )
+        );
         const myEngagementRate = calculateEngagementRate(
           myTotalViews,
           myTotalLikes,
           myTotalComments,
           myTotalShares,
           myTotalSaves,
-        )
+        );
 
         const totalPrize =
           app.campaign.prizeInfo &&
@@ -1738,7 +1739,7 @@ export const campaignRouter = createTRPCRouter({
             ? typeof app.campaign.prizeInfo.total === "object"
               ? "R$ 0"
               : String(app.campaign.prizeInfo.total)
-            : "R$ 0"
+            : "R$ 0";
 
         return {
           id: app.campaign.id,
@@ -1768,16 +1769,16 @@ export const campaignRouter = createTRPCRouter({
               : "R$ 0",
           prizePaid,
           isProOnly: app.campaign.isProOnly,
-        }
-      })
+        };
+      });
 
-      return completedCompetitions
+      return completedCompetitions;
     } catch (error: any) {
-      console.error("Erro ao buscar histórico de competições:", error)
+      console.error("Erro ao buscar histórico de competições:", error);
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: error.message || "Erro ao buscar histórico de competições",
-      })
+      });
     }
   }),
 
@@ -1788,13 +1789,13 @@ export const campaignRouter = createTRPCRouter({
       try {
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
           where: { userId: ctx.userId },
-        })
+        });
 
         if (!clipperProfile) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Perfil de clipper não encontrado",
-          })
+          });
         }
 
         // Buscar campanha (excluir ARCHIVED)
@@ -1826,13 +1827,13 @@ export const campaignRouter = createTRPCRouter({
             affiliateLinkFacebook: true,
             affiliateLinkKwai: true,
           },
-        })
+        });
 
         if (!campaign) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Competição não encontrada",
-          })
+          });
         }
 
         // Verificar se a campanha está arquivada
@@ -1840,7 +1841,7 @@ export const campaignRouter = createTRPCRouter({
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Esta competição não está mais disponível",
-          })
+          });
         }
 
         // Buscar application do clipper
@@ -1851,13 +1852,13 @@ export const campaignRouter = createTRPCRouter({
               clipperProfileId: clipperProfile.id,
             },
           },
-        })
+        });
 
         if (!application) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Você não está participando desta competição",
-          })
+          });
         }
 
         // Contar participantes, posts totais e views totais
@@ -1918,13 +1919,13 @@ export const campaignRouter = createTRPCRouter({
           },
           orderBy: { createdAt: "desc" },
           take: 100, // Limitar para evitar timeout
-        })
+        });
 
         // Buscar rankings diários dos posts do clipper (última atualização)
         // OTIMIZAÇÃO: Buscar todos os rankings em uma única query ao invés de N queries
-        const postIds = myPosts.map((p) => p.id)
+        const postIds = myPosts.map((p) => p.id);
 
-        const rankingMap = new Map<string, number>()
+        const rankingMap = new Map<string, number>();
 
         if (postIds.length > 0) {
           // Buscar o ranking diário mais recente da campanha
@@ -1938,7 +1939,7 @@ export const campaignRouter = createTRPCRouter({
             select: {
               id: true,
             },
-          })
+          });
 
           if (latestDailyRanking) {
             // Buscar todas as entries desse ranking para os posts do clipper em uma única query
@@ -1953,12 +1954,12 @@ export const campaignRouter = createTRPCRouter({
                 clipPostId: true,
                 position: true,
               },
-            })
+            });
 
             // Mapear os resultados
             allRankingEntries.forEach((entry) => {
-              rankingMap.set(entry.clipPostId, entry.position)
-            })
+              rankingMap.set(entry.clipPostId, entry.position);
+            });
           }
         }
 
@@ -1979,21 +1980,21 @@ export const campaignRouter = createTRPCRouter({
           _count: {
             id: true,
           },
-        })
+        });
 
-        const myTotalViews = Number(myTotalMetrics._sum.views || 0)
-        const myTotalLikes = myTotalMetrics._sum.likes || 0
-        const myTotalComments = myTotalMetrics._sum.comments || 0
-        const myTotalShares = myTotalMetrics._sum.shares || 0
-        const myTotalSaves = myTotalMetrics._sum.saves || 0
-        const myTotalPostsCount = myTotalMetrics._count.id
+        const myTotalViews = Number(myTotalMetrics._sum.views || 0);
+        const myTotalLikes = myTotalMetrics._sum.likes || 0;
+        const myTotalComments = myTotalMetrics._sum.comments || 0;
+        const myTotalShares = myTotalMetrics._sum.shares || 0;
+        const myTotalSaves = myTotalMetrics._sum.saves || 0;
+        const myTotalPostsCount = myTotalMetrics._count.id;
         const myEngagementRate = calculateEngagementRate(
           myTotalViews,
           myTotalLikes,
           myTotalComments,
           myTotalShares,
           myTotalSaves,
-        )
+        );
 
         // Buscar ranking mensal atual do clipper
         const bestRanking = await ctx.db.monthlyRankingEntry.findFirst({
@@ -2008,7 +2009,7 @@ export const campaignRouter = createTRPCRouter({
             position: true,
             previousPosition: true,
           },
-        })
+        });
 
         // Buscar soma de transações (ganhos) — aggregate evita carregar todas as linhas
         const prizeAgg = await ctx.db.transaction.aggregate({
@@ -2022,27 +2023,27 @@ export const campaignRouter = createTRPCRouter({
             },
           },
           _sum: { amount: true },
-        })
+        });
 
-        const myCurrentEarnings = prizeAgg._sum.amount ?? 0
+        const myCurrentEarnings = prizeAgg._sum.amount ?? 0;
 
         // Buscar top ranking (top 15)
         // Tipo de métrica de ranking (VIEWS ou VIEWS_X_ENGAGEMENT)
-        const metricType = campaign.rankingMetricType as RankingMetricType
+        const metricType = campaign.rankingMetricType as RankingMetricType;
 
         let topRanking: Array<{
-          position: number
-          username: string
-          imageUrl: string | null
-          totalViews: number
-          rankingScore: number
-          engagementRate: number
-          totalPosts: number
-          isCurrentUser: boolean
-          clanTag: string | null
-          clanEmoji: string | null
-          clanEmojiColor: string | null
-        }> = []
+          position: number;
+          username: string;
+          imageUrl: string | null;
+          totalViews: number;
+          rankingScore: number;
+          engagementRate: number;
+          totalPosts: number;
+          isCurrentUser: boolean;
+          clanTag: string | null;
+          clanEmoji: string | null;
+          clanEmojiColor: string | null;
+        }> = [];
 
         if (metricType === "VIEWS") {
           // Para VIEWS: Usar aggregação direta no banco (mais eficiente)
@@ -2071,7 +2072,7 @@ export const campaignRouter = createTRPCRouter({
               },
             },
             take: campaign.activeRankingRule?.monthlyTopCount ?? 15,
-          })
+          });
 
           // Buscar dados dos clippers
           const topApplicationIds = topApplicationsAgg
@@ -2079,7 +2080,7 @@ export const campaignRouter = createTRPCRouter({
               (a): a is typeof a & { applicationId: string } =>
                 a.applicationId !== null,
             )
-            .map((a) => a.applicationId)
+            .map((a) => a.applicationId);
 
           const topClipperData = await ctx.db.clipperApplication.findMany({
             where: {
@@ -2107,10 +2108,10 @@ export const campaignRouter = createTRPCRouter({
                 },
               },
             },
-          })
+          });
 
           // Mapear os dados
-          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]))
+          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]));
 
           topRanking = topApplicationsAgg
             .filter(
@@ -2118,19 +2119,19 @@ export const campaignRouter = createTRPCRouter({
                 agg.applicationId !== null,
             )
             .map((agg, index) => {
-              const clipperInfo = clipperDataMap.get(agg.applicationId)
-              const totalViews = Number(agg._sum?.views || 0)
-              const totalLikes = agg._sum?.likes || 0
-              const totalComments = agg._sum?.comments || 0
-              const totalShares = agg._sum?.shares || 0
-              const totalSaves = agg._sum?.saves || 0
+              const clipperInfo = clipperDataMap.get(agg.applicationId);
+              const totalViews = Number(agg._sum?.views || 0);
+              const totalLikes = agg._sum?.likes || 0;
+              const totalComments = agg._sum?.comments || 0;
+              const totalShares = agg._sum?.shares || 0;
+              const totalSaves = agg._sum?.saves || 0;
               const engagementRate = calculateEngagementRate(
                 totalViews,
                 totalLikes,
                 totalComments,
                 totalShares,
                 totalSaves,
-              )
+              );
               return {
                 position: index + 1,
                 username: clipperInfo
@@ -2147,9 +2148,9 @@ export const campaignRouter = createTRPCRouter({
                 clanEmoji: clipperInfo?.clipperProfile.clan?.emoji ?? null,
                 clanEmojiColor:
                   clipperInfo?.clipperProfile.clan?.emojiColor ?? null,
-              }
+              };
             })
-            .filter((entry) => entry.username !== "@unknown")
+            .filter((entry) => entry.username !== "@unknown");
         } else {
           // Para VIEWS_X_ENGAGEMENT: Precisa calcular score por post
           // Buscar posts agrupados por application com métricas
@@ -2172,7 +2173,7 @@ export const campaignRouter = createTRPCRouter({
             _count: {
               id: true,
             },
-          })
+          });
 
           // Calcular ranking score para cada application
           const applicationsWithScore = topApplicationsAgg
@@ -2181,11 +2182,11 @@ export const campaignRouter = createTRPCRouter({
                 a.applicationId !== null,
             )
             .map((agg) => {
-              const views = Number(agg._sum.views || 0)
-              const likes = agg._sum.likes || 0
-              const comments = agg._sum.comments || 0
-              const shares = agg._sum.shares || 0
-              const saves = agg._sum.saves || 0
+              const views = Number(agg._sum.views || 0);
+              const likes = agg._sum.likes || 0;
+              const comments = agg._sum.comments || 0;
+              const shares = agg._sum.shares || 0;
+              const saves = agg._sum.saves || 0;
 
               const rankingScore = calculateRankingScore(
                 metricType,
@@ -2194,7 +2195,7 @@ export const campaignRouter = createTRPCRouter({
                 comments,
                 shares,
                 saves,
-              )
+              );
 
               const engagementRate = calculateEngagementRate(
                 views,
@@ -2202,7 +2203,7 @@ export const campaignRouter = createTRPCRouter({
                 comments,
                 shares,
                 saves,
-              )
+              );
 
               return {
                 applicationId: agg.applicationId,
@@ -2210,15 +2211,15 @@ export const campaignRouter = createTRPCRouter({
                 rankingScore,
                 engagementRate,
                 totalPosts: agg._count.id,
-              }
+              };
             })
             .sort((a, b) => b.rankingScore - a.rankingScore)
-            .slice(0, campaign.activeRankingRule?.monthlyTopCount ?? 15)
+            .slice(0, campaign.activeRankingRule?.monthlyTopCount ?? 15);
 
           // Buscar dados dos clippers
           const topApplicationIds = applicationsWithScore.map(
             (a) => a.applicationId,
-          )
+          );
 
           const topClipperData = await ctx.db.clipperApplication.findMany({
             where: {
@@ -2246,13 +2247,13 @@ export const campaignRouter = createTRPCRouter({
                 },
               },
             },
-          })
+          });
 
-          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]))
+          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]));
 
           topRanking = applicationsWithScore
             .map((app, index) => {
-              const clipperInfo = clipperDataMap.get(app.applicationId)
+              const clipperInfo = clipperDataMap.get(app.applicationId);
               return {
                 position: index + 1,
                 username: clipperInfo
@@ -2269,15 +2270,15 @@ export const campaignRouter = createTRPCRouter({
                 clanEmoji: clipperInfo?.clipperProfile.clan?.emoji ?? null,
                 clanEmojiColor:
                   clipperInfo?.clipperProfile.clan?.emojiColor ?? null,
-              }
+              };
             })
-            .filter((entry) => entry.username !== "@unknown")
+            .filter((entry) => entry.username !== "@unknown");
         }
 
-        const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15
-        const referenceDateYmd = getClipperDailyReferenceDateYmd()
+        const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
+        const referenceDateYmd = getClipperDailyReferenceDateYmd();
         const { startDate: dailyWindowStart, endDate: dailyWindowEnd } =
-          getLiveDailyWindowByReferenceDate(referenceDateYmd)
+          getLiveDailyWindowByReferenceDate(referenceDateYmd);
 
         const [
           todayPostsCount,
@@ -2331,9 +2332,9 @@ export const campaignRouter = createTRPCRouter({
             campaign.id,
             referenceDateYmd,
           ),
-        ])
+        ]);
 
-        const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0
+        const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
         const liveDailyPosts = rankLiveDailyPosts({
           posts: todayPosts.flatMap((post) => {
             const clipTotals = {
@@ -2342,15 +2343,15 @@ export const campaignRouter = createTRPCRouter({
               comments: post.comments,
               shares: post.shares,
               saves: post.saves ?? 0,
-            }
+            };
             const { metrics, source } = pickMetricsForDailyRank(
               post.id,
               clipTotals,
               dailyEntryMetricsMap,
-            )
+            );
             // Se houver snapshot do dia, não misturar métricas totais de ClipPost.
             if (hasSnapshotMetrics && source !== "daily_entry") {
-              return []
+              return [];
             }
             return {
               postId: post.id,
@@ -2415,25 +2416,25 @@ export const campaignRouter = createTRPCRouter({
             collectedAt: "asc",
           },
           take: 1000, // 7 dias × 2 coletas/dia × max 100 posts = ~1400, cap de segurança
-        })
+        });
 
         // Agrupar por dia
         const growthDataMap: Record<
           string,
           { views: number; engagement: number }
-        > = {}
+        > = {};
         metricsHistory.forEach((metric) => {
           const date = metric.collectedAt.toLocaleDateString("pt-BR", {
             day: "2-digit",
             month: "2-digit",
-          })
+          });
           if (!growthDataMap[date]) {
-            growthDataMap[date] = { views: 0, engagement: 0 }
+            growthDataMap[date] = { views: 0, engagement: 0 };
           }
-          growthDataMap[date].views += Number(metric.views)
+          growthDataMap[date].views += Number(metric.views);
           growthDataMap[date].engagement +=
-            metric.likes + metric.comments + metric.shares
-        })
+            metric.likes + metric.comments + metric.shares;
+        });
 
         const growthData = Object.entries(growthDataMap).map(
           ([date, data]) => ({
@@ -2441,7 +2442,7 @@ export const campaignRouter = createTRPCRouter({
             views: data.views,
             engagement: data.engagement,
           }),
-        )
+        );
 
         // Formatar posts para retorno
         const formattedPosts = myPosts.map((post) => {
@@ -2451,13 +2452,13 @@ export const campaignRouter = createTRPCRouter({
             post.comments,
             post.shares,
             post.saves ?? 0,
-          )
+          );
 
           // Buscar earnings deste post (simplificado)
           const earnings =
             myCurrentEarnings > 0 && myTotalPostsCount > 0
               ? myCurrentEarnings / myTotalPostsCount
-              : 0
+              : 0;
 
           return {
             id: post.id,
@@ -2487,8 +2488,8 @@ export const campaignRouter = createTRPCRouter({
                 ? "Post desqualificado. Nenhum motivo detalhado foi registrado."
                 : null),
             hashtags: post.hashtags,
-          }
-        })
+          };
+        });
 
         // Formatar prêmio total
         const totalPrize =
@@ -2498,7 +2499,7 @@ export const campaignRouter = createTRPCRouter({
             ? typeof campaign.prizeInfo.total === "object"
               ? "R$ 0"
               : String(campaign.prizeInfo.total)
-            : "R$ 0"
+            : "R$ 0";
 
         const result = {
           id: campaign.id,
@@ -2594,17 +2595,17 @@ export const campaignRouter = createTRPCRouter({
                 monthlyPrizeTable: campaign.activeRankingRule.monthlyPrizeTable,
               }
             : null,
-        }
-        return result
+        };
+        return result;
       } catch (error: any) {
-        console.error("Erro ao buscar detalhes da competição:", error)
+        console.error("Erro ao buscar detalhes da competição:", error);
         if (error instanceof TRPCError) {
-          throw error
+          throw error;
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar detalhes da competição",
-        })
+        });
       }
     }),
 
@@ -2623,20 +2624,20 @@ export const campaignRouter = createTRPCRouter({
         },
         orderBy: [{ rankingDate: "desc" }, { calculatedAt: "desc" }],
         take: 90,
-      })
+      });
 
-      const unique = new Map<string, string>()
+      const unique = new Map<string, string>();
       rankings.forEach((row) => {
-        const dateStr = row.rankingDate.toISOString().split("T")[0]!
+        const dateStr = row.rankingDate.toISOString().split("T")[0]!;
         if (!unique.has(dateStr)) {
-          unique.set(dateStr, row.calculatedAt.toISOString())
+          unique.set(dateStr, row.calculatedAt.toISOString());
         }
-      })
+      });
 
       return Array.from(unique.entries()).map(([date, calculatedAt]) => ({
         date,
         calculatedAt,
-      }))
+      }));
     }),
 
   getDailyRankingByDate: privateProcedure
@@ -2659,13 +2660,13 @@ export const campaignRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       if (!campaign) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Campanha não encontrada",
-        })
+        });
       }
 
       const fromSnapshot = await buildSnapshotDailyRankingForClipper({
@@ -2673,10 +2674,10 @@ export const campaignRouter = createTRPCRouter({
         campaignId: campaign.id,
         dateYmd: input.date,
         userId: ctx.userId,
-      })
+      });
 
       if (fromSnapshot.hasSnapshot) {
-        const { startDate, endDate } = getPostedAtWindowUtc(input.date)
+        const { startDate, endDate } = getPostedAtWindowUtc(input.date);
         return {
           date: input.date,
           source: "SNAPSHOT" as const,
@@ -2715,9 +2716,9 @@ export const campaignRouter = createTRPCRouter({
           },
         }),
         loadDailyRankingEntryMetricsMap(ctx.db, input.campaignId, input.date),
-      ])
+      ]);
 
-      const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0
+      const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
       const ranked = rankLiveDailyPosts({
         posts: posts.flatMap((post) => {
           const clipTotals = {
@@ -2726,14 +2727,14 @@ export const campaignRouter = createTRPCRouter({
             comments: post.comments,
             shares: post.shares,
             saves: post.saves ?? 0,
-          }
+          };
           const { metrics, source } = pickMetricsForDailyRank(
             post.id,
             clipTotals,
             dailyEntryMetricsMap,
-          )
+          );
           if (hasSnapshotMetrics && source !== "daily_entry") {
-            return []
+            return [];
           }
           return {
             postId: post.id,
@@ -2758,12 +2759,12 @@ export const campaignRouter = createTRPCRouter({
             clanEmoji: post.application.clipperProfile.clan?.emoji ?? null,
             clanEmojiColor:
               post.application.clipperProfile.clan?.emojiColor ?? null,
-          }
+          };
         }),
         metricType: campaign.rankingMetricType,
         topCount: campaign.activeRankingRule?.dailyTopCount ?? 15,
         dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
-      })
+      });
 
       return {
         date: input.date,
@@ -2773,7 +2774,7 @@ export const campaignRouter = createTRPCRouter({
         totalPosts: posts.length,
         windowStart: startDate.toISOString(),
         windowEnd: endDate.toISOString(),
-      }
+      };
     }),
 
   // Ranking "Top Clipadores" do dia: ordena por QUANTIDADE de vídeos postados na janela
@@ -2792,13 +2793,13 @@ export const campaignRouter = createTRPCRouter({
           topClippersRankingEnabled: true,
           topClippersPrizeTable: true,
         },
-      })
+      });
 
       if (!campaignConfig) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Competição não encontrada.",
-        })
+        });
       }
 
       if (!campaignConfig.topClippersRankingEnabled) {
@@ -2806,17 +2807,17 @@ export const campaignRouter = createTRPCRouter({
           code: "FORBIDDEN",
           message:
             "O ranking Top Clipadores não está habilitado nesta competição.",
-        })
+        });
       }
 
       const prizeTable = parseTopClippersPrizeTable(
         campaignConfig.topClippersPrizeTable,
-      )
+      );
 
       const clipperProfile = await ctx.db.clipperProfile.findUnique({
         where: { userId: ctx.userId },
         select: { id: true },
-      })
+      });
 
       const application = clipperProfile
         ? await ctx.db.clipperApplication.findUnique({
@@ -2942,10 +2943,10 @@ export const campaignRouter = createTRPCRouter({
             },
           },
         },
-      })
+      });
 
       for (const post of livePosts) {
-        const profile = post.application.clipperProfile
+        const profile = post.application.clipperProfile;
         addClipperPost({
           clipperProfileId: post.application.clipperProfileId,
           clipperName: getClipperRankingDisplayName(profile),
@@ -2955,13 +2956,14 @@ export const campaignRouter = createTRPCRouter({
           campaignId: post.campaignId,
           campaignName: post.campaign.name,
           views: Number(post.views || 0),
-        })
+        });
       }
 
       const entries = Array.from(clippersMap.values())
         .sort((a, b) => {
-          if (b.totalPosts !== a.totalPosts) return b.totalPosts - a.totalPosts
-          return b.totalViews - a.totalViews
+          if (b.totalPosts !== a.totalPosts) return b.totalPosts - a.totalPosts;
+          if (b.totalViews !== a.totalViews) return b.totalViews - a.totalViews;
+          return a.clipperProfileId.localeCompare(b.clipperProfileId);
         })
         .slice(0, input.limit)
         .map((clipper, index) => ({
@@ -2975,10 +2977,10 @@ export const campaignRouter = createTRPCRouter({
           totalPosts: clipper.totalPosts,
           totalViews: clipper.totalViews,
           campaigns: Array.from(clipper.campaigns.values()).sort((a, b) => {
-            if (b.posts !== a.posts) return b.posts - a.posts
-            return b.views - a.views
+            if (b.posts !== a.posts) return b.posts - a.posts;
+            return b.views - a.views;
           }),
-        }))
+        }));
 
       return {
         date: input.date,
@@ -2992,7 +2994,7 @@ export const campaignRouter = createTRPCRouter({
           totalClippersWithPosts: clippersMap.size,
           totalCampaigns: 1,
         },
-      }
+      };
     }),
 
   // Buscar regras de premiação de uma campanha (público)
@@ -3041,13 +3043,13 @@ export const campaignRouter = createTRPCRouter({
               },
             },
           },
-        })
+        });
 
         if (!campaign) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Campanha não encontrada",
-          })
+          });
         }
 
         return {
@@ -3060,16 +3062,16 @@ export const campaignRouter = createTRPCRouter({
           topClippersRankingEnabled: campaign.topClippersRankingEnabled,
           topClippersPrizeTable: campaign.topClippersPrizeTable,
           rankingRule: campaign.activeRankingRule,
-        }
+        };
       } catch (error: any) {
-        console.error("Erro ao buscar prêmios da campanha:", error)
+        console.error("Erro ao buscar prêmios da campanha:", error);
         if (error instanceof TRPCError) {
-          throw error
+          throw error;
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar prêmios da campanha",
-        })
+        });
       }
     }),
-})
+});

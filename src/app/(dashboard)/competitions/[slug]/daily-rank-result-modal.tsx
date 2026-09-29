@@ -1,11 +1,13 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import Image from "next/image"
+import * as React from "react";
+import Image from "next/image";
 import {
   ArrowCounterClockwise,
   ArrowSquareOut,
   CalendarBlank,
+  CaretLeft,
+  CaretRight,
   ChatCircle,
   ArrowsClockwise,
   Check,
@@ -22,6 +24,7 @@ import {
   Lightning,
   Megaphone,
   Money,
+  Play,
   Pulse,
   Receipt,
   ShareNetwork,
@@ -84,49 +87,54 @@ import {
   parsePixPreviewNumber,
   useFormatCurrency,
   type CompetitionDetails,
-} from "./shared"
+} from "./shared";
+import {
+  getPostEmbedUrl,
+  InstagramBrowserEmbed,
+  TikTokBrowserEmbed,
+} from "./tab-posts";
 
 /* ============================================================
    Tipos do contrato tab-daily ⇄ modal resultado
    ============================================================ */
 
-export type DailyRankPreview = RouterOutputs["admin"]["previewDailyRankByDate"]
+export type DailyRankPreview = RouterOutputs["admin"]["previewDailyRankByDate"];
 
-type DailyRankPreviewEntry = DailyRankPreview["entries"][number]
+type DailyRankPreviewEntry = DailyRankPreview["entries"][number];
 
 type PayRankPlan = Extract<
   RouterOutputs["admin"]["payDailyRankByDate"],
   { dryRun: true }
->
+>;
 
 type UndoRankPlan = Extract<
   RouterOutputs["admin"]["undoDailyRankPayments"],
   { dryRun: true }
->
+>;
 
 type TopPostersPreview =
-  RouterOutputs["admin"]["previewTopPostersDailyRankByDate"]
+  RouterOutputs["admin"]["previewTopPostersDailyRankByDate"];
 
 type PayTopPostersPlan = Extract<
   RouterOutputs["admin"]["payTopPostersDailyRankByDate"],
   { dryRun: true }
->
+>;
 
 export interface DailyRankResultModalProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  slug: string
-  campaignId: string
-  data: CompetitionDetails
-  preview: DailyRankPreview | null
-  markAnnouncedOnPay: boolean
-  onMarkAnnouncedChange: (value: boolean) => void
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  slug: string;
+  campaignId: string;
+  data: CompetitionDetails;
+  preview: DailyRankPreview | null;
+  markAnnouncedOnPay: boolean;
+  onMarkAnnouncedChange: (value: boolean) => void;
   /**
    * Re-preview SILENCIOSO do rank (atualiza dados sem toast/troca de modal).
    * `fallbackErrorMessage` vira toast extra caso o refresh falhe.
    */
-  refreshPreviewSilently: (options?: { fallbackErrorMessage?: string }) => void
-  refetch: () => void
+  refreshPreviewSilently: (options?: { fallbackErrorMessage?: string }) => void;
+  refetch: () => void;
 }
 
 /* ============================================================
@@ -294,6 +302,7 @@ export function DailyRankResultModal({
   } | null>(null);
   const [disqualifyInput, setDisqualifyInput] = React.useState("");
   const [disqualifyReason, setDisqualifyReason] = React.useState("");
+  const [playerEntryId, setPlayerEntryId] = React.useState<string | null>(null);
 
   /* Ao fechar o modal principal, zera todos os sub-estados. */
   React.useEffect(() => {
@@ -318,6 +327,7 @@ export function DailyRankResultModal({
       setDisqualifyConfirm(null);
       setDisqualifyInput("");
       setDisqualifyReason("");
+      setPlayerEntryId(null);
     }
   }, [open]);
 
@@ -1039,8 +1049,20 @@ export function DailyRankResultModal({
                 <VideoCamera className="text-muted-foreground/50 size-4 sm:size-5" />
               </div>
             )}
+            {entry.submittedUrl && (
+              <button
+                type="button"
+                onClick={() => setPlayerEntryId(entry.dailyRankingEntryId)}
+                aria-label={`Assistir vídeo de ${entry.clipperName}`}
+                className="group absolute inset-0 z-10 flex cursor-pointer items-center justify-center bg-black/10 transition-colors hover:bg-black/35"
+              >
+                <span className="flex size-7 items-center justify-center rounded-full border border-white/30 bg-black/65 text-white shadow-lg transition-transform group-hover:scale-110 sm:size-8">
+                  <Play className="ml-0.5 size-3 sm:size-3.5" weight="fill" />
+                </span>
+              </button>
+            )}
             {PlatformIcon && platformInfo && (
-              <div className="absolute right-0.5 bottom-0.5">
+              <div className="pointer-events-none absolute right-0.5 bottom-0.5 z-20">
                 <div className="flex size-4 items-center justify-center rounded-md bg-black/70 ring-1 ring-white/10 backdrop-blur-sm sm:size-[18px]">
                   <PlatformIcon
                     className={cn("size-2.5 sm:size-3", platformInfo.color)}
@@ -1231,17 +1253,30 @@ export function DailyRankResultModal({
           </div>
         </div>
       </div>
-    )
-  }
+    );
+  };
 
-  const topCount = preview?.topCount ?? 15
+  const topCount = preview?.topCount ?? 15;
   const activeEntries = (preview?.entries ?? []).filter(
     (e) => !e.isDisqualified,
-  )
+  );
   const disqualifiedEntries = (preview?.entries ?? []).filter(
     (e) => e.isDisqualified,
-  )
-  const visibleActive = activeEntries.slice(0, topCount)
+  );
+  const visibleActive = activeEntries.slice(0, topCount);
+  // A API devolve também candidatos abaixo do corte. O player deve navegar
+  // somente pelos cards que fazem parte do ranking administrativo exibido:
+  // Top N ativos + desclassificados mostrados na seção própria.
+  const playableEntries = [...visibleActive, ...disqualifiedEntries].filter(
+    (entry) => Boolean(entry.submittedUrl),
+  );
+  const playerEntryIndex = playableEntries.findIndex(
+    (entry) => entry.dailyRankingEntryId === playerEntryId,
+  );
+  const playerEntry =
+    playerEntryIndex >= 0 ? playableEntries[playerEntryIndex] : undefined;
+  const playerUrl = playerEntry?.submittedUrl ?? "";
+  const playerEmbedUrl = playerUrl ? getPostEmbedUrl(playerUrl) : null;
 
   return (
     <>
@@ -1811,19 +1846,146 @@ export function DailyRankResultModal({
         </DialogContent>
       </Dialog>
 
+      {/* ============ PLAYER PARA VALIDAÇÃO DO RANK ============ */}
+      <Dialog
+        open={!!playerEntry}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setPlayerEntryId(null);
+        }}
+      >
+        <DialogContent className="flex h-[92svh] w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:h-[90svh] sm:max-w-3xl">
+          <DialogHeader className="border-border/60 shrink-0 border-b px-4 py-3 pr-12 text-left sm:px-5">
+            <DialogTitle className="flex min-w-0 items-center gap-2 text-base">
+              <Play className="text-primary size-4 shrink-0" weight="fill" />
+              <span className="truncate">
+                {playerEntry?.clipperName} · @{playerEntry?.username}
+              </span>
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Reprodutor para validação dos vídeos do ranking diário
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="relative flex min-h-0 flex-1 items-center justify-center bg-black">
+            {playerEntry?.platform === "INSTAGRAM" ? (
+              <InstagramBrowserEmbed
+                key={playerEntry.dailyRankingEntryId}
+                url={playerUrl}
+              />
+            ) : playerEntry?.platform === "TIKTOK" ? (
+              <TikTokBrowserEmbed
+                key={playerEntry.dailyRankingEntryId}
+                url={playerUrl}
+              />
+            ) : playerEmbedUrl ? (
+              <iframe
+                key={playerEntry?.dailyRankingEntryId}
+                src={playerEmbedUrl}
+                title={`Vídeo de ${playerEntry?.clipperName ?? "clipador"}`}
+                className="h-full w-full max-w-[720px] border-0 bg-white"
+                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowFullScreen
+                loading="eager"
+              />
+            ) : (
+              <p className="px-6 text-center text-sm text-white/70">
+                Player indisponível para este link.
+              </p>
+            )}
+          </div>
+
+          <div className="border-border/60 flex shrink-0 flex-col gap-2 border-t px-3 py-3 sm:px-5">
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={playerEntryIndex <= 0}
+                onClick={() =>
+                  setPlayerEntryId(
+                    playableEntries[playerEntryIndex - 1]
+                      ?.dailyRankingEntryId ?? null,
+                  )
+                }
+                className="h-9 cursor-pointer rounded-lg px-2 sm:px-3"
+              >
+                <CaretLeft className="size-4" />
+                <span className="hidden sm:inline">Anterior</span>
+              </Button>
+              <p className="text-muted-foreground text-center text-xs tabular-nums">
+                {playerEntryIndex + 1} de {playableEntries.length}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={playerEntryIndex >= playableEntries.length - 1}
+                onClick={() =>
+                  setPlayerEntryId(
+                    playableEntries[playerEntryIndex + 1]
+                      ?.dailyRankingEntryId ?? null,
+                  )
+                }
+                className="h-9 cursor-pointer rounded-lg px-2 sm:px-3"
+              >
+                <span className="hidden sm:inline">Próximo</span>
+                <CaretRight className="size-4" />
+              </Button>
+            </div>
+            {playerEntry && (
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  asChild
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-lg text-xs"
+                >
+                  <a href={playerUrl} target="_blank" rel="noopener noreferrer">
+                    <ArrowSquareOut className="size-3.5" />
+                    Abrir original
+                  </a>
+                </Button>
+                {!playerEntry.isDisqualified && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => {
+                      setDisqualifyInput("");
+                      setDisqualifyReason("");
+                      setDisqualifyConfirm({
+                        dailyRankingEntryId: playerEntry.dailyRankingEntryId,
+                        clipPostId: playerEntry.clipPostId,
+                        clipperName: playerEntry.clipperName,
+                        submittedUrl: playerEntry.submittedUrl,
+                      });
+                      setPlayerEntryId(null);
+                    }}
+                    className="h-8 cursor-pointer rounded-lg text-xs"
+                  >
+                    <XCircle className="size-3.5" />
+                    Desclassificar
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* ============ MODAL TOP POSTADORES ============ */}
       <Dialog
         open={topPostersModalOpen}
         onOpenChange={(nextOpen) => {
-          if (!nextOpen && payTopPostersDailyRankByDate.isPending) return
-          setTopPostersModalOpen(nextOpen)
+          if (!nextOpen && payTopPostersDailyRankByDate.isPending) return;
+          setTopPostersModalOpen(nextOpen);
           if (!nextOpen) {
-            setTopPostersPreviewData(null)
-            setTopPostersExportModalOpen(false)
-            setTopPostersExportText("")
-            setTopPostersPayDialogOpen(false)
-            setTopPostersPayPlan(null)
-            setTopPostersPayInput("")
+            setTopPostersPreviewData(null);
+            setTopPostersExportModalOpen(false);
+            setTopPostersExportText("");
+            setTopPostersPayDialogOpen(false);
+            setTopPostersPayPlan(null);
+            setTopPostersPayInput("");
           }
         }}
       >

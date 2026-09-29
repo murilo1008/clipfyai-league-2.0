@@ -48,6 +48,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -597,7 +598,10 @@ function PostedAtFilter({
         />
 
         <div className="border-border/60 flex flex-col gap-1.5 border-t p-3">
-          <Label htmlFor={timeInputId} className="text-muted-foreground text-xs">
+          <Label
+            htmlFor={timeInputId}
+            className="text-muted-foreground text-xs"
+          >
             Horário
           </Label>
           <div className="flex items-center gap-2">
@@ -683,6 +687,11 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
     null,
   )
   const [deleteConfirmText, setDeleteConfirmText] = React.useState("")
+  const [selectedPostIds, setSelectedPostIds] = React.useState<Set<string>>(
+    new Set(),
+  )
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = React.useState(false)
+  const [bulkDeleteConfirmText, setBulkDeleteConfirmText] = React.useState("")
 
   const hasActiveFilters =
     statusFilter !== "all" ||
@@ -760,6 +769,28 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
       refetch()
     },
     onError: (error) => toast.error(error.message || "Erro ao deletar post"),
+  })
+
+  const deleteClipPostsBulk = api.admin.deleteClipPostsBulk.useMutation({
+    onSuccess: async (result) => {
+      toast.success(
+        `${result.deletedCount} ${result.deletedCount === 1 ? "post deletado" : "posts deletados"} com sucesso!`,
+        {
+          description: "Os posts foram removidos permanentemente da competição",
+        },
+      )
+      setIsBulkDeleteOpen(false)
+      setBulkDeleteConfirmText("")
+      setSelectedPostIds(new Set())
+      await Promise.all([
+        utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
+        utils.admin.getCompetitionPostsAdmin.invalidate(),
+        utils.campaign.getCompetitionDetails.invalidate(),
+      ])
+      refetch()
+    },
+    onError: (error) =>
+      toast.error(error.message || "Erro ao deletar posts selecionados"),
   })
 
   const reassignClipPostCompetition =
@@ -857,6 +888,47 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
     deleteClipPost.mutate({ clipPostId: postToDelete.id })
   }
 
+  const togglePostSelection = (postId: string) => {
+    setSelectedPostIds((current) => {
+      const next = new Set(current)
+      if (next.has(postId)) {
+        next.delete(postId)
+      } else {
+        next.add(postId)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAllVisible = () => {
+    const visiblePostIds = postsData?.posts.map((post) => post.id) ?? []
+    const allVisibleSelected = visiblePostIds.every((id) =>
+      selectedPostIds.has(id),
+    )
+    setSelectedPostIds((current) => {
+      const next = new Set(current)
+      for (const id of visiblePostIds) {
+        if (allVisibleSelected) next.delete(id)
+        else next.add(id)
+      }
+      return next
+    })
+  }
+
+  const handleBulkDeletePosts = () => {
+    if (bulkDeleteConfirmText !== "DELETAR") {
+      toast.error("Digite 'DELETAR' para confirmar a exclusão", {
+        description: "Esta ação é irreversível!",
+      })
+      return
+    }
+    if (selectedPostIds.size === 0) {
+      toast.error("Selecione ao menos um post")
+      return
+    }
+    deleteClipPostsBulk.mutate({ clipPostIds: Array.from(selectedPostIds) })
+  }
+
   const clearFilters = () => {
     setStatusFilter("all")
     setPlatformFilter("all")
@@ -870,6 +942,10 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
 
   const pagination = postsData?.pagination
   const totalCount = pagination?.totalCount ?? 0
+  const visiblePostIds = postsData?.posts.map((post) => post.id) ?? []
+  const allVisiblePostsSelected =
+    visiblePostIds.length > 0 &&
+    visiblePostIds.every((id) => selectedPostIds.has(id))
   const playerPostIndex =
     postsData?.posts.findIndex((post) => post.id === playerPostId) ?? -1
   const playerPost =
@@ -1225,20 +1301,77 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
             </div>
           )}
 
+          {/* ===== Seleção para ações em lote ===== */}
+          <div className="border-border/60 bg-muted/30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 sm:px-4">
+            <button
+              type="button"
+              onClick={toggleSelectAllVisible}
+              className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-2 text-sm transition-colors"
+            >
+              <Checkbox
+                checked={allVisiblePostsSelected}
+                className="pointer-events-none"
+              />
+              <span className="font-medium">Selecionar todos desta página</span>
+            </button>
+
+            {selectedPostIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className="border-destructive/30 bg-destructive/10 text-destructive rounded-full px-2.5 py-0.5"
+                >
+                  {selectedPostIds.size}{" "}
+                  {selectedPostIds.size === 1
+                    ? "post selecionado"
+                    : "posts selecionados"}
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 cursor-pointer rounded-lg text-xs"
+                  onClick={() => setSelectedPostIds(new Set())}
+                >
+                  Limpar seleção
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 cursor-pointer rounded-lg text-xs"
+                  onClick={() => {
+                    setBulkDeleteConfirmText("")
+                    setIsBulkDeleteOpen(true)
+                  }}
+                >
+                  <Trash className="size-3.5" weight="fill" />
+                  Excluir selecionados
+                </Button>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                Selecione os posts que deseja excluir.
+              </p>
+            )}
+          </div>
+
           {/* ===== Grid de posts ===== */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
             {postsData.posts.map((post) => {
               const platformInfo = platformConfig[post.platform as PlatformKey]
               const PlatformIcon = platformInfo?.icon
               const statusConfig = CLIP_POST_STATUS_CONFIG[post.status]
+              const isSelected = selectedPostIds.has(post.id)
 
               return (
                 <div
                   key={post.id}
-                  className="glass-card glass-card-hover flex flex-col overflow-hidden rounded-2xl"
+                  className={cn(
+                    "glass-card glass-card-hover flex flex-col overflow-hidden rounded-2xl",
+                    isSelected && "ring-destructive/60 ring-2",
+                  )}
                 >
                   {/* Thumbnail 9:16 */}
-                  <div className="bg-muted/60 relative w-full shrink-0 overflow-hidden aspect-[9/16]">
+                  <div className="bg-muted/60 relative aspect-[9/16] w-full shrink-0 overflow-hidden">
                     {post.thumbnail ? (
                       <Image
                         src={post.thumbnail}
@@ -1279,11 +1412,19 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                       </div>
                     )}
 
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => togglePostSelection(post.id)}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={`Selecionar post de ${post.clipperName}`}
+                      className="data-[state=checked]:border-destructive data-[state=checked]:bg-destructive absolute top-2 right-11 z-30 size-5 border-white/45 bg-black/60 text-white backdrop-blur-md"
+                    />
+
                     <button
                       type="button"
                       onClick={() => setMetricsHistoryPostId(post.id)}
                       title="Ver histórico de métricas"
-                      className="absolute top-2 right-2 z-10 flex size-7 cursor-pointer items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white backdrop-blur-md transition-colors hover:border-white/25 hover:bg-black/70"
+                      className="absolute top-2 right-2 z-30 flex size-7 cursor-pointer items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white backdrop-blur-md transition-colors hover:border-white/25 hover:bg-black/70"
                     >
                       <Eye className="size-3.5" />
                     </button>
@@ -1310,10 +1451,7 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                         </span>
                       </div>
                       <div className="bg-muted/40 flex flex-col items-center gap-0.5 rounded-lg p-1.5">
-                        <Heart
-                          className="size-3 text-pink-400"
-                          weight="fill"
-                        />
+                        <Heart className="size-3 text-pink-400" weight="fill" />
                         <span className="font-bold tabular-nums">
                           {formatNumber(post.likes)}
                         </span>
@@ -1475,7 +1613,9 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                   className="h-9 cursor-pointer rounded-xl"
                   disabled={!pagination.hasNextPage}
                   onClick={() =>
-                    setPage(Math.min(pagination.totalPages, pagination.page + 1))
+                    setPage(
+                      Math.min(pagination.totalPages, pagination.page + 1),
+                    )
                   }
                 >
                   Próxima
@@ -1719,8 +1859,8 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
               />
               <p className="text-xs text-amber-600 dark:text-amber-400">
                 <span className="font-bold">Atenção:</span> esta ação afetará
-                diretamente os rankings e a elegibilidade do post.
-                Certifique-se de que está fazendo a alteração correta.
+                diretamente os rankings e a elegibilidade do post. Certifique-se
+                de que está fazendo a alteração correta.
               </p>
             </div>
           </div>
@@ -1881,6 +2021,74 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ===== Dialog: Deletar posts em lote ===== */}
+      <AlertDialog open={isBulkDeleteOpen} onOpenChange={setIsBulkDeleteOpen}>
+        <AlertDialogContent className="rounded-3xl sm:max-w-md">
+          <AlertDialogHeader className="space-y-2 text-left">
+            <AlertDialogTitle className="flex items-center gap-2.5 text-base font-semibold">
+              <span className="bg-destructive/15 text-destructive flex size-9 shrink-0 items-center justify-center rounded-xl">
+                <Trash className="size-4.5" weight="fill" />
+              </span>
+              Excluir posts selecionados?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="text-muted-foreground flex w-full flex-col gap-3 text-left text-sm">
+                <p className="text-foreground/90 leading-relaxed">
+                  Você está prestes a excluir permanentemente{" "}
+                  {selectedPostIds.size}{" "}
+                  {selectedPostIds.size === 1 ? "post" : "posts"}, incluindo
+                  métricas e histórico. Esta ação não pode ser desfeita e os
+                  clippers não serão notificados.
+                </p>
+                <ConfirmWordInput
+                  word="DELETAR"
+                  value={bulkDeleteConfirmText}
+                  onChange={setBulkDeleteConfirmText}
+                  id="confirm-bulk-delete-posts"
+                />
+                {bulkDeleteConfirmText.length > 0 &&
+                  bulkDeleteConfirmText !== "DELETAR" && (
+                    <p className="text-destructive text-xs">
+                      Use exatamente a palavra DELETAR.
+                    </p>
+                  )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2">
+            <AlertDialogCancel
+              className="cursor-pointer rounded-xl"
+              disabled={deleteClipPostsBulk.isPending}
+              onClick={() => setBulkDeleteConfirmText("")}
+            >
+              <XCircle className="size-4" />
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90 cursor-pointer rounded-xl text-white"
+              disabled={
+                deleteClipPostsBulk.isPending ||
+                bulkDeleteConfirmText !== "DELETAR"
+              }
+              onClick={handleBulkDeletePosts}
+            >
+              {deleteClipPostsBulk.isPending ? (
+                <>
+                  <Spinner className="size-4 animate-spin" />
+                  Excluindo…
+                </>
+              ) : (
+                <>
+                  <Trash className="size-4" weight="fill" />
+                  Excluir {selectedPostIds.size}{" "}
+                  {selectedPostIds.size === 1 ? "post" : "posts"}
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ===== Dialog: Deletar Post ===== */}
       <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>

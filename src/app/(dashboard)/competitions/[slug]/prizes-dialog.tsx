@@ -48,11 +48,11 @@ export function PrizesDialog({
 
   const rule = data?.rankingRule
   const monthlyEntries = React.useMemo(
-    () => parsePrizeTable(rule?.monthlyPrizeTable),
+    () => parsePrizeTable(rule?.monthlyPrizeTable, { allowEmpty: true }),
     [rule?.monthlyPrizeTable],
   )
   const dailyEntries = React.useMemo(
-    () => parsePrizeTable(rule?.dailyPrizeTable),
+    () => parsePrizeTable(rule?.dailyPrizeTable, { allowEmpty: true }),
     [rule?.dailyPrizeTable],
   )
 
