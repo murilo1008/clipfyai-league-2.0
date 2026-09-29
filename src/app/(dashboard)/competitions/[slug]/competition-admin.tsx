@@ -15,14 +15,15 @@ import {
   FileXls,
   FilePdf,
   GearSix,
-  GoogleLogo,
   Globe,
+  GoogleLogo,
   Hash,
   Heart,
   Lightning,
   Lock,
   PencilSimple,
   Play,
+  Pulse,
   Sparkle,
   Spinner,
   Trophy,
@@ -75,6 +76,7 @@ import { FinancialTab } from "./tab-financial"
 import { MonthlyTab } from "./tab-monthly"
 import { OverviewTab } from "./tab-overview"
 import { PostsTab } from "./tab-posts"
+import { PerformanceTab } from "./tab-performance"
 import { PrizesDialog } from "./prizes-dialog"
 import {
   CAMPAIGN_STATUS_CONFIG,
@@ -85,8 +87,14 @@ import {
 
 const TABS = [
   { value: "overview", icon: ChartBar, label: "Visão Geral", short: "Geral" },
-  { value: "applications", icon: UserCheck, label: "Aplicações", short: "Apps" },
+  {
+    value: "applications",
+    icon: UserCheck,
+    label: "Aplicações",
+    short: "Apps",
+  },
   { value: "financeiro", icon: Wallet, label: "Financeiro", short: "R$" },
+  { value: "performance", icon: Pulse, label: "Performance", short: "Perf." },
   { value: "monthly", icon: Trophy, label: "Ranking Mensal", short: "Mensal" },
   { value: "daily", icon: Crosshair, label: "Ranking Diário", short: "Diário" },
   { value: "posts", icon: Play, label: "Posts Recentes", short: "Posts" },
@@ -815,7 +823,7 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
       {/* ===== Tabs ===== */}
       <Reveal immediate delayMs={120}>
         <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
-          <TabsList className="bg-muted/40 grid min-h-20 w-full grid-cols-3 gap-1 rounded-2xl p-1 lg:min-h-0 lg:grid-cols-6">
+          <TabsList className="bg-muted/40 grid min-h-20 w-full grid-cols-3 gap-1 rounded-2xl p-1 lg:min-h-0 lg:grid-cols-7">
             {TABS.map((tab) => {
               const TabIcon = tab.icon
               return (
@@ -844,6 +852,18 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
           <TabsContent value="financeiro">
             <FinancialTab {...tabProps} active={activeTab === "financeiro"} />
           </TabsContent>
+          <TabsContent value="performance">
+            <PerformanceTab
+              {...tabProps}
+              active={activeTab === "performance"}
+              commentsSection={
+                <CompetitionCommentsAnalysisPanel
+                  campaignId={campaign.id}
+                  revealDelayMs={120}
+                />
+              }
+            />
+          </TabsContent>
           <TabsContent value="monthly">
             <MonthlyTab {...tabProps} active={activeTab === "monthly"} />
           </TabsContent>
@@ -851,18 +871,12 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
             <DailyTab {...tabProps} active={activeTab === "daily"} />
           </TabsContent>
           <TabsContent value="posts">
-            <div className="flex min-w-0 flex-col gap-6 sm:gap-8">
-              <PostsTab {...tabProps} active={activeTab === "posts"} />
-              {/* Opinião pública: coleta + análise de IA dos comentários */}
-              <CompetitionCommentsAnalysisPanel
-                campaignId={campaign.id}
-                revealDelayMs={120}
-              />
-            </div>
+            <PostsTab {...tabProps} active={activeTab === "posts"} />
           </TabsContent>
         </Tabs>
       </Reveal>
 
+      {/* ===== Dialog: mudar status ===== */}
       <Dialog
         open={isCalendarDisconnectOpen}
         onOpenChange={setIsCalendarDisconnectOpen}

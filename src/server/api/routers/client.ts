@@ -7,6 +7,9 @@ import {
   calculateRankingScore,
   type RankingMetricType,
 } from "@/lib/ranking-helpers"
+import { getCampaignPerformance } from "@/server/performance/get-campaign-performance"
+import { aggregateCampaignPerformance } from "@/server/performance/aggregate-campaign-performance"
+import { hasInvestedAmountInEveryCampaign } from "@/server/performance/visibility"
 
 // Client status enum
 const ClientStatusEnum = z.enum(["ACTIVE", "INACTIVE", "PENDING"])
@@ -74,6 +77,118 @@ function getClientCreationClerkError(error: unknown): TRPCError {
 }
 
 export const clientRouter = createTRPCRouter({
+  hasPerformance: privateProcedure.query(async ({ ctx }) => {
+    const campaigns = await ctx.db.campaign.findMany({
+      where: { clientId: ctx.userId },
+      select: {
+        performanceSettings: { select: { investedAmount: true } },
+      },
+    })
+    return hasInvestedAmountInEveryCampaign(campaigns)
+  }),
+
+  getPerformance: privateProcedure
+    .input(z.object({ campaignId: z.string().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const user = await ctx.db.user.findUnique({
+        where: { id: ctx.userId },
+        select: { role: true },
+      })
+      if (!user || user.role !== "CLIENT") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para acessar esta funcionalidade",
+        })
+      }
+
+      const linkedCampaigns = await ctx.db.campaign.findMany({
+        where: { clientId: ctx.userId },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+          performanceSettings: { select: { investedAmount: true } },
+        },
+        orderBy: { startDate: "desc" },
+      })
+      const campaigns = hasInvestedAmountInEveryCampaign(linkedCampaigns)
+        ? linkedCampaigns.map(({ id, name, slug, status }) => ({
+            id,
+            name,
+            slug,
+            status,
+          }))
+        : []
+      if (
+        input?.campaignId &&
+        !campaigns.some((item) => item.id === input.campaignId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Esta competição não está vinculada à sua conta",
+        })
+      }
+
+      const performances = await Promise.all(
+        campaigns.map((campaign) =>
+          getCampaignPerformance(ctx.db, campaign.id),
+        ),
+      )
+      const available = performances.filter(
+        (performance): performance is NonNullable<typeof performance> =>
+          Boolean(performance),
+      )
+      const selectedId = input?.campaignId ?? campaigns[0]?.id
+      const selected =
+        available.find(
+          (performance) => performance.campaign.id === selectedId,
+        ) ?? null
+      const selectedForClient = selected
+        ? {
+            ...selected,
+            profiles: selected.profiles.filter(
+              (profile) =>
+                profile.lastCollectedAt !== null && profile.history.length > 0,
+            ),
+          }
+        : null
+
+      const totals = available.reduce(
+        (result, performance) => ({
+          totalViews: result.totalViews + performance.summary.totalViews,
+          investedAmount:
+            result.investedAmount + performance.summary.investedAmount,
+          equivalentAdsCost:
+            result.equivalentAdsCost + performance.summary.equivalentAdsCost,
+        }),
+        { totalViews: 0, investedAmount: 0, equivalentAdsCost: 0 },
+      )
+      const aggregateSavings = totals.equivalentAdsCost - totals.investedAmount
+
+      return {
+        campaigns,
+        selected: selectedForClient,
+        overall: aggregateCampaignPerformance(available),
+        aggregate: {
+          ...totals,
+          effectiveCpm:
+            totals.totalViews > 0
+              ? (totals.investedAmount / totals.totalViews) * 1_000
+              : 0,
+          referenceCpm:
+            totals.totalViews > 0
+              ? (totals.equivalentAdsCost / totals.totalViews) * 1_000
+              : 0,
+          estimatedSavings: aggregateSavings,
+          savingsPercentage:
+            totals.equivalentAdsCost > 0
+              ? (aggregateSavings / totals.equivalentAdsCost) * 100
+              : 0,
+        },
+      }
+    }),
+
   // Get all clients
   getAll: privateProcedure.query(async ({ ctx }) => {
     // Buscar role do usuário no banco
@@ -83,7 +198,10 @@ export const clientRouter = createTRPCRouter({
     })
 
     // Apenas ADMIN e ORGANIZER_ADMIN podem ver clientes
-    if (!dbUser || (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")) {
+    if (
+      !dbUser ||
+      (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "Você não tem permissão para acessar esta funcionalidade",
@@ -114,6 +232,7 @@ export const clientRouter = createTRPCRouter({
             startDate: true,
             endDate: true,
             createdAt: true,
+            performanceSettings: { select: { investedAmount: true } },
           },
         },
         // Buscar organizações associadas
@@ -153,10 +272,15 @@ export const clientRouter = createTRPCRouter({
 
       // Usar clientCampaigns (campanhas vinculadas ao cliente) ao invés de org.campaigns
       const totalCampaigns = user.clientCampaigns.length
-      const activeCampaigns = user.clientCampaigns.filter((c) => c.status === "ACTIVE").length
+      const activeCampaigns = user.clientCampaigns.filter(
+        (c) => c.status === "ACTIVE",
+      ).length
 
-      // Calcular total investido (mock - você pode adicionar lógica real aqui)
-      const totalSpent = totalCampaigns * 50000 // R$ 50k por campanha (exemplo)
+      const totalSpent = user.clientCampaigns.reduce(
+        (sum, campaign) =>
+          sum + Number(campaign.performanceSettings?.investedAmount ?? 0),
+        0,
+      )
 
       return {
         id: user.id,
@@ -177,7 +301,12 @@ export const clientRouter = createTRPCRouter({
         lastActivity: user.updatedAt,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
-        campaigns: user.clientCampaigns || [],
+        campaigns: user.clientCampaigns.map((campaign) => ({
+          ...campaign,
+          investedAmount: Number(
+            campaign.performanceSettings?.investedAmount ?? 0,
+          ),
+        })),
         hasStore: user.hasStore,
         hasKiwifyStore: user.hasKiwifyStore,
       }
@@ -197,7 +326,10 @@ export const clientRouter = createTRPCRouter({
       })
 
       // Apenas ADMIN e ORGANIZER_ADMIN podem ver clientes
-      if (!dbUser || (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")) {
+      if (
+        !dbUser ||
+        (dbUser.role !== "ADMIN" && dbUser.role !== "ORGANIZER_ADMIN")
+      ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Você não tem permissão para acessar esta funcionalidade",
@@ -226,6 +358,7 @@ export const clientRouter = createTRPCRouter({
               startDate: true,
               endDate: true,
               createdAt: true,
+              performanceSettings: { select: { investedAmount: true } },
             },
           },
           organizations: {
@@ -266,8 +399,14 @@ export const clientRouter = createTRPCRouter({
 
       // Usar clientCampaigns (campanhas vinculadas ao cliente)
       const totalCampaigns = user.clientCampaigns.length
-      const activeCampaigns = user.clientCampaigns.filter((c) => c.status === "ACTIVE").length
-      const totalSpent = totalCampaigns * 50000
+      const activeCampaigns = user.clientCampaigns.filter(
+        (c) => c.status === "ACTIVE",
+      ).length
+      const totalSpent = user.clientCampaigns.reduce(
+        (sum, campaign) =>
+          sum + Number(campaign.performanceSettings?.investedAmount ?? 0),
+        0,
+      )
 
       return {
         id: user.id,
@@ -288,10 +427,63 @@ export const clientRouter = createTRPCRouter({
         lastActivity: user.updatedAt,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
-        campaigns: user.clientCampaigns || [],
+        campaigns: user.clientCampaigns.map((campaign) => ({
+          ...campaign,
+          investedAmount: Number(
+            campaign.performanceSettings?.investedAmount ?? 0,
+          ),
+        })),
         hasStore: user.hasStore,
         hasKiwifyStore: user.hasKiwifyStore,
       }
+    }),
+
+  updateCampaignInvestment: privateProcedure
+    .input(
+      z.object({
+        clientId: z.string().min(1),
+        campaignId: z.string().min(1),
+        investedAmount: z
+          .number()
+          .finite()
+          .nonnegative()
+          .max(999999999999.99)
+          .refine(
+            (value) => Math.round(value * 100) / 100 === value,
+            "Use no máximo duas casas decimais",
+          ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const admin = await ctx.db.user.findUnique({
+        where: { id: ctx.userId },
+        select: { role: true },
+      })
+      if (admin?.role !== "ADMIN") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Apenas administradores podem editar o investimento",
+        })
+      }
+      const campaign = await ctx.db.campaign.findFirst({
+        where: { id: input.campaignId, clientId: input.clientId },
+        select: { id: true },
+      })
+      if (!campaign) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Competição não vinculada a este cliente",
+        })
+      }
+      await ctx.db.campaignPerformanceSettings.upsert({
+        where: { campaignId: input.campaignId },
+        create: {
+          campaignId: input.campaignId,
+          investedAmount: input.investedAmount,
+        },
+        update: { investedAmount: input.investedAmount },
+      })
+      return { investedAmount: input.investedAmount }
     }),
 
   // Create client

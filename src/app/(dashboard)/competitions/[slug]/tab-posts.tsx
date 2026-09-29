@@ -125,6 +125,359 @@ const PLATFORM_FILTER_ORDER: PlatformKey[] = [
   "FACEBOOK",
 ]
 
+/**
+ * Converte links públicos das plataformas em URLs dos players oficiais.
+ * Não tentamos extrair o arquivo de vídeo: isso preserva autenticação,
+ * privacidade e os controles oferecidos pela própria plataforma.
+ */
+export function getPostEmbedUrl(url: string): string | null {
+  try {
+    const parsedUrl = new URL(url)
+    const host = parsedUrl.hostname.replace(/^www\./, "").toLowerCase()
+    const pathParts = parsedUrl.pathname.split("/").filter(Boolean)
+
+    if (host === "instagram.com" || host === "instagr.am") {
+      const postTypeIndex = pathParts.findIndex((part) =>
+        ["p", "reel", "reels", "tv"].includes(part.toLowerCase()),
+      )
+      const shortcode = pathParts[postTypeIndex + 1]
+      if (postTypeIndex >= 0 && shortcode) {
+        const postType = pathParts[postTypeIndex]?.toLowerCase()
+        const normalizedType = postType === "reels" ? "reel" : postType
+        return `https://www.instagram.com/${normalizedType}/${encodeURIComponent(shortcode)}/embed/captioned/`
+      }
+    }
+
+    if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+      const videoIndex = pathParts.findIndex(
+        (part) => part.toLowerCase() === "video",
+      )
+      const videoId = pathParts[videoIndex + 1]
+      if (videoIndex >= 0 && videoId) {
+        return `https://www.tiktok.com/player/v1/${encodeURIComponent(videoId)}?controls=1&autoplay=0&loop=0&rel=0`
+      }
+    }
+
+    if (
+      host === "youtube.com" ||
+      host.endsWith(".youtube.com") ||
+      host === "youtu.be"
+    ) {
+      const videoId =
+        host === "youtu.be"
+          ? pathParts[0]
+          : parsedUrl.searchParams.get("v") ||
+            (["shorts", "embed"].includes(pathParts[0]?.toLowerCase() ?? "")
+              ? pathParts[1]
+              : null)
+      if (videoId) {
+        return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0`
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function InstagramBrowserEmbed({ url }: { url: string }) {
+  const [isLoading, setIsLoading] = React.useState(true)
+  const [hasFailed, setHasFailed] = React.useState(false)
+  const [useDirectIframe, setUseDirectIframe] = React.useState(false)
+  const containerRef = React.useRef<HTMLDivElement>(null)
+  const normalizedUrl = React.useMemo(() => {
+    try {
+      const parsedUrl = new URL(url)
+      return `https://www.instagram.com${parsedUrl.pathname.replace(/\/+$/, "")}/`
+    } catch {
+      return url
+    }
+  }, [url])
+
+  React.useEffect(() => {
+    let cancelled = false
+    let attempts = 0
+    let processingTimer: number | undefined
+    let staleScriptTimer: number | undefined
+    let observedScript: HTMLScriptElement | null = null
+    const startedAt = performance.now()
+    const log = (
+      level: "info" | "warn" | "error",
+      event: string,
+      details: Record<string, unknown> = {},
+    ) => {
+      // Falhas do embed são recuperáveis pelo iframe de fallback. No Next.js
+      // dev, console.error abre o error overlay mesmo quando o erro foi tratado.
+      const consoleMethod = level === "error" ? console.warn : console[level]
+      consoleMethod(`[InstagramEmbed] ${event}`, {
+        url: normalizedUrl,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        ...details,
+      })
+    }
+
+    setIsLoading(true)
+    setHasFailed(false)
+    setUseDirectIframe(false)
+    log("info", "initializing")
+
+    const processEmbed = () => {
+      if (cancelled) {
+        log("info", "processing_skipped_component_unmounted")
+        return
+      }
+      const instagramWindow = window as typeof window & {
+        instgrm?: { Embeds?: { process: () => void } }
+      }
+      const hasInstagramApi = Boolean(instagramWindow.instgrm?.Embeds?.process)
+      log("info", "processing_started", { hasInstagramApi })
+      instagramWindow.instgrm?.Embeds?.process()
+
+      const waitForIframe = () => {
+        if (cancelled) return
+        const iframe = containerRef.current?.querySelector("iframe")
+        if (iframe) {
+          log("info", "iframe_created", {
+            attempts,
+            iframeTitle: iframe.title || null,
+          })
+          setIsLoading(false)
+          return
+        }
+        attempts += 1
+        if (attempts >= 24) {
+          const hasInstagramApi = Boolean(
+            instagramWindow.instgrm?.Embeds?.process,
+          )
+          log("error", "iframe_creation_timeout", {
+            attempts,
+            hasInstagramApi,
+            blockquotePresent: Boolean(
+              containerRef.current?.querySelector(".instagram-media"),
+            ),
+          })
+          if (!hasInstagramApi) {
+            log("warn", "switching_to_direct_iframe_after_timeout")
+            setUseDirectIframe(true)
+            setIsLoading(true)
+          } else {
+            setIsLoading(false)
+            setHasFailed(true)
+          }
+          return
+        }
+        if (attempts === 1 || attempts % 8 === 0) {
+          log("warn", "waiting_for_iframe", {
+            attempts,
+            hasInstagramApi: Boolean(instagramWindow.instgrm?.Embeds?.process),
+          })
+        }
+        instagramWindow.instgrm?.Embeds?.process()
+        processingTimer = window.setTimeout(waitForIframe, 250)
+      }
+      waitForIframe()
+    }
+
+    const handleScriptError = (event: Event | string) => {
+      log("error", "embed_script_failed", {
+        eventType: typeof event === "string" ? event : event.type,
+        online: navigator.onLine,
+      })
+      if (!cancelled) {
+        log("warn", "switching_to_direct_iframe")
+        setUseDirectIframe(true)
+        setIsLoading(true)
+      }
+    }
+
+    const appendFreshScript = () => {
+      if (cancelled) return
+      log("info", "embed_script_appending")
+      const script = document.createElement("script")
+      script.async = true
+      script.src = "https://www.instagram.com/embed.js"
+      script.dataset.clipfyInstagramEmbed = "true"
+      script.onload = () => {
+        log("info", "embed_script_loaded")
+        processEmbed()
+      }
+      script.onerror = handleScriptError
+      document.body.appendChild(script)
+      observedScript = script
+    }
+
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      'script[src="https://www.instagram.com/embed.js"]',
+    )
+    if (existingScript) {
+      const instagramWindow = window as typeof window & {
+        instgrm?: { Embeds?: { process: () => void } }
+      }
+      log("info", "embed_script_already_present", {
+        scriptAsync: existingScript.async,
+        hasInstagramApi: Boolean(instagramWindow.instgrm?.Embeds?.process),
+      })
+      if (instagramWindow.instgrm?.Embeds?.process) {
+        processEmbed()
+      } else {
+        observedScript = existingScript
+        existingScript.addEventListener("load", processEmbed, { once: true })
+        existingScript.addEventListener("error", handleScriptError, {
+          once: true,
+        })
+        staleScriptTimer = window.setTimeout(() => {
+          const currentWindow = window as typeof window & {
+            instgrm?: { Embeds?: { process: () => void } }
+          }
+          if (cancelled || currentWindow.instgrm?.Embeds?.process) return
+          log("warn", "stale_embed_script_reloading")
+          existingScript.removeEventListener("load", processEmbed)
+          existingScript.removeEventListener("error", handleScriptError)
+          existingScript.remove()
+          appendFreshScript()
+        }, 2000)
+      }
+    } else {
+      appendFreshScript()
+    }
+
+    return () => {
+      log("info", "cleanup", { attempts })
+      cancelled = true
+      if (processingTimer) window.clearTimeout(processingTimer)
+      if (staleScriptTimer) window.clearTimeout(staleScriptTimer)
+      observedScript?.removeEventListener("load", processEmbed)
+      observedScript?.removeEventListener("error", handleScriptError)
+    }
+  }, [normalizedUrl])
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-y-auto bg-white px-1 py-3 sm:px-4"
+    >
+      {isLoading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
+          <Spinner className="size-7 animate-spin text-white" />
+        </div>
+      )}
+      {hasFailed && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center text-white">
+          <Warning className="size-8 text-amber-400" weight="fill" />
+          <p className="font-semibold">O Instagram bloqueou a incorporação</p>
+          <p className="max-w-sm text-sm text-white/65">
+            O post pode estar privado, com incorporação desativada, ou o
+            navegador pode estar bloqueando o script do Instagram.
+          </p>
+        </div>
+      )}
+      {useDirectIframe ? (
+        <iframe
+          src={getPostEmbedUrl(normalizedUrl) ?? normalizedUrl}
+          title="Publicação do Instagram"
+          className="mx-auto h-full w-full max-w-[540px] border-0 bg-white"
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+          allowFullScreen
+          onLoad={() => {
+            console.info("[InstagramEmbed] direct_iframe_loaded", {
+              url: normalizedUrl,
+            })
+            setIsLoading(false)
+          }}
+          onError={() => {
+            console.warn("[InstagramEmbed] direct_iframe_failed", {
+              url: normalizedUrl,
+            })
+            setIsLoading(false)
+            setHasFailed(true)
+          }}
+        />
+      ) : (
+        <blockquote
+          key={normalizedUrl}
+          className="instagram-media mx-auto! max-w-[540px]! min-w-0!"
+          data-instgrm-permalink={normalizedUrl}
+          data-instgrm-version="14"
+        >
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            Carregando publicação do Instagram
+          </a>
+        </blockquote>
+      )}
+    </div>
+  )
+}
+
+export function TikTokBrowserEmbed({ url }: { url: string }) {
+  const [isLoading, setIsLoading] = React.useState(true)
+  const videoId = React.useMemo(() => {
+    try {
+      const parts = new URL(url).pathname.split("/").filter(Boolean)
+      const videoIndex = parts.findIndex(
+        (part) => part.toLowerCase() === "video",
+      )
+      return videoIndex >= 0 ? parts[videoIndex + 1] : undefined
+    } catch {
+      return undefined
+    }
+  }, [url])
+
+  React.useEffect(() => {
+    if (!videoId) {
+      setIsLoading(false)
+      return
+    }
+
+    const previousScript = document.querySelector<HTMLScriptElement>(
+      'script[data-clipfy-tiktok-embed="true"]',
+    )
+    previousScript?.remove()
+
+    const script = document.createElement("script")
+    script.async = true
+    script.src = "https://www.tiktok.com/embed.js"
+    script.dataset.clipfyTiktokEmbed = "true"
+    script.onload = () => window.setTimeout(() => setIsLoading(false), 800)
+    script.onerror = () => setIsLoading(false)
+    document.body.appendChild(script)
+
+    return () => {
+      script.onload = null
+      script.onerror = null
+    }
+  }, [videoId])
+
+  return (
+    <div className="relative h-full w-full overflow-y-auto bg-white px-1 py-3 sm:px-4">
+      {isLoading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
+          <Spinner className="size-7 animate-spin text-white" />
+        </div>
+      )}
+      {videoId ? (
+        <blockquote
+          key={url}
+          className="tiktok-embed mx-auto! max-w-[605px]! min-w-0!"
+          cite={url}
+          data-video-id={videoId}
+          data-embed-from="embed_page"
+        >
+          <section>
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              Ver este vídeo no TikTok
+            </a>
+          </section>
+        </blockquote>
+      ) : (
+        <p className="p-6 text-center text-sm text-black/65">
+          Não foi possível identificar este vídeo do TikTok.
+        </p>
+      )}
+    </div>
+  )
+}
+
 /** Lista de páginas com reticências (máx. 7 slots visíveis). */
 function buildPageList(
   totalPages: number,
@@ -306,6 +659,12 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
   const [metricsHistoryPostId, setMetricsHistoryPostId] = React.useState<
     string | null
   >(null)
+  const [isPlayerOpen, setIsPlayerOpen] = React.useState(false)
+  const [playerPostId, setPlayerPostId] = React.useState<string | null>(null)
+  const [failedVideoPostId, setFailedVideoPostId] = React.useState<
+    string | null
+  >(null)
+  const [isPlayerLoading, setIsPlayerLoading] = React.useState(false)
 
   const [isStatusOpen, setIsStatusOpen] = React.useState(false)
   const [selectedPost, setSelectedPost] = React.useState<AdminClipPost | null>(
@@ -426,9 +785,12 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
     })
 
   /* ===== Handlers ===== */
-  const openChangeStatusDialog = (post: AdminClipPost) => {
+  const openChangeStatusDialog = (
+    post: AdminClipPost,
+    initialStatus = post.status || "",
+  ) => {
     setSelectedPost(post)
-    setNewPostStatus(post.status || "")
+    setNewPostStatus(initialStatus)
     setIneligibilityReason("")
     setIsStatusOpen(true)
   }
@@ -508,8 +870,59 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
 
   const pagination = postsData?.pagination
   const totalCount = pagination?.totalCount ?? 0
+  const playerPostIndex =
+    postsData?.posts.findIndex((post) => post.id === playerPostId) ?? -1
+  const playerPost =
+    playerPostIndex >= 0 ? postsData?.posts[playerPostIndex] : undefined
+  const playerEmbedUrl = playerPost ? getPostEmbedUrl(playerPost.url) : null
+  const playerVideoUrl =
+    playerPost?.id === failedVideoPostId ? null : (playerPost?.videoUrl ?? null)
   const requiresReason =
     newPostStatus === "INELIGIBLE" || newPostStatus === "DISQUALIFIED"
+
+  const showPlayerPost = React.useCallback(
+    (index: number) => {
+      const nextPost = postsData?.posts[index]
+      if (!nextPost) return
+      setIsPlayerLoading(true)
+      setPlayerPostId(nextPost.id)
+      setIsPlayerOpen(true)
+    },
+    [postsData?.posts],
+  )
+
+  React.useEffect(() => {
+    if (!playerPost) return
+
+    const handlePlayerKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft" && playerPostIndex > 0) {
+        event.preventDefault()
+        showPlayerPost(playerPostIndex - 1)
+      }
+      if (
+        event.key === "ArrowRight" &&
+        playerPostIndex < (postsData?.posts.length ?? 0) - 1
+      ) {
+        event.preventDefault()
+        showPlayerPost(playerPostIndex + 1)
+      }
+    }
+
+    window.addEventListener("keydown", handlePlayerKeyboard)
+    return () => window.removeEventListener("keydown", handlePlayerKeyboard)
+  }, [playerPost, playerPostIndex, postsData?.posts.length, showPlayerPost])
+
+  React.useEffect(() => {
+    if (!isPlayerOpen || !isPlayerLoading) return
+
+    // Alguns provedores bloqueiam o evento load quando recusam o embed.
+    // Liberar a camada garante acesso ao player ou à mensagem do provedor.
+    const loadingTimeout = window.setTimeout(
+      () => setIsPlayerLoading(false),
+      5000,
+    )
+    return () => window.clearTimeout(loadingTimeout)
+  }, [isPlayerLoading, isPlayerOpen, playerPostId])
 
   return (
     <div className="flex flex-col gap-4">
@@ -838,8 +1251,23 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                       <PostPreviewFallback status={post.status} />
                     )}
 
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPlayerLoading(true)
+                        setPlayerPostId(post.id)
+                        setIsPlayerOpen(true)
+                      }}
+                      aria-label={`Reproduzir vídeo de ${post.clipperName}`}
+                      className="group absolute inset-0 z-20 flex cursor-pointer items-center justify-center bg-black/5 transition-colors hover:bg-black/25 focus-visible:bg-black/25 focus-visible:outline-none"
+                    >
+                      <span className="flex size-12 items-center justify-center rounded-full border border-white/30 bg-black/60 text-white shadow-xl backdrop-blur-md transition-transform group-hover:scale-110">
+                        <Play className="ml-0.5 size-5" weight="fill" />
+                      </span>
+                    </button>
+
                     {PlatformIcon && (
-                      <div className="absolute top-2 left-2 z-10">
+                      <div className="pointer-events-none absolute top-2 left-2 z-30">
                         <Badge
                           variant="outline"
                           className="gap-1 rounded-full border-white/20 bg-black/60 backdrop-blur-sm"
@@ -1058,6 +1486,162 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
           )}
         </div>
       )}
+
+      {/* ===== Player de posts com navegação ===== */}
+      <Dialog
+        open={isPlayerOpen}
+        onOpenChange={(open) => {
+          setIsPlayerOpen(open)
+          if (!open) {
+            setPlayerPostId(null)
+            setFailedVideoPostId(null)
+            setIsPlayerLoading(false)
+          }
+        }}
+      >
+        <DialogContent className="flex h-[92svh] w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:h-[90svh] sm:max-w-3xl">
+          <DialogHeader className="border-border/60 shrink-0 border-b px-4 py-3 pr-12 text-left sm:px-5">
+            <DialogTitle className="flex min-w-0 items-center gap-2 text-base">
+              <Play
+                className="text-brand-cyan not-dark:text-primary size-4 shrink-0"
+                weight="fill"
+              />
+              <span className="truncate">
+                {playerPost?.clipperName} · @{playerPost?.username}
+              </span>
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Reprodutor do post com navegação entre os vídeos desta página
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="relative flex min-h-0 flex-1 items-center justify-center bg-black">
+            {playerVideoUrl ? (
+              <video
+                key={playerPost?.id}
+                src={playerVideoUrl}
+                poster={playerPost?.thumbnail ?? undefined}
+                className="h-full w-full object-contain"
+                controls
+                autoPlay
+                playsInline
+                preload="metadata"
+                onCanPlay={() => setIsPlayerLoading(false)}
+                onLoadedData={() => setIsPlayerLoading(false)}
+                onError={() => {
+                  setFailedVideoPostId(playerPost?.id ?? null)
+                  setIsPlayerLoading(false)
+                }}
+              >
+                Seu navegador não suporta a reprodução deste vídeo.
+              </video>
+            ) : playerPost?.platform === "INSTAGRAM" ? (
+              <InstagramBrowserEmbed key={playerPost.id} url={playerPost.url} />
+            ) : playerPost?.platform === "TIKTOK" ? (
+              <TikTokBrowserEmbed key={playerPost.id} url={playerPost.url} />
+            ) : playerEmbedUrl ? (
+              <>
+                {isPlayerLoading && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
+                    <Spinner className="size-7 animate-spin text-white" />
+                  </div>
+                )}
+                <iframe
+                  key={playerPost?.id}
+                  src={playerEmbedUrl}
+                  title={`Vídeo de ${playerPost?.clipperName ?? "clipador"}`}
+                  className="h-full w-full max-w-[520px] border-0 bg-white"
+                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                  allowFullScreen
+                  loading="eager"
+                  onLoad={() => setIsPlayerLoading(false)}
+                />
+              </>
+            ) : (
+              <div className="flex max-w-sm flex-col items-center gap-3 px-6 text-center text-white">
+                <Warning className="size-8 text-amber-400" weight="fill" />
+                <p className="font-semibold">
+                  Player indisponível para este link
+                </p>
+                <p className="text-sm text-white/65">
+                  Esta plataforma ou formato não oferece reprodução incorporada.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="border-border/60 flex shrink-0 flex-col gap-2 border-t px-3 py-3 sm:px-5">
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Vídeo anterior"
+                disabled={playerPostIndex <= 0}
+                onClick={() => showPlayerPost(playerPostIndex - 1)}
+                className="h-9 cursor-pointer rounded-lg px-2 sm:px-3"
+              >
+                <CaretLeft className="size-4" weight="bold" />
+                <span className="hidden sm:inline">Anterior</span>
+              </Button>
+              <p className="text-muted-foreground text-center text-xs tabular-nums">
+                {playerPostIndex + 1} de {postsData?.posts.length ?? 0}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Próximo vídeo"
+                disabled={
+                  playerPostIndex < 0 ||
+                  playerPostIndex >= (postsData?.posts.length ?? 0) - 1
+                }
+                onClick={() => showPlayerPost(playerPostIndex + 1)}
+                className="h-9 cursor-pointer rounded-lg px-2 sm:px-3"
+              >
+                <span className="hidden sm:inline">Próximo</span>
+                <CaretRight className="size-4" weight="bold" />
+              </Button>
+            </div>
+            {playerPost && (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  asChild
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-lg text-xs"
+                >
+                  <a
+                    href={playerPost.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ArrowSquareOut className="size-3.5" />
+                    Abrir original
+                  </a>
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  disabled={playerPost.status === "DISQUALIFIED"}
+                  onClick={() => {
+                    setIsPlayerOpen(false)
+                    setPlayerPostId(null)
+                    openChangeStatusDialog(playerPost, "DISQUALIFIED")
+                  }}
+                  className="h-8 cursor-pointer rounded-lg text-xs"
+                >
+                  <XCircle className="size-3.5" weight="fill" />
+                  {playerPost.status === "DISQUALIFIED"
+                    ? "Desclassificado"
+                    : "Desclassificar"}
+                </Button>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ===== Dialog: Alterar Status do Post ===== */}
       <Dialog open={isStatusOpen} onOpenChange={setIsStatusOpen}>

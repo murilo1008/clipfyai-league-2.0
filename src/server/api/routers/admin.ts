@@ -4,7 +4,12 @@ import { createTRPCRouter, adminProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
 import { clerkClient } from "@clerk/nextjs/server";
 import { Resend } from "resend";
-import { ClipPostStatus, Prisma, RankingMetricType } from "@prisma/client";
+import {
+  ClipPostStatus,
+  Platform,
+  Prisma,
+  RankingMetricType,
+} from "@prisma/client";
 import {
   calculateRankingScore,
   calculateEngagementRate,
@@ -45,6 +50,11 @@ import {
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
 import { disconnectGoogleCalendar } from "@/server/google-calendar";
+import {
+  DEFAULT_REFERENCE_CPM,
+  getCampaignPerformance,
+} from "@/server/performance/get-campaign-performance";
+import { buildOfficialProfileTargets } from "@/server/performance/profile-targets";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -311,6 +321,77 @@ async function withPrismaTransactionRetry<T>(
 
 // Inicializar Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+const performancePlatformSchema = z.nativeEnum(Platform);
+const performanceProfilePlatformSchema = z.enum([
+  Platform.INSTAGRAM,
+  Platform.TIKTOK,
+  Platform.YOUTUBE,
+]);
+
+function escapePerformanceEmailHtml(value: string) {
+  return value.replace(/[&<>'"]/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "'": "&#39;",
+      '"': "&quot;",
+    };
+    return entities[character] ?? character;
+  });
+}
+
+function assertPerformanceUrlMatchesPlatform(
+  value: string | null | undefined,
+  platform: Platform,
+) {
+  if (!value) return;
+  const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+  const allowedDomains: Record<Platform, string[]> = {
+    INSTAGRAM: ["instagram.com"],
+    TIKTOK: ["tiktok.com"],
+    YOUTUBE: ["youtube.com", "youtu.be"],
+    FACEBOOK: ["facebook.com", "fb.watch"],
+    KWAI: ["kwai.com", "kuaishou.com"],
+  };
+  if (
+    !allowedDomains[platform].some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    )
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `A URL informada não pertence à plataforma ${platform}`,
+    });
+  }
+}
+
+async function notifyCompetitionClippersAboutVideo(input: {
+  campaignName: string;
+  videoTitle: string;
+  videoUrl: string;
+  recipients: Array<{ email: string; name: string }>;
+}) {
+  let sent = 0;
+  const errors: string[] = [];
+
+  for (let index = 0; index < input.recipients.length; index += 100) {
+    const chunk = input.recipients.slice(index, index + 100);
+    const { data, error } = await resend.batch.send(
+      chunk.map((recipient) => ({
+        from: "ClipfyAI <noreply@league.clipfyai.com>",
+        to: recipient.email,
+        subject: `Novo conteúdo para clipar — ${input.campaignName}`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#172033"><h1 style="font-size:24px">Chegou conteúdo novo para clipar</h1><p>Olá, ${escapePerformanceEmailHtml(recipient.name)}!</p><p>Um novo vídeo foi adicionado à competição <strong>${escapePerformanceEmailHtml(input.campaignName)}</strong>.</p><div style="padding:16px;border-radius:12px;background:#f4f7f8"><strong>${escapePerformanceEmailHtml(input.videoTitle)}</strong></div><p style="margin-top:24px"><a href="${escapePerformanceEmailHtml(input.videoUrl)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#14f7ff;color:#04222a;font-weight:700;text-decoration:none">Ver conteúdo para clipar</a></p><p style="font-size:12px;color:#667085">Você recebeu este aviso porque está aprovado nesta competição.</p></div>`,
+      })),
+    );
+    if (error) errors.push(error.message);
+    else sent += data?.data.length ?? chunk.length;
+  }
+
+  return { sent, error: errors.length > 0 ? errors.join("; ") : null };
+}
 
 type CampaignMetricsExtractionStatus = {
   executionId: string;
@@ -810,15 +891,294 @@ function getApplicationApprovalEmailTemplate(
  * Acesso exclusivo para Admin Clipfy
  */
 export const adminRouter = createTRPCRouter({
+  getCompetitionPerformance: adminProcedure
+    .input(z.object({ campaignId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const performance = await getCampaignPerformance(
+        ctx.db,
+        input.campaignId,
+      );
+      if (!performance) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Competição não encontrada",
+        });
+      }
+      return performance;
+    }),
+
+  updateCompetitionPerformanceSettings: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string().min(1),
+        investedAmount: z
+          .number()
+          .finite()
+          .nonnegative()
+          .max(999999999999.99)
+          .refine(
+            (value) => Math.round(value * 100) / 100 === value,
+            "Use no máximo duas casas decimais",
+          )
+          .nullable(),
+        referenceCpm: z.number().finite().nonnegative().nullable(),
+        benchmarkSource: z.string().trim().max(200).nullable().optional(),
+        benchmarkSourceUrl: z.string().url().nullable().optional(),
+        benchmarkDate: z.string().datetime().nullable().optional(),
+        notes: z.string().trim().max(3000).nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { campaignId, benchmarkDate, ...inputData } = input;
+      const data = {
+        ...inputData,
+        referenceCpm: inputData.referenceCpm ?? DEFAULT_REFERENCE_CPM,
+      };
+      await ctx.db.campaignPerformanceSettings.upsert({
+        where: { campaignId },
+        create: {
+          campaignId,
+          ...data,
+          benchmarkDate: benchmarkDate ? new Date(benchmarkDate) : null,
+        },
+        update: {
+          ...data,
+          benchmarkDate: benchmarkDate ? new Date(benchmarkDate) : null,
+        },
+      });
+      return getCampaignPerformance(ctx.db, campaignId);
+    }),
+
+  createPerformanceProfile: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string().min(1),
+        platform: performanceProfilePlatformSchema,
+        username: z.string().trim().min(1).max(120),
+        profileUrl: z.string().url().nullable().optional(),
+        label: z.string().trim().max(120).nullable().optional(),
+        isActive: z.boolean().default(true),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      assertPerformanceUrlMatchesPlatform(input.profileUrl, input.platform);
+      const profile = await ctx.db.campaignPerformanceProfile.create({
+        data: {
+          ...input,
+          username: input.username.replace(/^@+/, ""),
+        },
+      });
+      return { id: profile.id };
+    }),
+
+  updatePerformanceProfile: adminProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        platform: performanceProfilePlatformSchema.optional(),
+        username: z.string().trim().min(1).max(120).optional(),
+        profileUrl: z.string().url().nullable().optional(),
+        label: z.string().trim().max(120).nullable().optional(),
+        isActive: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, username, ...data } = input;
+      if (data.profileUrl || data.platform) {
+        const current = await ctx.db.campaignPerformanceProfile.findUnique({
+          where: { id },
+          select: { platform: true, profileUrl: true },
+        });
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Perfil não encontrado",
+          });
+        }
+        assertPerformanceUrlMatchesPlatform(
+          data.profileUrl === undefined ? current.profileUrl : data.profileUrl,
+          data.platform ?? current.platform,
+        );
+      }
+      await ctx.db.campaignPerformanceProfile.update({
+        where: { id },
+        data: {
+          ...data,
+          ...(username ? { username: username.replace(/^@+/, "") } : {}),
+        },
+      });
+      return { success: true };
+    }),
+
+  deletePerformanceProfile: adminProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.campaignPerformanceProfile.delete({
+        where: { id: input.id },
+      });
+      return { success: true };
+    }),
+
+  createPerformanceVideo: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string().min(1),
+        platform: performancePlatformSchema,
+        originalUrl: z.string().url(),
+        title: z.string().trim().max(200).nullable().optional(),
+        description: z.string().trim().max(3000).nullable().optional(),
+        thumbnailUrl: z.string().url().nullable().optional(),
+        isActive: z.boolean().default(true),
+        notifyClippers: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      assertPerformanceUrlMatchesPlatform(input.originalUrl, input.platform);
+      const campaign = await ctx.db.campaign.findUnique({
+        where: { id: input.campaignId },
+        select: { name: true },
+      });
+      if (!campaign) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Competição não encontrada",
+        });
+      }
+
+      const video = await ctx.db.campaignPerformanceVideo.create({
+        data: input,
+      });
+      if (!input.notifyClippers) return { id: video.id, notified: 0 };
+
+      const applications = await ctx.db.clipperApplication.findMany({
+        where: { campaignId: input.campaignId, status: "APPROVED" },
+        select: {
+          clipperProfile: {
+            select: { fullName: true, user: { select: { email: true } } },
+          },
+        },
+      });
+      const uniqueRecipients = new Map<
+        string,
+        { email: string; name: string }
+      >();
+      for (const application of applications) {
+        const email = application.clipperProfile.user.email
+          .trim()
+          .toLowerCase();
+        if (email) {
+          uniqueRecipients.set(email, {
+            email,
+            name: application.clipperProfile.fullName || "Clipador",
+          });
+        }
+      }
+
+      if (uniqueRecipients.size === 0) {
+        await ctx.db.campaignPerformanceVideo.update({
+          where: { id: video.id },
+          data: {
+            notificationSentAt: new Date(),
+            notificationRecipientCount: 0,
+            notificationLastError: null,
+          },
+        });
+        return { id: video.id, notified: 0 };
+      }
+
+      try {
+        const notification = await notifyCompetitionClippersAboutVideo({
+          campaignName: campaign.name,
+          videoTitle: input.title || "Novo conteúdo",
+          videoUrl: input.originalUrl,
+          recipients: [...uniqueRecipients.values()],
+        });
+        await ctx.db.campaignPerformanceVideo.update({
+          where: { id: video.id },
+          data: {
+            notificationSentAt: notification.error ? null : new Date(),
+            notificationRecipientCount: notification.sent,
+            notificationLastError: notification.error,
+          },
+        });
+        return { id: video.id, notified: notification.sent };
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Falha ao enviar notificações";
+        await ctx.db.campaignPerformanceVideo.update({
+          where: { id: video.id },
+          data: { notificationLastError: message },
+        });
+        return { id: video.id, notified: 0, notificationError: message };
+      }
+    }),
+
+  updatePerformanceVideo: adminProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        platform: performancePlatformSchema.optional(),
+        originalUrl: z.string().url().optional(),
+        title: z.string().trim().max(200).nullable().optional(),
+        description: z.string().trim().max(3000).nullable().optional(),
+        thumbnailUrl: z.string().url().nullable().optional(),
+        isActive: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      if (data.originalUrl || data.platform) {
+        const current = await ctx.db.campaignPerformanceVideo.findUnique({
+          where: { id },
+          select: { platform: true, originalUrl: true },
+        });
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Vídeo não encontrado",
+          });
+        }
+        assertPerformanceUrlMatchesPlatform(
+          data.originalUrl ?? current.originalUrl,
+          data.platform ?? current.platform,
+        );
+      }
+      await ctx.db.campaignPerformanceVideo.update({ where: { id }, data });
+      return { success: true };
+    }),
+
+  deletePerformanceVideo: adminProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.campaignPerformanceVideo.delete({ where: { id: input.id } });
+      return { success: true };
+    }),
+
   getGoogleCalendarSubscription: adminProcedure
     .input(z.object({ campaignId: z.string() }))
     .query(async ({ ctx, input }) => {
-      const subscription = await ctx.db.campaignCalendarSubscription.findUnique({
-        where: { campaignId_userId: { campaignId: input.campaignId, userId: ctx.userId } },
-        select: { enabled: true, lastSyncedAt: true, lastError: true, connection: { select: { googleEmail: true, revokedAt: true } } },
-      });
+      const subscription = await ctx.db.campaignCalendarSubscription.findUnique(
+        {
+          where: {
+            campaignId_userId: {
+              campaignId: input.campaignId,
+              userId: ctx.userId,
+            },
+          },
+          select: {
+            enabled: true,
+            lastSyncedAt: true,
+            lastError: true,
+            connection: { select: { googleEmail: true, revokedAt: true } },
+          },
+        },
+      );
       return {
-        connected: Boolean(subscription?.enabled && !subscription.connection.revokedAt),
+        connected: Boolean(
+          subscription?.enabled && !subscription.connection.revokedAt,
+        ),
         googleEmail: subscription?.connection.googleEmail ?? null,
         lastSyncedAt: subscription?.lastSyncedAt ?? null,
         lastError: subscription?.lastError ?? null,
@@ -2366,6 +2726,10 @@ export const adminRouter = createTRPCRouter({
           }
 
           // Criar campanha
+          const officialMentions = [...new Set(input.requiredMentions)];
+          const officialProfileTargets =
+            buildOfficialProfileTargets(officialMentions);
+
           const campaign = await ctx.db.campaign.create({
             data: {
               name: input.name,
@@ -2378,7 +2742,7 @@ export const adminRouter = createTRPCRouter({
               endDate: input.endDate,
               platforms: input.platforms,
               requiredHashtags: input.requiredHashtags,
-              requiredMentions: input.requiredMentions,
+              requiredMentions: officialMentions,
               prohibitedContent: input.prohibitedContent,
               prizeInfo: input.prizeInfo,
               isLeaderboardPublic: input.isLeaderboardPublic,
@@ -2398,6 +2762,19 @@ export const adminRouter = createTRPCRouter({
               affiliateLinkKwai: input.affiliateLinkKwai,
               status: "DRAFT",
               publishedAt: new Date(),
+              performanceSettings: {
+                create: { referenceCpm: DEFAULT_REFERENCE_CPM },
+              },
+              performanceProfiles:
+                officialProfileTargets.length > 0
+                  ? {
+                      create: officialProfileTargets.map((target) => ({
+                        ...target,
+                        label: `@${target.username}`,
+                        isActive: true,
+                      })),
+                    }
+                  : undefined,
             },
           });
 
@@ -3192,8 +3569,9 @@ export const adminRouter = createTRPCRouter({
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Buscar total de views somando views de todos os posts
+    // Buscar total de views somando apenas posts elegíveis
     const totalMetricsResult = await ctx.db.clipPost.aggregate({
+      where: { status: "ELIGIBLE" },
       _sum: {
         views: true,
         likes: true,
@@ -3211,24 +3589,6 @@ export const adminRouter = createTRPCRouter({
       totalMetricsResult._sum.shares || 0,
       totalMetricsResult._sum.saves || 0,
     );
-
-    // Buscar views do mês anterior para calcular crescimento
-    const previousMonth = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
-    const previousMonthViewsResult = await ctx.db.clipPost.aggregate({
-      _sum: { views: true },
-      where: {
-        status: "ELIGIBLE",
-        createdAt: {
-          gte: previousMonth,
-          lt: thirtyDaysAgo,
-        },
-      },
-    });
-    const previousMonthViews = Number(previousMonthViewsResult._sum.views || 0);
-    const viewsGrowth =
-      previousMonthViews > 0
-        ? ((totalViews - previousMonthViews) / previousMonthViews) * 100
-        : 0;
 
     const [
       totalUsers,
@@ -3283,15 +3643,6 @@ export const adminRouter = createTRPCRouter({
       },
     });
 
-    // Calcular crescimento de engagement rate (simplificado)
-    const previousEngagementRate =
-      engagementRate > 0 ? engagementRate * 0.9 : 0; // mock do crescimento
-    const engagementGrowth =
-      previousEngagementRate > 0
-        ? ((engagementRate - previousEngagementRate) / previousEngagementRate) *
-          100
-        : 0;
-
     return {
       overview: {
         totalUsers,
@@ -3307,10 +3658,8 @@ export const adminRouter = createTRPCRouter({
         totalViews,
         totalLikes,
         engagementRate,
-        viewsGrowth: Number(viewsGrowth.toFixed(1)),
         newClippersThisMonth,
         newCampaignsThisMonth,
-        engagementGrowth: Number(engagementGrowth.toFixed(1)),
       },
       systemHealth: systemHealth.reduce(
         (acc, curr) => {
@@ -3501,41 +3850,41 @@ export const adminRouter = createTRPCRouter({
   getTopCampaigns: adminProcedure.query(async ({ ctx }) => {
     const campaigns = await ctx.db.campaign.findMany({
       where: { status: "ACTIVE" },
-      take: 3,
-      orderBy: { createdAt: "desc" },
-      include: {
-        clipPosts: {
-          where: { status: "ELIGIBLE" },
-          select: {
-            views: true,
-          },
-        },
-        _count: {
-          select: { clipPosts: true },
-        },
+      select: { id: true, name: true, slug: true },
+    });
+    if (campaigns.length === 0) return [];
+
+    const postStats = await ctx.db.clipPost.groupBy({
+      by: ["campaignId"],
+      where: {
+        campaignId: { in: campaigns.map((campaign) => campaign.id) },
+        status: "ELIGIBLE",
       },
+      _sum: { views: true },
+      _count: { id: true },
     });
+    const statsByCampaign = new Map(
+      postStats.map((stats) => [stats.campaignId, stats]),
+    );
 
-    return campaigns.map((campaign) => {
-      const totalViews = campaign.clipPosts.reduce(
-        (sum, post) => sum + Number(post.views),
-        0,
-      );
-
-      return {
-        id: campaign.id,
-        name: campaign.name,
-        slug: campaign.slug,
-        views: totalViews,
-        posts: campaign._count.clipPosts,
-        viewsFormatted:
-          totalViews >= 1000000
-            ? `${(totalViews / 1000000).toFixed(1)}M`
-            : totalViews >= 1000
-              ? `${(totalViews / 1000).toFixed(1)}K`
-              : totalViews.toString(),
-      };
-    });
+    return campaigns
+      .map((campaign) => {
+        const stats = statsByCampaign.get(campaign.id);
+        const views = Number(stats?._sum.views ?? 0);
+        return {
+          ...campaign,
+          views,
+          posts: stats?._count.id ?? 0,
+          viewsFormatted:
+            views >= 1000000
+              ? `${(views / 1000000).toFixed(1)}M`
+              : views >= 1000
+                ? `${(views / 1000).toFixed(1)}K`
+                : views.toString(),
+        };
+      })
+      .sort((left, right) => right.views - left.views)
+      .slice(0, 3);
   }),
 
   // Top Clippers
@@ -3841,11 +4190,11 @@ export const adminRouter = createTRPCRouter({
       // Para cada campanha, buscar estatísticas
       const campaignsWithStats = await Promise.all(
         campaigns.map(async (campaign) => {
-          // Buscar estatísticas de posts - TODOS os posts independente do status
+          // Buscar estatísticas de posts elegíveis
           const postsStats = await ctx.db.clipPost.aggregate({
             where: {
               campaignId: campaign.id,
-              // Removido filtro de status para contar TODOS os posts
+              status: "ELIGIBLE",
             },
             _sum: {
               views: true,
@@ -3941,7 +4290,7 @@ export const adminRouter = createTRPCRouter({
           }),
         ]);
 
-      // Buscar total de views de todas as campanhas ativas e concluídas - TODOS os posts
+      // Buscar views elegíveis de todas as campanhas ativas e concluídas
       const totalViewsStats = await ctx.db.clipPost.aggregate({
         where: {
           campaign: {
@@ -5386,7 +5735,7 @@ export const adminRouter = createTRPCRouter({
             ctx.db.clipPost.findMany({
               where: {
                 campaignId: campaign.id,
-                status: { not: "DISQUALIFIED" },
+                status: "ELIGIBLE",
                 postedAt: { gte: todayStartUTC, lt: todayEndUTC },
               },
               include: {
@@ -6501,6 +6850,7 @@ export const adminRouter = createTRPCRouter({
               select: {
                 id: true,
                 submittedUrl: true,
+                platformVideoId: true,
                 thumbnailUrl: true,
                 platform: true,
                 username: true,
@@ -6512,6 +6862,9 @@ export const adminRouter = createTRPCRouter({
                 createdAt: true,
                 status: true,
                 ineligibilityReason: true,
+                bucketVideo: {
+                  select: { status: true, publicUrl: true, errorMessage: true },
+                },
                 application: {
                   select: {
                     clipperProfile: {
@@ -6537,6 +6890,7 @@ export const adminRouter = createTRPCRouter({
             select: {
               id: true,
               submittedUrl: true,
+              platformVideoId: true,
               thumbnailUrl: true,
               platform: true,
               username: true,
@@ -6548,6 +6902,9 @@ export const adminRouter = createTRPCRouter({
               createdAt: true,
               status: true,
               ineligibilityReason: true,
+              bucketVideo: {
+                select: { status: true, publicUrl: true, errorMessage: true },
+              },
               application: {
                 select: {
                   clipperProfile: {
@@ -6562,9 +6919,80 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
+        const instagramVideoIdByPostId = new Map<string, string>();
+        for (const post of posts) {
+          if (post.platform !== "INSTAGRAM") continue;
+          let videoId = post.platformVideoId;
+          if (!videoId) {
+            try {
+              const parts = new URL(post.submittedUrl).pathname
+                .split("/")
+                .filter(Boolean);
+              const typeIndex = parts.findIndex((part) =>
+                ["p", "reel", "reels", "tv"].includes(part.toLowerCase()),
+              );
+              videoId = typeIndex >= 0 ? parts[typeIndex + 1] || null : null;
+            } catch {
+              videoId = null;
+            }
+          }
+          if (videoId) instagramVideoIdByPostId.set(post.id, videoId);
+        }
+        const instagramVideoIds = [
+          ...new Set(instagramVideoIdByPostId.values()),
+        ];
+
+        const instagramMedia =
+          instagramVideoIds.length > 0
+            ? await ctx.db.instagramMediaAnalytics.findMany({
+                where: {
+                  isVideo: true,
+                  mediaUrl: { not: null },
+                  OR: instagramVideoIds.map((videoId) => ({
+                    permalink: { contains: videoId },
+                  })),
+                },
+                orderBy: { date: "desc" },
+                select: { permalink: true, mediaUrl: true },
+              })
+            : [];
+
+        const instagramMediaByVideoId = new Map<string, string>();
+        for (const media of instagramMedia) {
+          if (!media.mediaUrl) continue;
+          const matchingVideoId = instagramVideoIds.find((videoId) =>
+            media.permalink.includes(videoId),
+          );
+          if (
+            matchingVideoId &&
+            !instagramMediaByVideoId.has(matchingVideoId)
+          ) {
+            instagramMediaByVideoId.set(matchingVideoId, media.mediaUrl);
+          }
+        }
+
+        console.info("[InstagramPlayback] media resolution", {
+          campaignId: campaign.id,
+          instagramPosts: posts.filter((post) => post.platform === "INSTAGRAM")
+            .length,
+          shortcodesResolved: instagramVideoIdByPostId.size,
+          syncedMediaRecords: instagramMedia.length,
+          playableMediaResolved: instagramMediaByVideoId.size,
+        });
+
         const formattedPosts = posts.map((post) => ({
           id: post.id,
           url: post.submittedUrl,
+          videoUrl:
+            (post.bucketVideo?.status === "SUCCEEDED"
+              ? post.bucketVideo.publicUrl
+              : null) ||
+            instagramMediaByVideoId.get(
+              instagramVideoIdByPostId.get(post.id) ?? "",
+            ) ||
+            null,
+          videoPreparationStatus: post.bucketVideo?.status ?? null,
+          videoPreparationError: post.bucketVideo?.errorMessage ?? null,
           thumbnail: post.thumbnailUrl,
           platform: post.platform,
           username: post.username || "",

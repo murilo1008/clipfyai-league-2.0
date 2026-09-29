@@ -19,6 +19,7 @@ import {
   ChartBar,
   CheckCircle,
   CircleNotch,
+  CurrencyCircleDollar,
   Clock,
   DotsThreeVertical,
   Envelope,
@@ -49,7 +50,10 @@ import { toast } from "sonner"
 
 import { HomeHero } from "@/components/home/home-hero"
 import { StatTile } from "@/components/home/stat-tile"
-import { ClientsHeroViz, ClientsHeroVizSkeleton } from "@/components/settings/clients-hero-viz"
+import {
+  ClientsHeroViz,
+  ClientsHeroVizSkeleton,
+} from "@/components/settings/clients-hero-viz"
 import { Reveal } from "@/components/shared/reveal"
 import { Bone } from "@/components/shared/skeletons"
 import {
@@ -132,6 +136,7 @@ type ClientFormData = {
   status: ClientStatus
   notes: string
   campaignIds: string[]
+  campaignInvestments: Record<string, string>
   hasStore: boolean
   hasKiwifyStore: boolean
 }
@@ -219,7 +224,10 @@ function StatusBadge({ status }: { status: ClientStatus }) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.PENDING
   const Icon = config.icon
   return (
-    <Badge variant="outline" className={cn("gap-1.5 rounded-full", config.badge)}>
+    <Badge
+      variant="outline"
+      className={cn("gap-1.5 rounded-full", config.badge)}
+    >
       <Icon className="size-3" weight="fill" />
       {config.label}
     </Badge>
@@ -328,7 +336,7 @@ function createColumns(
       cell: ({ row }) => {
         const client = row.original
         return (
-          <div className="flex min-w-0 max-w-[280px] items-center gap-3">
+          <div className="flex max-w-[280px] min-w-0 items-center gap-3">
             <Avatar className="size-10 shrink-0 rounded-xl">
               <AvatarImage
                 src={client.imageUrl ?? undefined}
@@ -516,12 +524,13 @@ export default function Clients() {
   const utils = api.useUtils()
 
   const [sorting, setSorting] = React.useState<SortingState>([])
-  const [columnFilters, setColumnFilters] =
-    React.useState<ColumnFiltersState>([])
+  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
+    [],
+  )
   const [globalFilter, setGlobalFilter] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<
-    ClientStatus | "all"
-  >("all")
+  const [statusFilter, setStatusFilter] = React.useState<ClientStatus | "all">(
+    "all",
+  )
 
   // Dialogs
   const [selectedClient, setSelectedClient] = React.useState<Client | null>(
@@ -586,6 +595,12 @@ export default function Clients() {
       toast.error(error.message || "Erro ao vincular campanhas")
     },
   })
+
+  const updateInvestmentMutation =
+    api.customers.updateCampaignInvestment.useMutation({
+      onError: (error) =>
+        toast.error(error.message || "Erro ao atualizar investimento"),
+    })
 
   const unlinkCampaignsMutation = api.customers.unlinkCampaigns.useMutation({
     onSuccess: () => {
@@ -1163,7 +1178,10 @@ export default function Clients() {
 
       {/* ===== Dialogs ===== */}
       <ViewClientDialog
-        client={selectedClient}
+        client={
+          clientsData?.find((item) => item.id === selectedClient?.id) ??
+          selectedClient
+        }
         open={isViewDialogOpen}
         onOpenChange={setIsViewDialogOpen}
       />
@@ -1177,18 +1195,28 @@ export default function Clients() {
           if (!open) setSelectedClient(null)
         }}
         onSubmit={async (data) => {
-          const { campaignIds = [], ...clientData } = data
+          const { campaignIds = [], campaignInvestments, ...clientData } = data
+          const investmentUpdates = campaignIds.map((campaignId) => {
+            const investedAmount = parseInvestmentAmount(
+              campaignInvestments[campaignId] ?? "0,00",
+            )
+            if (
+              investedAmount === null ||
+              investedAmount < 0 ||
+              investedAmount > 999999999999.99
+            ) {
+              throw new Error(
+                "Confira o investimento de cada competição. Use até duas casas decimais.",
+              )
+            }
+            return { campaignId, investedAmount }
+          })
 
           if (isEditDialogOpen && selectedClient) {
-            // Atualizar cliente
-            await updateMutation.mutateAsync({
-              id: selectedClient.id,
-              ...clientData,
-            })
-
-            // Gerenciar vinculação de campanhas (diff client-side)
-            const currentCampaignIds =
-              selectedClient.campaigns?.map((c) => c.id) ?? []
+            const clientId = selectedClient.id
+            const currentCampaignIds = selectedClient.campaigns.map(
+              (campaign) => campaign.id,
+            )
             const campaignsToLink = campaignIds.filter(
               (id) => !currentCampaignIds.includes(id),
             )
@@ -1196,26 +1224,35 @@ export default function Clients() {
               (id) => !campaignIds.includes(id),
             )
 
-            // Vincular novas campanhas
             if (campaignsToLink.length > 0) {
               await linkCampaignsMutation.mutateAsync({
-                clientId: selectedClient.id,
+                clientId,
                 campaignIds: campaignsToLink,
               })
             }
-
-            // Desvincular campanhas removidas
             if (campaignsToUnlink.length > 0) {
               await unlinkCampaignsMutation.mutateAsync({
-                clientId: selectedClient.id,
+                clientId,
                 campaignIds: campaignsToUnlink,
               })
             }
+            for (const investment of investmentUpdates) {
+              const current = selectedClient.campaigns.find(
+                (campaign) => campaign.id === investment.campaignId,
+              )
+              if (
+                !current ||
+                current.investedAmount !== investment.investedAmount
+              ) {
+                await updateInvestmentMutation.mutateAsync({
+                  clientId,
+                  ...investment,
+                })
+              }
+            }
+            await updateMutation.mutateAsync({ id: clientId, ...clientData })
           } else {
-            // Criar cliente
             const result = await createMutation.mutateAsync(clientData)
-
-            // Vincular campanhas ao novo cliente
             if (result?.clientId && campaignIds.length > 0) {
               await linkCampaignsMutation.mutateAsync({
                 clientId: result.clientId,
@@ -1224,7 +1261,13 @@ export default function Clients() {
             }
           }
         }}
-        isLoading={createMutation.isPending || updateMutation.isPending}
+        isLoading={
+          createMutation.isPending ||
+          updateMutation.isPending ||
+          linkCampaignsMutation.isPending ||
+          unlinkCampaignsMutation.isPending ||
+          updateInvestmentMutation.isPending
+        }
       />
 
       <StatusChangeDialog
@@ -1259,7 +1302,10 @@ export default function Clients() {
       />
 
       {/* Delete Confirmation */}
-      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+      <AlertDialog
+        open={isDeleteDialogOpen}
+        onOpenChange={setIsDeleteDialogOpen}
+      >
         <AlertDialogContent className="rounded-3xl">
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
@@ -1524,6 +1570,26 @@ function ViewClientDialog({
             </div>
           </div>
 
+          {client.campaigns.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <h4 className="flex items-center gap-2 text-sm font-bold">
+                <CurrencyCircleDollar className="size-4" weight="fill" />
+                Investimento por competição
+              </h4>
+              {client.campaigns.map((campaign) => (
+                <div
+                  key={campaign.id}
+                  className="border-border/60 bg-muted/20 flex items-center justify-between gap-3 rounded-2xl border p-3 text-sm"
+                >
+                  <span className="truncate">{campaign.name}</span>
+                  <span className="shrink-0 font-semibold">
+                    {maskBRL(campaign.investedAmount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Notas */}
           {client.notes && (
             <div className="flex flex-col gap-3">
@@ -1575,6 +1641,22 @@ function ViewClientDialog({
   )
 }
 
+function parseInvestmentAmount(value: string): number | null {
+  const raw = value
+    .trim()
+    .replace(/^R\$\s*/, "")
+    .replace(/\s/g, "")
+  if (!raw) return null
+  const normalized = /^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(raw)
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : /^\d+(?:,\d{1,2})?$/.test(raw)
+      ? raw.replace(",", ".")
+      : /^\d+(?:\.\d{1,2})?$/.test(raw)
+        ? raw
+        : null
+  return normalized === null ? null : Number(normalized)
+}
+
 /* ============================================================
    Criar / Editar Cliente
    ============================================================ */
@@ -1591,6 +1673,7 @@ const EMPTY_FORM: ClientFormData = {
   status: "PENDING",
   notes: "",
   campaignIds: [],
+  campaignInvestments: {},
   hasStore: false,
   hasKiwifyStore: false,
 }
@@ -1609,6 +1692,7 @@ function CreateEditClientDialog({
   isLoading: boolean
 }) {
   const [formData, setFormData] = React.useState<ClientFormData>(EMPTY_FORM)
+  const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   // Buscar campanhas disponíveis
   const { data: availableCampaigns = [] } =
@@ -1633,6 +1717,12 @@ function CreateEditClientDialog({
         status: client.status as ClientStatus,
         notes: client.notes ?? "",
         campaignIds: client.campaigns?.map((c) => c.id) ?? [],
+        campaignInvestments: Object.fromEntries(
+          client.campaigns.map((campaign) => [
+            campaign.id,
+            campaign.investedAmount.toFixed(2).replace(".", ","),
+          ]),
+        ),
         hasStore: client.hasStore || false,
         hasKiwifyStore: client.hasKiwifyStore || false,
       })
@@ -1643,11 +1733,27 @@ function CreateEditClientDialog({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    void onSubmit(formData).catch(() => undefined)
+    if (isSubmitting) return
+    setIsSubmitting(true)
+    void onSubmit(formData)
+      .catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("Confira o investimento")
+        ) {
+          toast.error(error.message)
+        }
+      })
+      .finally(() => setIsSubmitting(false))
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!isSubmitting) onOpenChange(next)
+      }}
+    >
       <DialogContent className="flex max-h-[90vh] w-[96vw] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-2xl">
         <DialogHeader className="border-border/60 shrink-0 border-b p-4 text-left sm:p-6">
           <DialogTitle className="flex items-center gap-2.5 text-base font-bold tracking-tight sm:text-lg">
@@ -1949,7 +2055,8 @@ function CreateEditClientDialog({
                   availableCampaigns.map((campaign) => {
                     const badge = CAMPAIGN_STATUS_BADGES[campaign.status] ?? {
                       label: campaign.status,
-                      className: "border-border bg-muted/50 text-muted-foreground",
+                      className:
+                        "border-border bg-muted/50 text-muted-foreground",
                     }
                     return (
                       <div
@@ -1979,7 +2086,7 @@ function CreateEditClientDialog({
                             }
                           }}
                         />
-                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
                           <Label
                             htmlFor={`campaign-${campaign.id}`}
                             className="cursor-pointer text-sm font-medium"
@@ -2005,6 +2112,36 @@ function CreateEditClientDialog({
                               {format(new Date(campaign.endDate), "dd/MM/yyyy")}
                             </span>
                           </div>
+                          {client &&
+                            formData.campaignIds.includes(campaign.id) && (
+                              <div className="flex flex-col gap-1.5 pt-1">
+                                <Label
+                                  htmlFor={`investment-${campaign.id}`}
+                                  className="text-xs"
+                                >
+                                  Investimento nesta competição (R$)
+                                </Label>
+                                <Input
+                                  id={`investment-${campaign.id}`}
+                                  inputMode="decimal"
+                                  placeholder="50.000,00"
+                                  value={
+                                    formData.campaignInvestments[campaign.id] ??
+                                    "0,00"
+                                  }
+                                  onChange={(event) =>
+                                    setFormData((current) => ({
+                                      ...current,
+                                      campaignInvestments: {
+                                        ...current.campaignInvestments,
+                                        [campaign.id]: event.target.value,
+                                      },
+                                    }))
+                                  }
+                                  className="max-w-44 rounded-xl"
+                                />
+                              </div>
+                            )}
                         </div>
                       </div>
                     )
@@ -2034,17 +2171,17 @@ function CreateEditClientDialog({
               type="button"
               variant="outline"
               onClick={() => onOpenChange(false)}
-              disabled={isLoading}
+              disabled={isLoading || isSubmitting}
               className="cursor-pointer rounded-xl"
             >
               Cancelar
             </Button>
             <Button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isSubmitting}
               className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
             >
-              {isLoading ? (
+              {isLoading || isSubmitting ? (
                 <>
                   <CircleNotch className="size-4 animate-spin" />
                   {client ? "Salvando..." : "Criando..."}
@@ -2111,8 +2248,7 @@ function StatusChangeDialog({
             Alterar Status
           </DialogTitle>
           <DialogDescription>
-            Atualize o status de{" "}
-            <strong>{client.name ?? client.email}</strong>
+            Atualize o status de <strong>{client.name ?? client.email}</strong>
           </DialogDescription>
         </DialogHeader>
 

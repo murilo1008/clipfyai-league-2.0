@@ -192,8 +192,7 @@ export default function Home() {
             label="Total de Views"
             value={kpis?.totalViews ?? 0}
             kind="compact"
-            delta={kpis?.viewsGrowth}
-            hint="vs. mês anterior"
+            hint="views acumuladas dos posts elegíveis"
             accent="cyan"
             isLoading={loadingDashboard}
           />
@@ -220,8 +219,7 @@ export default function Home() {
             label="Engagement Rate"
             value={kpis?.engagementRate ?? 0}
             kind="percent"
-            delta={kpis?.engagementGrowth}
-            hint="likes / views"
+            hint="interações / views"
             accent="green"
             isLoading={loadingDashboard}
           />
@@ -232,7 +230,7 @@ export default function Home() {
       <Reveal delayMs={80}>
         <div className="glass-card relative overflow-hidden rounded-3xl p-5 sm:p-6 lg:p-7">
           {/* Toques da identidade: grid sutil + glow de canto */}
-          <div className="bg-grid-pattern pointer-events-none absolute inset-0 opacity-50 [mask-image:radial-gradient(ellipse_70%_60%_at_80%_0%,black,transparent_70%)]" />
+          <div className="bg-grid-pattern pointer-events-none absolute inset-0 [mask-image:radial-gradient(ellipse_70%_60%_at_80%_0%,black,transparent_70%)] opacity-50" />
           <span
             aria-hidden
             className="pointer-events-none absolute -top-20 -right-16 size-56 rounded-full bg-[color-mix(in_oklab,var(--brand-cyan)_10%,transparent)] blur-3xl"
@@ -250,7 +248,7 @@ export default function Home() {
               ) : (
                 <>
                   <div className="text-right leading-tight">
-                    <p className="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4] text-xl font-bold tabular-nums sm:text-2xl">
+                    <p className="text-gradient text-xl font-bold tabular-nums not-dark:brightness-[0.7] not-dark:saturate-[1.4] sm:text-2xl">
                       {formatCompact(lastPoint?.total ?? 0)}
                     </p>
                     <p className="text-muted-foreground text-[10px] font-semibold tracking-[0.12em] uppercase">
@@ -296,7 +294,10 @@ export default function Home() {
               <div className="mt-5 flex flex-col gap-2">
                 {loadingTopClippers
                   ? Array.from({ length: 5 }).map((_, index) => (
-                      <Skeleton key={index} className="h-14 w-full rounded-2xl" />
+                      <Skeleton
+                        key={index}
+                        className="h-14 w-full rounded-2xl"
+                      />
                     ))
                   : clippers.map((clipper, index) => (
                       <div
@@ -440,7 +441,7 @@ export default function Home() {
       {/* ===== Captação de Clipadores ===== */}
       <Reveal>
         <div className="glass-card relative overflow-hidden rounded-3xl p-5 sm:p-6 lg:p-7">
-          <div className="bg-grid-pattern pointer-events-none absolute inset-0 opacity-40 [mask-image:radial-gradient(ellipse_60%_60%_at_15%_100%,black,transparent_70%)]" />
+          <div className="bg-grid-pattern pointer-events-none absolute inset-0 [mask-image:radial-gradient(ellipse_60%_60%_at_15%_100%,black,transparent_70%)] opacity-40" />
           <span
             aria-hidden
             className="pointer-events-none absolute -bottom-20 -left-14 size-56 rounded-full bg-[color-mix(in_oklab,var(--brand-green)_10%,transparent)] blur-3xl"
@@ -463,7 +464,7 @@ export default function Home() {
             </div>
 
             {/* Painel lateral: janelas + origem */}
-            <div className="flex flex-col gap-3 lg:border-l lg:border-border/60 lg:pl-6">
+            <div className="lg:border-border/60 flex flex-col gap-3 lg:border-l lg:pl-6">
               <div className="grid grid-cols-3 gap-3 lg:grid-cols-1">
                 <AcquisitionWindow
                   label="Hoje"

@@ -623,8 +623,14 @@ export const clipperRouter = createTRPCRouter({
         GROUP BY TO_CHAR("createdAt", 'YYYY-MM')
         ORDER BY month ASC
       `,
-      ctx.db.clipPost.aggregate({ _count: { id: true } }),
-      ctx.db.clipPost.aggregate({ _sum: { views: true } }),
+      ctx.db.clipPost.aggregate({
+        where: { status: "ELIGIBLE" },
+        _count: { id: true },
+      }),
+      ctx.db.clipPost.aggregate({
+        where: { status: "ELIGIBLE" },
+        _sum: { views: true },
+      }),
       ctx.db.user.count({ where: { subscriptionStatus: "ACTIVE" } }),
     ]);
 

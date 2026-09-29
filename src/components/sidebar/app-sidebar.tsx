@@ -5,7 +5,10 @@ import { Plus } from "@phosphor-icons/react"
 
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
 import { NavMain } from "@/components/sidebar/nav-main"
-import { NavProjects, type ProjectItem } from "@/components/sidebar/nav-projects"
+import {
+  NavProjects,
+  type ProjectItem,
+} from "@/components/sidebar/nav-projects"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { SidebarBrand } from "@/components/sidebar/sidebar-brand"
 import {
@@ -44,7 +47,7 @@ function CreatePostButton({ onClick }: { onClick: () => void }) {
           <SidebarMenuButton
             tooltip="Enviar Post"
             onClick={onClick}
-            className="btn-gradient-auth h-9 cursor-pointer justify-center rounded-lg font-semibold text-[#04222A] hover:text-[#04222A] active:text-[#04222A] group-data-[collapsible=icon]:justify-center"
+            className="btn-gradient-auth h-9 cursor-pointer justify-center rounded-lg font-semibold text-[#04222A] group-data-[collapsible=icon]:justify-center hover:text-[#04222A] active:text-[#04222A]"
           >
             <Plus weight="bold" className="size-4 shrink-0" />
             <span className="truncate group-data-[collapsible=icon]:hidden">
@@ -78,14 +81,28 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     { enabled: user?.role === "CLIENT" },
   )
 
-  const navMain = user ? getMenuByRole(user.role) : []
+  const { data: hasPerformance } = api.customers.hasPerformance.useQuery(
+    undefined,
+    { enabled: user?.role === "CLIENT", refetchInterval: 60_000 },
+  )
+
+  const navMain = user
+    ? getMenuByRole(user.role).filter(
+        (item) =>
+          user.role !== "CLIENT" ||
+          item.url !== "/performance" ||
+          hasPerformance === true,
+      )
+    : []
 
   const projects: ProjectItem[] =
     user?.role === "CLIPPER"
-      ? (clipperCompetitions?.map((competition: { name: string; slug: string }) => ({
-          name: competition.name,
-          url: `/my-competitions/${competition.slug}`,
-        })) ?? [])
+      ? (clipperCompetitions?.map(
+          (competition: { name: string; slug: string }) => ({
+            name: competition.name,
+            url: `/my-competitions/${competition.slug}`,
+          }),
+        ) ?? [])
       : user?.role === "CLIENT"
         ? (clientDashboard?.campaigns?.map(
             (campaign: { name: string; id: string }) => ({

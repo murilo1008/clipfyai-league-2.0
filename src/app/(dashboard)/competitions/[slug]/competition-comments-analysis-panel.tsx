@@ -301,8 +301,14 @@ export function CompetitionCommentsAnalysisPanel({
     <CommentsAnalysisResultsPanel
       scope={{ type: "campaign", campaignId }}
       revealDelayMs={revealDelayMs}
-      title="Opinião pública da competição"
-      emptyDescription="Colete os comentários dos posts e rode a análise para ver sentimento, críticas e sugestões consolidados desta competição."
+      title="Inteligência de audiência"
+      description={
+        aggregate
+          ? `${aggregate.analyzedComments.toLocaleString("pt-BR")} comentários analisados · insights consolidados da audiência`
+          : "Entenda como a audiência reage aos conteúdos da competição"
+      }
+      emptyDescription="Colete e analise os comentários para acompanhar sentimento, elogios, críticas e oportunidades percebidas pela audiência."
+      className="border-cyan-500/15 bg-[radial-gradient(circle_at_8%_0%,rgba(34,211,238,0.08),transparent_28%),var(--card)]"
       headerActions={
         <>
           <Button
@@ -318,7 +324,7 @@ export function CompetitionCommentsAnalysisPanel({
             ) : (
               <ChatsCircle className="size-3.5" weight="fill" />
             )}
-            {extractionIsRunning ? "Coletando…" : "Coletar comentários"}
+            {extractionIsRunning ? "Coletando…" : "Atualizar comentários"}
           </Button>
 
           {aggregate ? (
@@ -341,7 +347,7 @@ export function CompetitionCommentsAnalysisPanel({
                 ) : (
                   <Sparkle className="size-3.5" weight="fill" />
                 )}
-                {isRunning ? "Analisando…" : "Analisar novos comentários"}
+                {isRunning ? "Analisando…" : "Analisar novidades"}
               </Button>
 
               <Button
@@ -353,7 +359,7 @@ export function CompetitionCommentsAnalysisPanel({
                 onClick={() => setIsFullReanalysisOpen(true)}
               >
                 <ArrowsClockwise className="size-3.5" weight="bold" />
-                Reanalisar competição completa
+                Reprocessar tudo
               </Button>
             </>
           ) : (

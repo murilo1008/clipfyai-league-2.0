@@ -9,6 +9,7 @@ import {
   // Handshake, // volta junto com o item "Indicações"
   House,
   Newspaper,
+  ChartLineUp,
   Shield,
   Trophy,
   Wallet,
@@ -143,6 +144,12 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
       title: "Posts",
       url: "/posts",
       icon: FilmSlate,
+      items: [],
+    },
+    {
+      title: "Performance",
+      url: "/performance",
+      icon: ChartLineUp,
       items: [],
     },
     {
