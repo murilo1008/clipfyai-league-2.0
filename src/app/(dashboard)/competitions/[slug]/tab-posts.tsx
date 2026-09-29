@@ -185,7 +185,7 @@ export function getPostEmbedUrl(url: string): string | null {
 export function InstagramBrowserEmbed({ url }: { url: string }) {
   const [isLoading, setIsLoading] = React.useState(true)
   const [hasFailed, setHasFailed] = React.useState(false)
-  const [useDirectIframe, setUseDirectIframe] = React.useState(false)
+  const [useDirectIframe, setUseDirectIframe] = React.useState(true)
   const containerRef = React.useRef<HTMLDivElement>(null)
   const normalizedUrl = React.useMemo(() => {
     try {
@@ -197,6 +197,17 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
   }, [url])
 
   React.useEffect(() => {
+    if (!useDirectIframe || !isLoading) return
+
+    // O iframe direto dispensa embed.js no caminho normal. Se ele não carregar,
+    // usamos o embed por script que já existia nesta tela.
+    const timeout = window.setTimeout(() => setUseDirectIframe(false), 5000)
+    return () => window.clearTimeout(timeout)
+  }, [isLoading, useDirectIframe, normalizedUrl])
+
+  React.useEffect(() => {
+    if (useDirectIframe) return
+
     let cancelled = false
     let attempts = 0
     let processingTimer: number | undefined
@@ -208,7 +219,7 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
       event: string,
       details: Record<string, unknown> = {},
     ) => {
-      // Falhas do embed são recuperáveis pelo iframe de fallback. No Next.js
+      // Falhas do embed podem ser recuperadas abrindo o post original. No Next.js
       // dev, console.error abre o error overlay mesmo quando o erro foi tratado.
       const consoleMethod = level === "error" ? console.warn : console[level]
       consoleMethod(`[InstagramEmbed] ${event}`, {
@@ -220,8 +231,14 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
 
     setIsLoading(true)
     setHasFailed(false)
-    setUseDirectIframe(false)
-    log("info", "initializing")
+    log("info", "script_fallback_initializing")
+
+    const scriptTimeout = window.setTimeout(() => {
+      if (cancelled || containerRef.current?.querySelector("iframe")) return
+      log("warn", "script_fallback_timeout")
+      setIsLoading(false)
+      setHasFailed(true)
+    }, 12000)
 
     const processEmbed = () => {
       if (cancelled) {
@@ -258,14 +275,8 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
               containerRef.current?.querySelector(".instagram-media"),
             ),
           })
-          if (!hasInstagramApi) {
-            log("warn", "switching_to_direct_iframe_after_timeout")
-            setUseDirectIframe(true)
-            setIsLoading(true)
-          } else {
-            setIsLoading(false)
-            setHasFailed(true)
-          }
+          setIsLoading(false)
+          setHasFailed(true)
           return
         }
         if (attempts === 1 || attempts % 8 === 0) {
@@ -286,9 +297,8 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
         online: navigator.onLine,
       })
       if (!cancelled) {
-        log("warn", "switching_to_direct_iframe")
-        setUseDirectIframe(true)
-        setIsLoading(true)
+        setIsLoading(false)
+        setHasFailed(true)
       }
     }
 
@@ -348,10 +358,11 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
       cancelled = true
       if (processingTimer) window.clearTimeout(processingTimer)
       if (staleScriptTimer) window.clearTimeout(staleScriptTimer)
+      if (scriptTimeout) window.clearTimeout(scriptTimeout)
       observedScript?.removeEventListener("load", processEmbed)
       observedScript?.removeEventListener("error", handleScriptError)
     }
-  }, [normalizedUrl])
+  }, [normalizedUrl, useDirectIframe])
 
   return (
     <div
@@ -369,7 +380,7 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
           <p className="font-semibold">O Instagram bloqueou a incorporação</p>
           <p className="max-w-sm text-sm text-white/65">
             O post pode estar privado, com incorporação desativada, ou o
-            navegador pode estar bloqueando o script do Instagram.
+            navegador pode estar bloqueando o Instagram.
           </p>
         </div>
       )}
@@ -390,8 +401,7 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
             console.warn("[InstagramEmbed] direct_iframe_failed", {
               url: normalizedUrl,
             })
-            setIsLoading(false)
-            setHasFailed(true)
+            setUseDirectIframe(false)
           }}
         />
       ) : (
