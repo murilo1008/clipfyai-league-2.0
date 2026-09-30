@@ -247,7 +247,7 @@ function SectionHeading({
 }: {
   icon: React.ElementType;
   title: string;
-  description: string;
+  description?: string;
   action?: React.ReactNode;
 }) {
   return (
@@ -258,7 +258,11 @@ function SectionHeading({
         </span>
         <div>
           <h3 className="font-bold tracking-tight">{title}</h3>
-          <p className="text-muted-foreground mt-0.5 text-xs">{description}</p>
+          {description && (
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              {description}
+            </p>
+          )}
         </div>
       </div>
       {action}
@@ -293,7 +297,7 @@ export function PerformanceTab({
 
   const query = api.admin.getCompetitionPerformance.useQuery(
     { campaignId },
-    { enabled: active && Boolean(campaignId) },
+    { enabled: active && Boolean(campaignId), refetchInterval: 60_000 },
   );
   const payload = record(query.data);
   const settings = record(payload.settings);
@@ -326,6 +330,7 @@ export function PerformanceTab({
   const currentTotalViews = numberValue(summary.totalViews);
   const totalInvestment = numberValue(summary.investedAmount);
   const currentEquivalentAdsCost = numberValue(summary.equivalentAdsCost);
+  const showCpmChart = cpmHistory.length > 1;
   const formatCpm = React.useCallback(
     (value: number) => {
       const visibilityAwareValue = formatCurrency(value);
@@ -479,50 +484,49 @@ export function PerformanceTab({
           />
           <div>
             <h2 className="font-bold">Performance da competição</h2>
-            <p className="text-muted-foreground mt-1 max-w-3xl text-sm leading-relaxed">
-              Acompanhe o valor gerado pelos cortes, o crescimento dos perfis
-              oficiais e os vídeos obrigatórios.
-            </p>
           </div>
         </div>
       </div>
 
       <Card>
-        <SectionHeading
-          icon={Wallet}
-          title="Eficiência do investimento"
-          description="Compare o CPM real da campanha com o benchmark de anúncios configurado."
-        />
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Metric
-            label="Investimento da campanha"
-            value={formatCurrency(investmentAmount)}
-            icon={Wallet}
-          />
-          <Metric
-            label="CPM da competição"
-            value={formatCurrency(effectiveCpm)}
-            icon={ChartLineUp}
-            hint="Investimento ÷ views × 1.000"
-          />
-          <Metric
-            label="Custo equivalente em ADS"
-            value={formatCurrency(adsEquivalent)}
-            icon={Globe}
-          />
-          <Metric
-            label="Economia estimada"
-            value={formatCurrency(savings)}
-            icon={TrendUp}
-            accent
-            hint={
-              savingsPercent
-                ? `${savingsPercent.toFixed(1)}% abaixo do ADS`
-                : undefined
-            }
-          />
-        </div>
-        <div className="border-border/60 bg-muted/20 mt-5 grid gap-4 rounded-xl border p-4 lg:grid-cols-[1fr_auto] lg:items-end">
+        <SectionHeading icon={Wallet} title="Configuração do comparativo" />
+        {!showCpmChart && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric
+              label="Investimento da campanha"
+              value={formatCurrency(investmentAmount)}
+              icon={Wallet}
+            />
+            <Metric
+              label="CPM da competição"
+              value={formatCpm(effectiveCpm)}
+              icon={ChartLineUp}
+              hint="Investimento ÷ views × 1.000"
+            />
+            <Metric
+              label="Custo equivalente em ADS"
+              value={formatCurrency(adsEquivalent)}
+              icon={Globe}
+            />
+            <Metric
+              label="Economia estimada"
+              value={formatCurrency(savings)}
+              icon={TrendUp}
+              accent
+              hint={
+                savingsPercent
+                  ? `${savingsPercent.toFixed(1)}% abaixo do ADS`
+                  : undefined
+              }
+            />
+          </div>
+        )}
+        <div
+          className={cn(
+            "border-border/60 bg-muted/20 grid gap-4 rounded-xl border p-4 lg:grid-cols-[1fr_auto] lg:items-end",
+            !showCpmChart && "mt-5",
+          )}
+        >
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Valor investido (R$)">
               <Input
@@ -534,7 +538,7 @@ export function PerformanceTab({
                 placeholder="Ex.: 50000"
               />
             </Field>
-            <Field label="CPM de referência (R$)">
+            <Field label="CPM médio de mercado (R$)">
               <Input
                 type="number"
                 min="0"
@@ -567,12 +571,8 @@ export function PerformanceTab({
       </Card>
 
       <Card>
-        <SectionHeading
-          icon={ChartLineUp}
-          title="Acompanhamento comparativo de CPM"
-          description="Evolução do custo efetivo dos cortes versus o valor estimado em mídia paga."
-        />
-        {cpmHistory.length > 1 ? (
+        <SectionHeading icon={ChartLineUp} title="Resultado dos cortes" />
+        {showCpmChart ? (
           <CpmComparisonChart
             points={cpmHistory}
             totalViews={currentTotalViews}

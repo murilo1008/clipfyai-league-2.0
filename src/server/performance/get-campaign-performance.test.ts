@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildCumulativeCpmHistory,
   calculatePerformanceSummary,
+  getCampaignPerformance,
   performanceDayKey,
 } from "./get-campaign-performance";
 
@@ -44,8 +46,6 @@ describe("buildCumulativeCpmHistory", () => {
       investedAmount: 70_000,
       referenceCpm: 13,
       currentTotalViews: 10_000_000,
-      startDate: new Date("2026-09-10T03:00:00.000Z"),
-      endDate: new Date("2026-09-13T23:59:59.000Z"),
       currentDate: new Date("2026-09-13T12:00:00.000Z"),
       rows: [
         {
@@ -79,8 +79,6 @@ describe("buildCumulativeCpmHistory", () => {
       investedAmount: 10_000,
       referenceCpm: 13,
       currentTotalViews: 900_000,
-      startDate: new Date("2026-09-10T03:00:00.000Z"),
-      endDate: new Date("2026-09-12T23:59:59.000Z"),
       currentDate: new Date("2026-09-12T12:00:00.000Z"),
       rows: [
         {
@@ -107,8 +105,6 @@ describe("buildCumulativeCpmHistory", () => {
       investedAmount: 10_000,
       referenceCpm: 13,
       currentTotalViews: 1_000_000,
-      startDate: new Date("2026-09-08T03:00:00.000Z"),
-      endDate: new Date("2026-09-11T23:59:59.000Z"),
       currentDate: new Date("2026-09-11T12:00:00.000Z"),
       rows: [
         {
@@ -131,8 +127,6 @@ describe("buildCumulativeCpmHistory", () => {
       investedAmount: 10_000,
       referenceCpm: 13,
       currentTotalViews: 1_000_000,
-      startDate: new Date("2026-09-20T03:00:00.000Z"),
-      endDate: new Date("2026-09-22T23:59:59.000Z"),
       currentDate: new Date("2026-09-22T02:00:00.000Z"),
       rows: [
         {
@@ -159,5 +153,76 @@ describe("performanceDayKey", () => {
     expect(performanceDayKey(new Date("2026-09-20T20:00:00.000Z"))).toBe(
       "2026-09-21",
     );
+  });
+});
+
+describe("getCampaignPerformance", () => {
+  it("começa na primeira coleta após o início e segue após o fim da competição", async () => {
+    const now = Date.now();
+    const firstAfterStart = new Date(now - 2.5 * 60_000);
+    const afterEnd = new Date(now - 60_000);
+    const campaign = {
+      id: "campaign-1",
+      name: "Competição encerrada",
+      slug: "competicao-encerrada",
+      status: "COMPLETED",
+      startDate: new Date(now - 3 * 60_000),
+      endDate: new Date(now - 2 * 60_000),
+      platforms: [],
+      requiredMentions: [],
+      performanceSettings: null,
+      performanceProfiles: [],
+      performanceVideos: [],
+    };
+    const queryRaw = vi.fn(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const sql = strings.join("?");
+        expect(sql).toContain('MIN(first_metrics."collectedAt")');
+        expect(sql).not.toContain('MIN(post."postedAt")');
+        expect(sql.match(/metrics\."collectedAt" >=/g)).toHaveLength(2);
+        expect(sql).toContain(
+          `metrics."collectedAt" < performance_days.day + INTERVAL '20 hours'`,
+        );
+        expect(sql).not.toContain("INTERVAL '1 day 5 hours'");
+        expect(
+          values.filter((value) => value === campaign.startDate),
+        ).toHaveLength(2);
+        expect(values).not.toContain(campaign.endDate);
+        expect(
+          values.some(
+            (value) => value instanceof Date && value > campaign.endDate,
+          ),
+        ).toBe(true);
+        return [
+          { date: firstAfterStart, clipPostId: "post-1", views: 1_234n },
+          { date: afterEnd, clipPostId: "post-2", views: 567n },
+        ];
+      },
+    );
+    const aggregate = vi.fn().mockResolvedValue({
+      _sum: { views: 2_000n },
+    });
+    const db = {
+      campaign: { findUnique: vi.fn().mockResolvedValue(campaign) },
+      clipPost: { aggregate },
+      $queryRaw: queryRaw,
+    } as unknown as PrismaClient;
+
+    const result = await getCampaignPerformance(db, campaign.id);
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(aggregate).toHaveBeenCalledWith({
+      where: {
+        campaignId: campaign.id,
+        status: "ELIGIBLE",
+        postedAt: { not: null },
+      },
+      _sum: { views: true },
+    });
+    expect(result?.cpmHistory[0]?.date.slice(0, 10)).toBe(
+      performanceDayKey(firstAfterStart),
+    );
+    expect(result?.summary.totalViews).toBe(2_000);
+    expect(result?.cpmHistory.at(-1)?.totalViews).toBe(2_000);
   });
 });

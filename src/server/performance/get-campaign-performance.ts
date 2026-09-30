@@ -51,8 +51,6 @@ export function buildCumulativeCpmHistory(input: {
   currentTotalViews: number;
   investedAmount: number;
   referenceCpm: number;
-  startDate: Date;
-  endDate: Date;
   currentDate?: Date;
 }) {
   const rowsByDay = new Map<string, ViewsHistoryRow[]>();
@@ -63,10 +61,8 @@ export function buildCumulativeCpmHistory(input: {
     rowsByDay.set(day, rows);
   }
 
-  const requestedEnd = input.endDate.getTime();
   const now = input.currentDate ?? new Date();
-  const effectiveEnd = new Date(Math.min(requestedEnd, now.getTime()));
-  const endDay = performanceDayKey(effectiveEnd);
+  const endDay = performanceDayKey(now);
   const firstCollectionDay = [...rowsByDay.keys()]
     .sort()
     .find((day) => day <= endDay);
@@ -96,14 +92,12 @@ export function buildCumulativeCpmHistory(input: {
     dailyTotals.push({ date, totalViews: highestTotalViews });
   }
 
-  if (input.endDate.getTime() >= now.getTime()) {
-    const currentPoint = dailyTotals.at(-1);
-    if (currentPoint) {
-      currentPoint.totalViews = Math.max(
-        currentPoint.totalViews,
-        input.currentTotalViews,
-      );
-    }
+  const currentPoint = dailyTotals.at(-1);
+  if (currentPoint) {
+    currentPoint.totalViews = Math.max(
+      currentPoint.totalViews,
+      input.currentTotalViews,
+    );
   }
 
   return dailyTotals.map((point) => {
@@ -155,13 +149,21 @@ export async function getCampaignPerformance(
 
   if (!campaign) return null;
 
-  const historyEnd = new Date(Math.min(campaign.endDate.getTime(), Date.now()));
+  const historyEnd = new Date();
   const viewsHistory = await db.$queryRaw<ViewsHistoryRow[]>`
       WITH day_bounds AS (
         SELECT
-          DATE_TRUNC('day', MIN(post."postedAt") + INTERVAL '4 hours') AS first_day,
+          DATE_TRUNC('day', MIN(first_metrics."collectedAt") + INTERVAL '4 hours') AS first_day,
           DATE_TRUNC('day', ${historyEnd}::timestamp + INTERVAL '4 hours') AS last_day
         FROM "ClipPost" post
+        INNER JOIN LATERAL (
+          SELECT metrics."collectedAt"
+          FROM "ClipPostMetrics" metrics
+          WHERE metrics."clipPostId" = post.id
+            AND metrics."collectedAt" >= ${campaign.startDate}
+          ORDER BY metrics."collectedAt" ASC
+          LIMIT 1
+        ) first_metrics ON true
         WHERE post."campaignId" = ${campaignId}
           AND post.status = 'ELIGIBLE'
           AND post."postedAt" IS NOT NULL
@@ -186,15 +188,21 @@ export async function getCampaignPerformance(
         FROM "ClipPostMetrics" metrics
         WHERE metrics."clipPostId" = post.id
           AND metrics."collectedAt" >= ${campaign.startDate}
-          AND metrics."collectedAt" <= LEAST(
-            performance_days.day + INTERVAL '1 day 5 hours',
-            ${historyEnd}
-          )
+          AND metrics."collectedAt" < performance_days.day + INTERVAL '20 hours'
+          AND metrics."collectedAt" <= ${historyEnd}
         ORDER BY metrics."collectedAt" DESC
         LIMIT 1
       ) latest_metrics ON true
       ORDER BY performance_days.day ASC, post.id ASC
     `;
+  const currentViews = await db.clipPost.aggregate({
+    where: {
+      campaignId,
+      status: "ELIGIBLE",
+      postedAt: { not: null },
+    },
+    _sum: { views: true },
+  });
 
   const investedAmount = Number(
     campaign.performanceSettings?.investedAmount ?? 0,
@@ -219,11 +227,10 @@ export async function getCampaignPerformance(
       : 12;
   const cpmHistory = buildCumulativeCpmHistory({
     rows: viewsHistory,
-    currentTotalViews: 0,
+    currentTotalViews: Number(currentViews._sum.views ?? 0),
     investedAmount,
     referenceCpm,
-    startDate: campaign.startDate,
-    endDate: campaign.endDate,
+    currentDate: historyEnd,
   });
   const totalViews = cpmHistory.at(-1)?.totalViews ?? 0;
   const summary = calculatePerformanceSummary({

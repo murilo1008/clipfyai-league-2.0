@@ -335,7 +335,7 @@ function SectionTitle({
 }: {
   icon: React.ElementType;
   title: string;
-  description: string;
+  description?: string;
 }) {
   return (
     <div className="flex items-start gap-3">
@@ -346,7 +346,9 @@ function SectionTitle({
         <h2 className="text-base font-bold tracking-tight sm:text-lg">
           {title}
         </h2>
-        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+        {description && (
+          <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+        )}
       </div>
     </div>
   );
@@ -471,6 +473,7 @@ export default function ClientPerformance() {
     investment: asNumber(point.investment),
     estimatedAdsCost: asNumber(point.estimatedAdsCost),
   }));
+  const showCpmChart = hasComparison && cpmPoints.length > 1;
   const heroHistory = (data?.cpmHistory ?? []).slice(-12);
   const heroMaxViews = Math.max(
     1,
@@ -615,79 +618,68 @@ export default function ClientPerformance() {
         <>
           {hasCpmConfiguration && (
             <section className="flex flex-col gap-4">
-              <SectionTitle
-                icon={ChartLineUp}
-                title="Alcance e eficiência"
-                description="Compare as visualizações dos cortes com o investimento e uma estimativa de mídia paga."
-              />
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <SummaryCard
-                  label="Visualizações dos cortes"
-                  value={NUMBER.format(asNumber(summary?.totalViews))}
-                  hint={
-                    isOverview
-                      ? "Soma das competições selecionadas"
-                      : "Alcance acumulado da competição"
-                  }
-                  icon={Eye}
-                  tone="highlight"
-                />
-                <SummaryCard
-                  label="Investimento"
-                  value={currency(summary?.investment)}
-                  hint={
-                    isOverview
-                      ? "Soma das competições"
-                      : "Valor informado pelo administrador"
-                  }
-                  icon={CurrencyCircleDollar}
-                />
-                <SummaryCard
-                  label="CPM efetivo"
-                  value={hasViews ? currency(summary?.effectiveCpm) : "—"}
-                  hint="Custo por mil visualizações dos cortes"
-                  icon={ChartLineUp}
-                />
-                <SummaryCard
-                  label={
-                    !hasComparison
-                      ? "Diferença estimada"
-                      : savings >= 0
-                        ? "Economia estimada"
-                        : "Acima da referência"
-                  }
-                  value={hasComparison ? currency(Math.abs(savings)) : "—"}
-                  hint={
-                    !hasViews
-                      ? "Disponível após as primeiras visualizações"
-                      : !hasComparison
-                        ? "Aguardando CPM de referência"
-                        : savings > 0
-                          ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% abaixo do custo estimado em anúncios`
-                          : savings < 0
-                            ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% acima do custo estimado em anúncios`
-                            : "Mesmo custo estimado em anúncios"
-                  }
-                  icon={TrendUp}
-                  tone={
-                    !hasComparison
-                      ? "default"
-                      : savings >= 0
-                        ? "positive"
-                        : "negative"
-                  }
-                />
-              </div>
-              <div>
-                <h3 className="font-semibold">
-                  Acompanhamento comparativo de CPM
-                </h3>
-                <p className="text-muted-foreground mt-1 text-sm">
-                  Evolução do custo efetivo dos cortes versus o valor estimado
-                  em mídia paga.
-                </p>
-              </div>
-              {hasComparison && cpmPoints.length > 1 ? (
+              <SectionTitle icon={ChartLineUp} title="Resultado dos cortes" />
+              {!showCpmChart && (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <SummaryCard
+                    label="Visualizações dos cortes"
+                    value={NUMBER.format(asNumber(summary?.totalViews))}
+                    hint={
+                      isOverview
+                        ? "Soma das competições selecionadas"
+                        : "Alcance acumulado da competição"
+                    }
+                    icon={Eye}
+                    tone="highlight"
+                  />
+                  <SummaryCard
+                    label="Investimento"
+                    value={currency(summary?.investment)}
+                    hint={
+                      isOverview
+                        ? "Soma das competições"
+                        : "Valor informado pelo administrador"
+                    }
+                    icon={CurrencyCircleDollar}
+                  />
+                  <SummaryCard
+                    label="CPM efetivo"
+                    value={hasViews ? currency(summary?.effectiveCpm) : "—"}
+                    hint="Custo por mil visualizações dos cortes"
+                    icon={ChartLineUp}
+                  />
+                  <SummaryCard
+                    label={
+                      !hasComparison
+                        ? "Diferença estimada"
+                        : savings >= 0
+                          ? "Economia estimada"
+                          : "Acima do mercado"
+                    }
+                    value={hasComparison ? currency(Math.abs(savings)) : "—"}
+                    hint={
+                      !hasViews
+                        ? "Disponível após as primeiras visualizações"
+                        : !hasComparison
+                          ? "Aguardando CPM médio de mercado"
+                          : savings > 0
+                            ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% abaixo do custo estimado em anúncios`
+                            : savings < 0
+                              ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% acima do custo estimado em anúncios`
+                              : "Mesmo custo estimado em anúncios"
+                    }
+                    icon={TrendUp}
+                    tone={
+                      !hasComparison
+                        ? "default"
+                        : savings >= 0
+                          ? "positive"
+                          : "negative"
+                    }
+                  />
+                </div>
+              )}
+              {showCpmChart ? (
                 <CpmComparisonChart
                   points={cpmPoints}
                   totalViews={asNumber(summary?.totalViews)}
