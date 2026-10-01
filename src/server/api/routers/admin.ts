@@ -12359,6 +12359,14 @@ export const adminRouter = createTRPCRouter({
       const payoutByKey = new Map(
         payouts.map((payout) => [payout.idempotencyKey, payout]),
       );
+      const retryId = `top-posters:${input.campaignId}:${input.date}`;
+      const queuedRetry = await ctx.db.$queryRaw<Array<{ nextAttemptAt: Date }>>`
+        SELECT "nextAttemptAt" FROM "PixPayoutRetry"
+        WHERE "dailyRankingId" = ${retryId}
+          AND "status" IN ('PENDING', 'RUNNING')
+        LIMIT 1
+      `;
+      const isQueued = queuedRetry.length > 0;
       const lines = activeCredits.map((credit) => {
         const key = `top_posters_daily_pix:${input.campaignId}:${input.date}:${credit.id}`;
         const payout = payoutByKey.get(key);
@@ -12368,7 +12376,9 @@ export const adminRouter = createTRPCRouter({
             credit.wallet.clipperProfile.artisticName ||
             credit.wallet.clipperProfile.fullName,
           amount: credit.amount,
-          status: payout?.status ?? ("PENDING" as const),
+          status: payout?.status === "COMPLETED" || payout?.status === "PROCESSING"
+            ? payout.status
+            : isQueued ? ("QUEUED" as const) : payout?.status ?? ("PENDING" as const),
           transactionId: payout?.id ?? null,
           proofUrl: payout?.proofUrls[0] ?? null,
           failureReason: payout?.failureReason ?? null,
@@ -12382,10 +12392,12 @@ export const adminRouter = createTRPCRouter({
       ).length;
       const failed = lines.filter((line) => line.status === "FAILED").length;
       const pending = lines.filter((line) => line.status === "PENDING").length;
+      const queued = lines.filter((line) => line.status === "QUEUED").length;
       let status:
         | "NOT_READY"
         | "PENDING"
         | "PROCESSING"
+        | "QUEUED"
         | "PARTIAL"
         | "FAILED"
         | "COMPLETED" = "NOT_READY";
@@ -12404,6 +12416,8 @@ export const adminRouter = createTRPCRouter({
         processing,
         failed,
         pending,
+        queued,
+        nextAttemptAt: queuedRetry[0]?.nextAttemptAt ?? null,
         lines,
       };
     }),

@@ -2174,7 +2174,8 @@ export function DailyRankResultModal({
                           executeTopPostersPixPayout.isPending ||
                           isLoadingTopPostersPixStatus ||
                           !topPostersPixStatus ||
-                          topPostersPixStatus.processing > 0
+                          topPostersPixStatus.processing > 0 ||
+                          topPostersPixStatus.queued > 0
                         }
                         className="h-9 w-full cursor-pointer gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 font-semibold text-emerald-600 hover:bg-emerald-500/25 disabled:opacity-50 sm:w-auto dark:text-emerald-300"
                       >
@@ -2186,6 +2187,8 @@ export function DailyRankResultModal({
                         )}
                         {topPostersPixStatus?.processing
                           ? "PIX processando"
+                          : topPostersPixStatus?.queued
+                            ? "PIX agendado"
                           : topPostersPixStatus?.failed
                             ? "Tentar PIX novamente"
                             : "Enviar PIX"}
