@@ -25,6 +25,7 @@ import {
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
 import { ClipPostStatus } from "@prisma/client";
+import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -1996,21 +1997,6 @@ export const campaignRouter = createTRPCRouter({
           myTotalSaves,
         );
 
-        // Buscar ranking mensal atual do clipper
-        const bestRanking = await ctx.db.monthlyRankingEntry.findFirst({
-          where: {
-            applicationId: application.id,
-            monthlyRanking: {
-              campaignId: campaign.id,
-            },
-          },
-          orderBy: [{ position: "asc" }, { lastUpdated: "desc" }],
-          select: {
-            position: true,
-            previousPosition: true,
-          },
-        });
-
         // Buscar soma de transações (ganhos) — aggregate evita carregar todas as linhas
         const prizeAgg = await ctx.db.transaction.aggregate({
           where: {
@@ -2027,253 +2013,28 @@ export const campaignRouter = createTRPCRouter({
 
         const myCurrentEarnings = prizeAgg._sum.amount ?? 0;
 
-        // Buscar top ranking (top 15)
-        // Tipo de métrica de ranking (VIEWS ou VIEWS_X_ENGAGEMENT)
-        const metricType = campaign.rankingMetricType as RankingMetricType;
-
-        let topRanking: Array<{
-          position: number;
-          username: string;
-          imageUrl: string | null;
-          totalViews: number;
-          rankingScore: number;
-          engagementRate: number;
-          totalPosts: number;
-          isCurrentUser: boolean;
-          clanTag: string | null;
-          clanEmoji: string | null;
-          clanEmojiColor: string | null;
-        }> = [];
-
-        if (metricType === "VIEWS") {
-          // Para VIEWS: Usar aggregação direta no banco (mais eficiente)
-          const topApplicationsAgg = await ctx.db.clipPost.groupBy({
-            by: ["applicationId"],
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              NOT: {
-                applicationId: undefined,
-              },
-            },
-            _sum: {
-              views: true,
-              likes: true,
-              comments: true,
-              shares: true,
-              saves: true,
-            },
-            _count: {
-              id: true,
-            },
-            orderBy: {
-              _sum: {
-                views: "desc",
-              },
-            },
-            take: campaign.activeRankingRule?.monthlyTopCount ?? 15,
-          });
-
-          // Buscar dados dos clippers
-          const topApplicationIds = topApplicationsAgg
-            .filter(
-              (a): a is typeof a & { applicationId: string } =>
-                a.applicationId !== null,
-            )
-            .map((a) => a.applicationId);
-
-          const topClipperData = await ctx.db.clipperApplication.findMany({
-            where: {
-              id: { in: topApplicationIds },
-            },
-            select: {
-              id: true,
-              clipperProfile: {
-                select: {
-                  userId: true,
-                  artisticName: true,
-                  fullName: true,
-                  user: {
-                    select: {
-                      imageUrl: true,
-                    },
-                  },
-                  clan: {
-                    select: {
-                      tag: true,
-                      emoji: true,
-                      emojiColor: true,
-                    },
-                  },
-                },
-              },
-            },
-          });
-
-          // Mapear os dados
-          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]));
-
-          topRanking = topApplicationsAgg
-            .filter(
-              (agg): agg is typeof agg & { applicationId: string } =>
-                agg.applicationId !== null,
-            )
-            .map((agg, index) => {
-              const clipperInfo = clipperDataMap.get(agg.applicationId);
-              const totalViews = Number(agg._sum?.views || 0);
-              const totalLikes = agg._sum?.likes || 0;
-              const totalComments = agg._sum?.comments || 0;
-              const totalShares = agg._sum?.shares || 0;
-              const totalSaves = agg._sum?.saves || 0;
-              const engagementRate = calculateEngagementRate(
-                totalViews,
-                totalLikes,
-                totalComments,
-                totalShares,
-                totalSaves,
-              );
-              return {
-                position: index + 1,
-                username: clipperInfo
-                  ? `@${getClipperRankingDisplayName(clipperInfo.clipperProfile)}`
-                  : "@unknown",
-                imageUrl: clipperInfo?.clipperProfile.user?.imageUrl || null,
-                totalViews,
-                rankingScore: totalViews,
-                engagementRate,
-                totalPosts: agg._count?.id || 0,
-                isCurrentUser:
-                  clipperInfo?.clipperProfile.userId === ctx.userId,
-                clanTag: clipperInfo?.clipperProfile.clan?.tag ?? null,
-                clanEmoji: clipperInfo?.clipperProfile.clan?.emoji ?? null,
-                clanEmojiColor:
-                  clipperInfo?.clipperProfile.clan?.emojiColor ?? null,
-              };
-            })
-            .filter((entry) => entry.username !== "@unknown");
-        } else {
-          // Para VIEWS_X_ENGAGEMENT: Precisa calcular score por post
-          // Buscar posts agrupados por application com métricas
-          const topApplicationsAgg = await ctx.db.clipPost.groupBy({
-            by: ["applicationId"],
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              NOT: {
-                applicationId: undefined,
-              },
-            },
-            _sum: {
-              views: true,
-              likes: true,
-              comments: true,
-              shares: true,
-              saves: true,
-            },
-            _count: {
-              id: true,
-            },
-          });
-
-          // Calcular ranking score para cada application
-          const applicationsWithScore = topApplicationsAgg
-            .filter(
-              (a): a is typeof a & { applicationId: string } =>
-                a.applicationId !== null,
-            )
-            .map((agg) => {
-              const views = Number(agg._sum.views || 0);
-              const likes = agg._sum.likes || 0;
-              const comments = agg._sum.comments || 0;
-              const shares = agg._sum.shares || 0;
-              const saves = agg._sum.saves || 0;
-
-              const rankingScore = calculateRankingScore(
-                metricType,
-                views,
-                likes,
-                comments,
-                shares,
-                saves,
-              );
-
-              const engagementRate = calculateEngagementRate(
-                views,
-                likes,
-                comments,
-                shares,
-                saves,
-              );
-
-              return {
-                applicationId: agg.applicationId,
-                totalViews: views,
-                rankingScore,
-                engagementRate,
-                totalPosts: agg._count.id,
-              };
-            })
-            .sort((a, b) => b.rankingScore - a.rankingScore)
-            .slice(0, campaign.activeRankingRule?.monthlyTopCount ?? 15);
-
-          // Buscar dados dos clippers
-          const topApplicationIds = applicationsWithScore.map(
-            (a) => a.applicationId,
-          );
-
-          const topClipperData = await ctx.db.clipperApplication.findMany({
-            where: {
-              id: { in: topApplicationIds },
-            },
-            select: {
-              id: true,
-              clipperProfile: {
-                select: {
-                  userId: true,
-                  artisticName: true,
-                  fullName: true,
-                  user: {
-                    select: {
-                      imageUrl: true,
-                    },
-                  },
-                  clan: {
-                    select: {
-                      tag: true,
-                      emoji: true,
-                      emojiColor: true,
-                    },
-                  },
-                },
-              },
-            },
-          });
-
-          const clipperDataMap = new Map(topClipperData.map((c) => [c.id, c]));
-
-          topRanking = applicationsWithScore
-            .map((app, index) => {
-              const clipperInfo = clipperDataMap.get(app.applicationId);
-              return {
-                position: index + 1,
-                username: clipperInfo
-                  ? `@${getClipperRankingDisplayName(clipperInfo.clipperProfile)}`
-                  : "@unknown",
-                imageUrl: clipperInfo?.clipperProfile.user?.imageUrl || null,
-                totalViews: app.totalViews,
-                rankingScore: app.rankingScore,
-                engagementRate: app.engagementRate,
-                totalPosts: app.totalPosts,
-                isCurrentUser:
-                  clipperInfo?.clipperProfile.userId === ctx.userId,
-                clanTag: clipperInfo?.clipperProfile.clan?.tag ?? null,
-                clanEmoji: clipperInfo?.clipperProfile.clan?.emoji ?? null,
-                clanEmojiColor:
-                  clipperInfo?.clipperProfile.clan?.emojiColor ?? null,
-              };
-            })
-            .filter((entry) => entry.username !== "@unknown");
-        }
+        // Mesma fonte do ADMIN para filtros, métricas históricas e desempates.
+        const monthlyBoard = await computeMonthlyLeaderboard(
+          ctx.db,
+          campaign.id,
+          campaign,
+        );
+        const topRanking = (monthlyBoard?.rows ?? []).map((row) => ({
+          position: row.position,
+          username: `@${row.clipperUsername}`,
+          imageUrl: row.clipperImageUrl,
+          totalViews: row.totalViews,
+          rankingScore: row.rankingScore,
+          engagementRate: row.engagementRate,
+          totalPosts: row.postsCount,
+          isCurrentUser: row.clipperProfileId === clipperProfile.id,
+          clanTag: row.clanTag,
+          clanEmoji: row.clanEmoji,
+          clanEmojiColor: row.clanEmojiColor,
+        }));
+        const myMonthlyRanking = monthlyBoard?.rows.find(
+          (row) => row.clipperProfileId === clipperProfile.id,
+        );
 
         const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
         const referenceDateYmd = getClipperDailyReferenceDateYmd();
@@ -2538,10 +2299,10 @@ export const campaignRouter = createTRPCRouter({
             clipperProfile.artisticName || clipperProfile.fullName || "",
 
           // Ranking do usuário
-          myCurrentRanking: bestRanking?.position || 0,
+          myCurrentRanking: myMonthlyRanking?.position ?? 0,
           myPreviousRanking:
-            bestRanking?.previousPosition || bestRanking?.position || 0,
-          myMonthlyRanking: bestRanking?.position || 0, // Simplificado
+            myMonthlyRanking?.previousPosition ?? myMonthlyRanking?.position ?? 0,
+          myMonthlyRanking: myMonthlyRanking?.position ?? 0,
           myTotalPosts: myTotalPostsCount, // Usando contagem agregada (não limitada)
           myTotalViews,
           myTotalLikes,
