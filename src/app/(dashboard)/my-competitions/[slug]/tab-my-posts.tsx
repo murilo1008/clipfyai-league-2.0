@@ -251,10 +251,23 @@ function PostsGrid({
   onCreatePost,
   emptySubtitle,
 }: {
-  posts: MyPost[]
-  onCreatePost: () => void
-  emptySubtitle: string
+  posts: MyPost[];
+  onCreatePost: () => void;
+  emptySubtitle: string;
 }) {
+  const [page, setPage] = React.useState(1);
+  const pageSize = 24;
+  const totalPages = Math.max(1, Math.ceil(posts.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visiblePosts = posts.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [posts]);
+
   return (
     <div className="flex flex-col gap-4">
       {posts.length === 0 ? (
@@ -265,10 +278,35 @@ function PostsGrid({
         />
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {posts.map((post) => (
+          {visiblePosts.map((post) => (
             <PostCard key={post.id} post={post} />
           ))}
         </div>
+      )}
+
+      {totalPages > 1 && (
+        <nav
+          aria-label="Paginação dos posts"
+          className="flex items-center justify-center gap-3"
+        >
+          <Button
+            variant="outline"
+            disabled={currentPage === 1}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            Anterior
+          </Button>
+          <span className="text-muted-foreground text-sm" aria-live="polite">
+            Página {currentPage} de {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            disabled={currentPage === totalPages}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            Próxima
+          </Button>
+        </nav>
       )}
 
       {/* CTA enviar mais posts */}
@@ -292,7 +330,7 @@ function PostsGrid({
         </Button>
       </div>
     </div>
-  )
+  );
 }
 
 /* ============================================================

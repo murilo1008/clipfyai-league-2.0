@@ -1893,7 +1893,7 @@ export const campaignRouter = createTRPCRouter({
         );
 
         // Buscar posts do clipper nesta competição (TODOS os status, incluindo PENDING)
-        // OTIMIZAÇÃO: Limitar a 100 posts mais recentes para evitar queries pesadas
+        // Carregar o conjunto completo para os filtros e contadores de Meus Posts.
         const myPosts = await ctx.db.clipPost.findMany({
           where: {
             campaignId: campaign.id,
@@ -1918,8 +1918,7 @@ export const campaignRouter = createTRPCRouter({
             status: true, // Incluir status para renderizar loading
             ineligibilityReason: true,
           },
-          orderBy: { createdAt: "desc" },
-          take: 100, // Limitar para evitar timeout
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         });
 
         // Buscar rankings diários dos posts do clipper (última atualização)
