@@ -24,9 +24,11 @@ import { api } from "@/trpc/react";
 export function AnnouncementsTab({
   slug,
   initialAnnouncementId,
+  showHeading = true,
 }: {
   slug: string;
   initialAnnouncementId?: string;
+  showHeading?: boolean;
 }) {
   const router = useRouter();
   const utils = api.useUtils();
@@ -82,15 +84,17 @@ export function AnnouncementsTab({
       aria-label="Mural de avisos da competição"
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-bold">
-            <Megaphone className="size-5 text-cyan-500" weight="duotone" />
-            Avisos da competição
-          </h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Conteúdos, regras e orientações para acompanhar a competição.
-          </p>
-        </div>
+        {showHeading && (
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-bold">
+              <Megaphone className="size-5 text-cyan-500" weight="duotone" />
+              Avisos da competição
+            </h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Conteúdos, regras e orientações para acompanhar a competição.
+            </p>
+          </div>
+        )}
         <AnnouncementCategoryFilter value={category} onChange={setCategory} />
       </div>
       {posts.isLoading ? (

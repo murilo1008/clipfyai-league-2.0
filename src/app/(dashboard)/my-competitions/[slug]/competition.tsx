@@ -3,6 +3,7 @@
 import * as React from "react"
 import Image from "next/image"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   ArrowDownRight,
   ArrowSquareOut,
@@ -49,6 +50,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -230,10 +232,14 @@ export default function Competition({
 }) {
   const { maskText } = useMaskedCurrency()
   const utils = api.useUtils()
-  const [activeTab, setActiveTab] = React.useState<string>(initialTab)
+  const router = useRouter()
+  const [isAnnouncementsDialogOpen, setIsAnnouncementsDialogOpen] =
+    React.useState(initialTab === "announcements" || !!initialAnnouncementId)
   React.useEffect(() => {
-    setActiveTab(initialTab)
-  }, [initialTab, initialAnnouncementId])
+    setIsAnnouncementsDialogOpen(
+      initialTab === "announcements" || !!initialAnnouncementId,
+    )
+  }, [slug, initialTab, initialAnnouncementId])
 
   /* ===== Queries ===== */
   const { data: userData } = api.user.getCurrentUser.useQuery()
@@ -565,6 +571,24 @@ export default function Competition({
                       />
                       <span className="hidden sm:inline">Regras & Prêmios</span>
                       <span className="sm:hidden">Regras</span>
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 cursor-pointer rounded-xl border-white/12 bg-white/[0.06] text-[#ecf7f9] hover:bg-white/12 hover:text-white"
+                      onClick={() => setIsAnnouncementsDialogOpen(true)}
+                      aria-haspopup="dialog"
+                      aria-expanded={isAnnouncementsDialogOpen}
+                    >
+                      <Megaphone className="size-3.5 text-cyan-400" weight="fill" />
+                      Avisos
+                      {(unreadNotifications?.byCampaign[competition.id] ?? 0) > 0 && (
+                        <Badge className="border-0 bg-cyan-400 px-1.5 py-0 text-[10px] font-bold text-[#04222A]">
+                          {unreadNotifications?.byCampaign[competition.id]}
+                          <span className="sr-only"> avisos não lidos</span>
+                        </Badge>
+                      )}
                     </Button>
 
                     {hasAffiliateLinks && (
@@ -1442,7 +1466,7 @@ export default function Competition({
           contas) e não pode depender de scroll para aparecer — mesmo
           padrão das demais telas do dashboard. */}
       <Reveal immediate delayMs={60}>
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4 sm:gap-5">
+        <Tabs defaultValue="posts" className="gap-4 sm:gap-5">
           <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
             <TabsList className="bg-muted/40 flex h-auto w-max gap-1 rounded-2xl p-1 sm:w-full">
               <TabsTrigger
@@ -1487,18 +1511,6 @@ export default function Competition({
                   {applicationAccounts?.length || 0}
                 </Badge>
               </TabsTrigger>
-              <TabsTrigger
-                value="announcements"
-                className="cursor-pointer gap-1.5 rounded-full px-3 py-2 text-xs font-semibold whitespace-nowrap sm:flex-1"
-              >
-                <Megaphone className="size-3.5" weight="fill" />
-                Avisos
-                {(unreadNotifications?.byCampaign[competition.id] ?? 0) > 0 && (
-                  <Badge className="bg-gradient-custom border-0 px-1.5 py-0 text-[10px] font-bold text-[#04222A]">
-                    {unreadNotifications?.byCampaign[competition.id]}
-                  </Badge>
-                )}
-              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -1526,12 +1538,6 @@ export default function Competition({
               onAddAccounts={() => setIsAddAccountsDialogOpen(true)}
             />
           </TabsContent>
-          <TabsContent value="announcements">
-            <AnnouncementsTab
-              slug={slug}
-              initialAnnouncementId={initialAnnouncementId}
-            />
-          </TabsContent>
         </Tabs>
       </Reveal>
 
@@ -1542,6 +1548,35 @@ export default function Competition({
         competition={competition}
         isProSubscriber={isProSubscriber}
       />
+
+      <Dialog
+        open={isAnnouncementsDialogOpen}
+        onOpenChange={(open) => {
+          setIsAnnouncementsDialogOpen(open)
+          if (!open && (initialTab === "announcements" || initialAnnouncementId)) {
+            router.replace(`/my-competitions/${encodeURIComponent(slug)}`, {
+              scroll: false,
+            })
+          }
+        }}
+      >
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Megaphone className="size-5 text-cyan-500" weight="duotone" />
+              Avisos da competição
+            </DialogTitle>
+            <DialogDescription>
+              Conteúdos, regras e orientações para acompanhar a competição.
+            </DialogDescription>
+          </DialogHeader>
+          <AnnouncementsTab
+            slug={slug}
+            initialAnnouncementId={initialAnnouncementId}
+            showHeading={false}
+          />
+        </DialogContent>
+      </Dialog>
 
       <AffiliateLinksDialog
         open={isAffiliateLinksDialogOpen}

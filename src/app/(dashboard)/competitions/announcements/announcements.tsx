@@ -341,8 +341,8 @@ export default function Announcements() {
                     disabled={busy || isArchived}
                   />
                   <p className="text-muted-foreground text-xs leading-relaxed">
-                    Somente o clipador selecionado verá este direcionamento na
-                    aba Avisos da competição.
+                    Somente o clipador selecionado verá este direcionamento no
+                    mural de avisos da competição.
                   </p>
                 </div>
               )}
@@ -496,7 +496,7 @@ export default function Announcements() {
                     : "Nenhuma postagem nesta categoria"}
                 </p>
                 <p className="text-muted-foreground text-sm">
-                  Publique uma mensagem para disponibilizá-la na aba Avisos dos
+                  Publique uma mensagem para disponibilizá-la no mural dos
                   clipadores.
                 </p>
               </div>
