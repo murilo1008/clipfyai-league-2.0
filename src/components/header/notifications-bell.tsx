@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { Bell, Megaphone } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
@@ -17,15 +17,24 @@ import { api } from "@/trpc/react";
 
 export function NotificationsBell() {
   const router = useRouter();
+  const pathname = usePathname();
+  const params = useParams<{ slug?: string | string[] }>();
+  const competitionSlug =
+    pathname.startsWith("/my-competitions/") && typeof params.slug === "string"
+      ? params.slug
+      : undefined;
   const [open, setOpen] = useState(false);
   const { data: user } = api.user.getCurrentUser.useQuery();
   const enabled = user?.role === "CLIPPER";
-  const summary = api.notifications.unreadSummary.useQuery(undefined, {
-    enabled,
-    refetchInterval: 30000,
-  });
+  const summary = api.notifications.unreadSummary.useQuery(
+    competitionSlug ? { slug: competitionSlug } : undefined,
+    {
+      enabled,
+      refetchInterval: 30000,
+    },
+  );
   const notifications = api.notifications.list.useInfiniteQuery(
-    {},
+    { slug: competitionSlug },
     {
       enabled: enabled && open,
       getNextPageParam: (page) => page.nextCursor,
@@ -60,7 +69,9 @@ export function NotificationsBell() {
         className="w-[calc(100vw-2rem)] max-w-sm overflow-hidden rounded-2xl p-0"
       >
         <div className="border-b p-4">
-          <h2 className="font-bold">Notificações</h2>
+          <h2 className="font-bold">
+            {competitionSlug ? "Avisos desta competição" : "Notificações"}
+          </h2>
           <p className="text-muted-foreground mt-1 text-xs">
             {summary.isLoading
               ? "Carregando avisos…"
@@ -94,7 +105,9 @@ export function NotificationsBell() {
           ) : items.length === 0 ? (
             <div className="text-muted-foreground flex flex-col items-center gap-3 p-8 text-center text-sm">
               <Megaphone className="size-7" weight="duotone" />
-              Nenhum aviso recebido ainda.
+              {competitionSlug
+                ? "Nenhum aviso recebido nesta competição."
+                : "Nenhum aviso recebido ainda."}
             </div>
           ) : (
             items.map((notification) => (

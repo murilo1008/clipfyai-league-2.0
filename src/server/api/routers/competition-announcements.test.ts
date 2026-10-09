@@ -399,6 +399,45 @@ describe("admin: mural das competições", () => {
 });
 
 describe("clipador: acesso ao mural", () => {
+  it("separa os avisos ao alternar entre duas competições do mesmo clipador", async () => {
+    const { api, db } = setup("CLIPPER");
+    const campaigns = [
+      { id: "campaign-x", slug: "competicao-x", status: "ACTIVE" },
+      { id: "campaign-y", slug: "competicao-y", status: "ACTIVE" },
+    ];
+    const notices = [
+      { ...post, id: "post-x", campaignId: "campaign-x" },
+      { ...post, id: "post-y", campaignId: "campaign-y" },
+    ];
+    db.campaign.findUnique.mockImplementation(async ({ where }) =>
+      campaigns.find((campaign) => campaign.slug === where.slug),
+    );
+    db.competitionAnnouncement.findMany.mockImplementation(async ({ where }) =>
+      notices
+        .filter((notice) => notice.campaignId === where.campaignId)
+        .map(({ campaignId: _campaignId, ...notice }) => notice),
+    );
+    expect(
+      (await api.listForClipper({ slug: "competicao-x" })).items.map(
+        (item) => item.id,
+      ),
+    ).toEqual(["post-x"]);
+    expect(
+      (await api.listForClipper({ slug: "competicao-y" })).items.map(
+        (item) => item.id,
+      ),
+    ).toEqual(["post-y"]);
+    expect(db.clipperApplication.findUnique).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          campaignId_clipperProfileId: {
+            campaignId: "campaign-y",
+            clipperProfileId: "clipper-1",
+          },
+        },
+      }),
+    );
+  });
   it("retorna apenas conteúdo público, isolado por competição e categoria", async () => {
     const { api, db } = setup("CLIPPER");
     const result = await api.listForClipper({

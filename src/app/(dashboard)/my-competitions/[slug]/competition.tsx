@@ -244,7 +244,7 @@ export default function Competition({
   /* ===== Queries ===== */
   const { data: userData } = api.user.getCurrentUser.useQuery()
   const { data: unreadNotifications } = api.notifications.unreadSummary.useQuery(
-    undefined,
+    { slug },
     { enabled: userData?.role === "CLIPPER", refetchInterval: 30000 },
   )
   const isProSubscriber = userData?.subscriptionStatus === "ACTIVE"
@@ -1571,6 +1571,7 @@ export default function Competition({
             </DialogDescription>
           </DialogHeader>
           <AnnouncementsTab
+            key={slug}
             slug={slug}
             initialAnnouncementId={initialAnnouncementId}
             showHeading={false}

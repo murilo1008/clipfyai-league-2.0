@@ -13,6 +13,7 @@ import {
 function visibleNotificationsWhere(
   userId: string,
   clipperProfileId: string,
+  campaignSlug?: string,
 ): Prisma.NotificationWhereInput {
   return {
     userId,
@@ -21,6 +22,7 @@ function visibleNotificationsWhere(
     announcement: {
       ...announcementAudienceWhere(clipperProfileId),
       campaign: {
+        ...(campaignSlug ? { slug: campaignSlug } : {}),
         status: { not: "ARCHIVED" },
         applications: {
           some: {
@@ -34,33 +36,41 @@ function visibleNotificationsWhere(
 }
 
 export const notificationsRouter = createTRPCRouter({
-  unreadSummary: privateProcedure.query(async ({ ctx }) => {
-    const profile = await requireAnnouncementClipper(ctx.db, ctx.userId);
-    const groups = await ctx.db.notification.groupBy({
-      by: ["campaignId"],
-      where: {
-        ...visibleNotificationsWhere(ctx.userId, profile.id),
-        isRead: false,
-      },
-      _count: { id: true },
-    });
-    const byCampaign: Record<string, number> = {};
-    for (const group of groups)
-      if (group.campaignId) byCampaign[group.campaignId] = group._count.id;
-    return {
-      total: Object.values(byCampaign).reduce(
-        (total, count) => total + count,
-        0,
-      ),
-      byCampaign,
-    };
-  }),
+  unreadSummary: privateProcedure
+    .input(
+      z
+        .object({ slug: z.string().trim().min(1).optional() })
+        .strict()
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const profile = await requireAnnouncementClipper(ctx.db, ctx.userId);
+      const groups = await ctx.db.notification.groupBy({
+        by: ["campaignId"],
+        where: {
+          ...visibleNotificationsWhere(ctx.userId, profile.id, input?.slug),
+          isRead: false,
+        },
+        _count: { id: true },
+      });
+      const byCampaign: Record<string, number> = {};
+      for (const group of groups)
+        if (group.campaignId) byCampaign[group.campaignId] = group._count.id;
+      return {
+        total: Object.values(byCampaign).reduce(
+          (total, count) => total + count,
+          0,
+        ),
+        byCampaign,
+      };
+    }),
 
   list: privateProcedure
     .input(
       z
         .object({
           limit: z.number().int().min(1).max(50).default(20),
+          slug: z.string().trim().min(1).optional(),
           cursor: z
             .object({ id: z.string().min(1), createdAt: z.date() })
             .nullish(),
@@ -72,7 +82,7 @@ export const notificationsRouter = createTRPCRouter({
       const profile = await requireAnnouncementClipper(ctx.db, ctx.userId);
       const records = await ctx.db.notification.findMany({
         where: {
-          ...visibleNotificationsWhere(ctx.userId, profile.id),
+          ...visibleNotificationsWhere(ctx.userId, profile.id, input.slug),
           ...(input.cursor
             ? {
                 OR: [

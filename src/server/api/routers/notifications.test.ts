@@ -82,6 +82,140 @@ beforeEach(() => {
 });
 
 describe("notificações de avisos da competição", () => {
+  it("lista somente avisos da competição aberta, mantendo o filtro de destinatário", async () => {
+    const { api, db } = setup();
+    const otherCompetition = {
+      ...record,
+      id: "notification-other",
+      announcement: {
+        ...record.announcement,
+        id: "post-other",
+        campaign: { id: "campaign-2", name: "Outra competição", slug: "outra" },
+      },
+    };
+    db.notification.findMany.mockImplementation(async ({ where }) =>
+      [record, otherCompetition].filter(
+        (item) =>
+          !where.announcement.campaign.slug ||
+          item.announcement.campaign.slug === where.announcement.campaign.slug,
+      ),
+    );
+    const result = await api.list({ slug: "competicao" });
+    expect(result.items.map((item) => item.announcementId)).toEqual(["post-1"]);
+    expect(db.notification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          ...visibility,
+          announcement: {
+            ...visibility.announcement,
+            campaign: {
+              ...visibility.announcement.campaign,
+              slug: "competicao",
+            },
+          },
+        },
+      }),
+    );
+    expect(
+      (await api.list({ slug: "outra" })).items.map(
+        (item) => item.announcementId,
+      ),
+    ).toEqual(["post-other"]);
+  });
+
+  it("conta somente os avisos não lidos da competição solicitada", async () => {
+    const { api, db } = setup();
+    db.notification.groupBy.mockImplementation(async ({ where }) =>
+      where.announcement.campaign.slug === "competicao"
+        ? [{ campaignId: "campaign-1", _count: { id: 2 } }]
+        : [
+            { campaignId: "campaign-1", _count: { id: 2 } },
+            { campaignId: "campaign-2", _count: { id: 1 } },
+          ],
+    );
+    expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
+      total: 2,
+      byCampaign: { "campaign-1": 2 },
+    });
+    expect(db.notification.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          ...visibility,
+          isRead: false,
+          announcement: {
+            ...visibility.announcement,
+            campaign: {
+              ...visibility.announcement.campaign,
+              slug: "competicao",
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("preserva a competição ao carregar páginas seguintes", async () => {
+    const { api, db } = setup();
+    const older = {
+      ...record,
+      id: "notification-0",
+      createdAt: new Date("2026-10-07T15:00:00Z"),
+    };
+    db.notification.findMany.mockResolvedValueOnce([record, older]);
+    const first = await api.list({ slug: "competicao", limit: 1 });
+    db.notification.findMany.mockResolvedValueOnce([older]);
+    await api.list({ slug: "competicao", limit: 1, cursor: first.nextCursor });
+    expect(db.notification.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          ...visibility,
+          announcement: {
+            ...visibility.announcement,
+            campaign: {
+              ...visibility.announcement.campaign,
+              slug: "competicao",
+            },
+          },
+          OR: [
+            { createdAt: { lt: createdAt } },
+            { createdAt, id: { lt: record.id } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it("não retorna avisos de outra competição quando o filtro não tem resultados", async () => {
+    const { api, db } = setup();
+    db.notification.findMany.mockResolvedValue([]);
+    db.notification.groupBy.mockResolvedValue([]);
+    expect((await api.list({ slug: "sem-avisos" })).items).toEqual([]);
+    expect(await api.unreadSummary({ slug: "sem-avisos" })).toEqual({
+      total: 0,
+      byCampaign: {},
+    });
+    expect(db.notification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          announcement: expect.objectContaining({
+            campaign: expect.objectContaining({ slug: "sem-avisos" }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("rejeita um filtro vazio em vez de listar todas as competições", async () => {
+    const { api, db } = setup();
+    await expect(api.list({ slug: " " })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    await expect(api.unreadSummary({ slug: "" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    expect(db.notification.findMany).not.toHaveBeenCalled();
+    expect(db.notification.groupBy).not.toHaveBeenCalled();
+  });
   it("conta não lidas por competição usando somente o público autorizado", async () => {
     const { api, db } = setup();
     expect(await api.unreadSummary()).toEqual({
