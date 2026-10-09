@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { AppBreadcrumbs } from "@/components/header/app-breadcrumbs"
 import { FinancialVisibilityToggle } from "@/components/header/financial-visibility-toggle"
+import { NotificationsBell } from "@/components/header/notifications-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -23,6 +24,7 @@ export function AppTopbar() {
 
         <div className="flex flex-1 items-center justify-end gap-1.5">
           <FinancialVisibilityToggle />
+          <NotificationsBell />
           <ThemeToggle />
         </div>
       </div>

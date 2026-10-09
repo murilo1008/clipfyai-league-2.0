@@ -18,6 +18,7 @@ import {
   Info,
   Lightning,
   LinkSimple,
+  Megaphone,
   Play,
   Plus,
   Pulse,
@@ -72,6 +73,7 @@ import { CompetitionSkeleton } from "./competition-skeleton"
 import { RulesDialog } from "./rules-dialog"
 import { parseBrlNumber } from "./shared"
 import { AccountsTab } from "./tab-accounts"
+import { AnnouncementsTab } from "./tab-announcements"
 import { MyPostsTab } from "./tab-my-posts"
 import { RankingTab } from "./tab-ranking"
 import { StatsTab } from "./tab-stats"
@@ -217,12 +219,28 @@ function GrowthTooltip({
    Página da competição do clipador
    ============================================================ */
 
-export default function Competition({ slug }: { slug: string }) {
+export default function Competition({
+  slug,
+  initialTab = "posts",
+  initialAnnouncementId,
+}: {
+  slug: string
+  initialTab?: "posts" | "announcements"
+  initialAnnouncementId?: string
+}) {
   const { maskText } = useMaskedCurrency()
   const utils = api.useUtils()
+  const [activeTab, setActiveTab] = React.useState<string>(initialTab)
+  React.useEffect(() => {
+    setActiveTab(initialTab)
+  }, [initialTab, initialAnnouncementId])
 
   /* ===== Queries ===== */
   const { data: userData } = api.user.getCurrentUser.useQuery()
+  const { data: unreadNotifications } = api.notifications.unreadSummary.useQuery(
+    undefined,
+    { enabled: userData?.role === "CLIPPER", refetchInterval: 30000 },
+  )
   const isProSubscriber = userData?.subscriptionStatus === "ACTIVE"
 
   const {
@@ -1424,7 +1442,7 @@ export default function Competition({ slug }: { slug: string }) {
           contas) e não pode depender de scroll para aparecer — mesmo
           padrão das demais telas do dashboard. */}
       <Reveal immediate delayMs={60}>
-        <Tabs defaultValue="posts" className="gap-4 sm:gap-5">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4 sm:gap-5">
           <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
             <TabsList className="bg-muted/40 flex h-auto w-max gap-1 rounded-2xl p-1 sm:w-full">
               <TabsTrigger
@@ -1469,6 +1487,18 @@ export default function Competition({ slug }: { slug: string }) {
                   {applicationAccounts?.length || 0}
                 </Badge>
               </TabsTrigger>
+              <TabsTrigger
+                value="announcements"
+                className="cursor-pointer gap-1.5 rounded-full px-3 py-2 text-xs font-semibold whitespace-nowrap sm:flex-1"
+              >
+                <Megaphone className="size-3.5" weight="fill" />
+                Avisos
+                {(unreadNotifications?.byCampaign[competition.id] ?? 0) > 0 && (
+                  <Badge className="bg-gradient-custom border-0 px-1.5 py-0 text-[10px] font-bold text-[#04222A]">
+                    {unreadNotifications?.byCampaign[competition.id]}
+                  </Badge>
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -1494,6 +1524,12 @@ export default function Competition({ slug }: { slug: string }) {
             <AccountsTab
               accounts={applicationAccounts}
               onAddAccounts={() => setIsAddAccountsDialogOpen(true)}
+            />
+          </TabsContent>
+          <TabsContent value="announcements">
+            <AnnouncementsTab
+              slug={slug}
+              initialAnnouncementId={initialAnnouncementId}
             />
           </TabsContent>
         </Tabs>

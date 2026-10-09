@@ -42,6 +42,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   submissions: "Envios",
   "data-metrics": "Dados & Métricas",
   library: "Biblioteca",
+  announcements: "Mural de avisos",
   "spotify-metrics": "Músicas Spotify",
   "video-downloads": "Downloads",
 

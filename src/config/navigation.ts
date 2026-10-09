@@ -55,6 +55,7 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
         { title: "Dados & Métricas", url: "/competitions/data-metrics" },
         { title: "Relatórios", url: "/competitions/reports" },
         { title: "Biblioteca", url: "/competitions/library" },
+        { title: "Mural de avisos", url: "/competitions/announcements" },
         { title: "Financeiro", url: "/competitions/financial" },
         { title: "Músicas Spotify", url: "/competitions/spotify-metrics" },
         { title: "Downloads", url: "/competitions/video-downloads" },
