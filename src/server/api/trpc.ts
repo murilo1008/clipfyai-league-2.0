@@ -9,6 +9,7 @@
 import { initTRPC } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
+import { LeagueErrorCause } from "@/server/league-clips/errors";
 
 import { db } from "@/server/db";
 import { currentUser } from "@clerk/nextjs/server";
@@ -46,6 +47,15 @@ const t = initTRPC.context<typeof createTRPCContext>().create({
       ...shape,
       data: {
         ...shape.data,
+        leagueError:
+          error.cause instanceof LeagueErrorCause
+            ? {
+                code: error.cause.leagueCode,
+                message: error.cause.leagueMessage,
+                details: error.cause.details,
+                status: error.cause.status,
+              }
+            : null,
         zodError:
           error.cause instanceof ZodError ? error.cause.flatten() : null,
       },

@@ -66,6 +66,10 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const { data: user, isLoading: isLoadingUser } =
     api.user.getCurrentUser.useQuery()
 
+  const { data: aiClipsAccess } = api.leagueClips.access.useQuery(undefined, {
+    enabled: !!user,
+  })
+
   const isAdminLike = user?.role === "ADMIN" || user?.role === "ORGANIZER_ADMIN"
 
   // "Em andamento" — competições ativas conforme o role (dados reais)
@@ -87,7 +91,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   )
 
   const navMain = user
-    ? getMenuByRole(user.role).filter(
+    ? getMenuByRole(user.role, { aiClipsEnabled: aiClipsAccess?.enabled }).filter(
         (item) =>
           user.role !== "CLIENT" ||
           item.url !== "/performance" ||

@@ -15,6 +15,7 @@ import { tiktokRouter } from "@/server/api/routers/tiktok";
 import { affiliateRouter } from "@/server/api/routers/affiliate";
 import { commentsAnalysisRouter } from "@/server/api/routers/comments-analysis";
 import { videoDownloadsRouter } from "@/server/api/routers/video-downloads";
+import { leagueClipsRouter } from "@/server/api/routers/league-clips";
 import { competitionAnnouncementsRouter } from "@/server/api/routers/competition-announcements";
 import { notificationsRouter } from "@/server/api/routers/notifications";
 import { createCallerFactory, createTRPCRouter } from "@/server/api/trpc";
@@ -42,6 +43,7 @@ export const appRouter = createTRPCRouter({
   affiliate: affiliateRouter,
   commentsAnalysis: commentsAnalysisRouter,
   videoDownloads: videoDownloadsRouter,
+  leagueClips: leagueClipsRouter,
   competitionAnnouncements: competitionAnnouncementsRouter,
   notifications: notificationsRouter,
 });

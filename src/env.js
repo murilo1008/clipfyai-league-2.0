@@ -17,6 +17,15 @@ export const env = createEnv({
     // derrubar o boot/build da aplicação.
     LEAGUE_API_URL: z.string().url().default("http://localhost:3000"),
     LEAGUE_INTERNAL_API_KEY: z.string().optional(),
+    AI_CLIPS_ENABLED: z.enum(["0", "1"]).default("0"),
+    AI_CLIPS_ALLOWED_EMAILS: z.string().optional(),
+    LEAGUE_CLIPS_MOCK: z
+      .enum(["0", "1"])
+      .default("0")
+      .refine(
+        (value) => process.env.NODE_ENV !== "production" || value !== "1",
+        "Mock de AI Clips proibido em produção",
+      ),
     DAILY_PAYOUT_BASE_URL: z.string().url().optional(),
     DAILY_PAYOUT_INTERNAL_KEY: z.string().optional(),
     YOUTUBE_LINK_SYNC_LOOKBACK_DAYS: z.coerce
@@ -51,6 +60,9 @@ export const env = createEnv({
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     LEAGUE_API_URL: process.env.LEAGUE_API_URL,
     LEAGUE_INTERNAL_API_KEY: process.env.LEAGUE_INTERNAL_API_KEY,
+    AI_CLIPS_ENABLED: process.env.AI_CLIPS_ENABLED,
+    AI_CLIPS_ALLOWED_EMAILS: process.env.AI_CLIPS_ALLOWED_EMAILS,
+    LEAGUE_CLIPS_MOCK: process.env.LEAGUE_CLIPS_MOCK,
     DAILY_PAYOUT_BASE_URL: process.env.DAILY_PAYOUT_BASE_URL,
     DAILY_PAYOUT_INTERNAL_KEY: process.env.DAILY_PAYOUT_INTERNAL_KEY,
     YOUTUBE_LINK_SYNC_LOOKBACK_DAYS:
