@@ -58,7 +58,7 @@ export function AnnouncementRecipientPicker({
           aria-expanded={open && !disabled}
           aria-label="Selecionar clipador destinatário"
           disabled={disabled}
-          className="w-full justify-between rounded-xl font-normal"
+          className="h-10 w-full cursor-pointer justify-between rounded-xl font-normal transition-colors hover:border-[color-mix(in_oklab,var(--brand-cyan)_45%,transparent)]"
         >
           <span className="truncate">
             {value
@@ -112,6 +112,7 @@ export function AnnouncementRecipientPicker({
                     <CommandItem
                       key={recipient.id}
                       value={recipient.id}
+                      className="cursor-pointer"
                       onSelect={() => {
                         onChange(recipient);
                         setOpen(false);

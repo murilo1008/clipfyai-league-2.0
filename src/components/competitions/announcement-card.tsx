@@ -33,14 +33,16 @@ export function AnnouncementCategoryFilter({
     >
       <SelectTrigger
         aria-label="Filtrar por categoria"
-        className="w-full rounded-xl sm:w-72"
+        className="h-10 w-full cursor-pointer rounded-xl transition-colors hover:border-[color-mix(in_oklab,var(--brand-cyan)_45%,transparent)] sm:w-72"
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="all">Todas as categorias</SelectItem>
+        <SelectItem value="all" className="cursor-pointer">
+          Todas as categorias
+        </SelectItem>
         {announcementCategorySchema.options.map((key) => (
-          <SelectItem key={key} value={key}>
+          <SelectItem key={key} value={key} className="cursor-pointer">
             {ANNOUNCEMENT_CATEGORIES[key].emoji}{" "}
             {ANNOUNCEMENT_CATEGORIES[key].label}
           </SelectItem>
@@ -63,7 +65,7 @@ export function AnnouncementCard({
   const edited = post.updatedAt.getTime() - post.createdAt.getTime() > 1000;
 
   return (
-    <article className="glass-card min-w-0 rounded-2xl p-4 sm:p-6">
+    <article className="glass-card min-w-0 rounded-2xl p-4 transition-[box-shadow,border-color] duration-300 hover:border-[color-mix(in_oklab,var(--brand-cyan)_35%,transparent)] hover:shadow-[0_18px_48px_-24px_color-mix(in_oklab,var(--brand-cyan)_45%,transparent)] sm:p-6">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Badge
