@@ -420,30 +420,25 @@ export function InstagramBrowserEmbed({ url }: { url: string }) {
   )
 }
 
-const TIKTOK_EMBED_SCRIPT_URL = "https://www.tiktok.com/embed.js"
-
-/** Aquece a conexão e baixa o script sem executar o embed antes do clique. */
+/** Aquece a conexão com o TikTok antes do clique no player. */
 export function warmTikTokEmbed() {
   if (typeof document === "undefined") return
-
-  if (!document.querySelector('link[data-clipfy-tiktok-preconnect="true"]')) {
-    const connection = document.createElement("link")
-    connection.rel = "preconnect"
-    connection.href = "https://www.tiktok.com"
-    connection.dataset.clipfyTiktokPreconnect = "true"
-    document.head.appendChild(connection)
+  if (document.querySelector('link[data-clipfy-tiktok-preconnect="true"]')) {
+    return
   }
 
-  if (!document.querySelector('link[data-clipfy-tiktok-preload="true"]')) {
-    const preload = document.createElement("link")
-    preload.rel = "preload"
-    preload.as = "script"
-    preload.href = TIKTOK_EMBED_SCRIPT_URL
-    preload.dataset.clipfyTiktokPreload = "true"
-    document.head.appendChild(preload)
-  }
+  const connection = document.createElement("link")
+  connection.rel = "preconnect"
+  connection.href = "https://www.tiktok.com"
+  connection.dataset.clipfyTiktokPreconnect = "true"
+  document.head.appendChild(connection)
 }
 
+/**
+ * Usa o player oficial (/player/v1). O embed por blockquote + embed.js abre
+ * /embed/v2, que passou a responder 503 "overload-protect" ou 429 em boa
+ * parte das tentativas; o /player/v1 continua respondendo normalmente.
+ */
 export function TikTokBrowserEmbed({
   url,
   thumbnailUrl,
@@ -454,93 +449,29 @@ export function TikTokBrowserEmbed({
   const [isLoading, setIsLoading] = React.useState(true)
   const [hasFailed, setHasFailed] = React.useState(false)
   const [attempt, setAttempt] = React.useState(0)
-  const containerRef = React.useRef<HTMLDivElement>(null)
-  const videoId = React.useMemo(() => {
-    try {
-      const parts = new URL(url).pathname.split("/").filter(Boolean)
-      const videoIndex = parts.findIndex(
-        (part) => part.toLowerCase() === "video",
-      )
-      return videoIndex >= 0 ? parts[videoIndex + 1] : undefined
-    } catch {
-      return undefined
-    }
-  }, [url])
+  const loadTimeoutRef = React.useRef<number | undefined>(undefined)
+  const playerUrl = React.useMemo(() => getPostEmbedUrl(url), [url])
 
   React.useEffect(() => {
-    if (!videoId) {
+    if (!playerUrl) {
       setIsLoading(false)
       return
     }
 
-    let cancelled = false
-    let embedReady = false
     setIsLoading(true)
     setHasFailed(false)
-
-    const handleEmbedMessage = (event: MessageEvent) => {
-      if (cancelled || event.origin !== "https://www.tiktok.com") return
-      const iframe = containerRef.current?.querySelector("iframe")
-      if (!iframe || event.source !== iframe.contentWindow) return
-      if (typeof event.data !== "string") return
-
-      try {
-        const message = JSON.parse(event.data) as {
-          signalSource?: string
-          height?: number
-        }
-        if (
-          message.signalSource?.startsWith("__tt_embed__") &&
-          typeof message.height === "number" &&
-          message.height > 0
-        ) {
-          embedReady = true
-          setIsLoading(false)
-        }
-      } catch {
-        // Mensagens de outros recursos do TikTok não indicam embed pronto.
-      }
-    }
-    window.addEventListener("message", handleEmbedMessage)
-
-    const retryOrFail = () => {
-      if (cancelled || embedReady) return
-      if (attempt === 0) {
-        setAttempt(1)
-      } else {
-        setIsLoading(false)
-        setHasFailed(true)
-      }
-    }
-
-    document.querySelector('script[data-clipfy-tiktok-embed="true"]')?.remove()
-    const script = document.createElement("script")
-    script.async = true
-    script.fetchPriority = "high"
-    script.src = TIKTOK_EMBED_SCRIPT_URL
-    script.dataset.clipfyTiktokEmbed = "true"
-    script.onerror = retryOrFail
-    document.body.appendChild(script)
-
-    // O iframe dispara load até quando o TikTok responde com erro. A mensagem
-    // de altura chega somente depois de o embed renderizar seu conteúdo.
-    const timeout = window.setTimeout(retryOrFail, 7000)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timeout)
-      window.removeEventListener("message", handleEmbedMessage)
-      script.onerror = null
-      script.remove()
-    }
-  }, [videoId, attempt])
+    // O load chega em ~1 s. Vídeo removido ou privado o próprio player
+    // informa; sem load, o iframe nem chegou a abrir.
+    loadTimeoutRef.current = window.setTimeout(() => {
+      setIsLoading(false)
+      setHasFailed(true)
+    }, 15000)
+    return () => window.clearTimeout(loadTimeoutRef.current)
+  }, [playerUrl, attempt])
 
   return (
-    <div
-      ref={containerRef}
-      className="relative h-full w-full overflow-y-auto bg-white px-1 py-3 sm:px-4"
-    >
-      {isLoading && videoId && (
+    <div className="relative flex h-full w-full items-center justify-center bg-black">
+      {isLoading && playerUrl && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black text-white">
           {thumbnailUrl && (
             <Image
@@ -579,22 +510,21 @@ export function TikTokBrowserEmbed({
           </a>
         </div>
       )}
-      {videoId ? (
-        <blockquote
-          key={`${url}-${attempt}`}
-          className="tiktok-embed mx-auto! max-w-[605px]! min-w-0!"
-          cite={url}
-          data-video-id={videoId}
-          data-embed-from="embed_page"
-        >
-          <section>
-            <a href={url} target="_blank" rel="noopener noreferrer">
-              Ver este vídeo no TikTok
-            </a>
-          </section>
-        </blockquote>
+      {playerUrl ? (
+        <iframe
+          key={`${playerUrl}-${attempt}`}
+          src={playerUrl}
+          title="Vídeo do TikTok"
+          className="h-full w-full max-w-[540px] border-0"
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+          allowFullScreen
+          onLoad={() => {
+            window.clearTimeout(loadTimeoutRef.current)
+            setIsLoading(false)
+          }}
+        />
       ) : (
-        <p className="p-6 text-center text-sm text-black/65">
+        <p className="p-6 text-center text-sm text-white/65">
           Não foi possível identificar este vídeo do TikTok.
         </p>
       )}
