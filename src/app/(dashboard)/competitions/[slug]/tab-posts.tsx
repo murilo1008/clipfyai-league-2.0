@@ -450,24 +450,80 @@ export function TikTokBrowserEmbed({
   const [hasFailed, setHasFailed] = React.useState(false)
   const [attempt, setAttempt] = React.useState(0)
   const loadTimeoutRef = React.useRef<number | undefined>(undefined)
+  const iframeRef = React.useRef<HTMLIFrameElement>(null)
+  const startedAtRef = React.useRef(0)
   const playerUrl = React.useMemo(() => getPostEmbedUrl(url), [url])
+
+  const log = React.useCallback(
+    (
+      level: "info" | "warn",
+      event: string,
+      details: Record<string, unknown> = {},
+    ) => {
+      // console.warn em vez de console.error: no Next.js dev, console.error
+      // abre o error overlay mesmo para falhas tratadas aqui.
+      console[level](`[TikTokEmbed] ${event}`, {
+        url,
+        playerUrl,
+        attempt,
+        elapsedMs: Math.round(performance.now() - startedAtRef.current),
+        ...details,
+      })
+    },
+    [url, playerUrl, attempt],
+  )
 
   React.useEffect(() => {
     if (!playerUrl) {
+      log("warn", "video_id_not_found")
       setIsLoading(false)
       return
     }
 
+    startedAtRef.current = performance.now()
+    log("info", "loading_started")
     setIsLoading(true)
     setHasFailed(false)
     // O load chega em ~1 s. Vídeo removido ou privado o próprio player
     // informa; sem load, o iframe nem chegou a abrir.
     loadTimeoutRef.current = window.setTimeout(() => {
+      log("warn", "load_timeout")
       setIsLoading(false)
       setHasFailed(true)
     }, 15000)
     return () => window.clearTimeout(loadTimeoutRef.current)
-  }, [playerUrl, attempt])
+  }, [playerUrl, attempt, log])
+
+  // Eventos do player oficial: pronto, mudança de estado (tocando, pausado,
+  // carregando) e erro com código. É por eles que se vê o player travado.
+  React.useEffect(() => {
+    const handlePlayerMessage = (event: MessageEvent) => {
+      if (event.origin !== "https://www.tiktok.com") return
+      if (event.source !== iframeRef.current?.contentWindow) return
+
+      let data: unknown = event.data
+      if (typeof data === "string") {
+        try {
+          data = JSON.parse(data)
+        } catch {
+          // Algumas mensagens são texto puro, como "[tea-sdk]ready".
+        }
+      }
+      const type =
+        typeof data === "object" && data !== null && "type" in data
+          ? String((data as { type: unknown }).type)
+          : null
+      // onCurrentTime chega várias vezes por segundo enquanto o vídeo toca.
+      if (type === "onCurrentTime") return
+      log(type === "onPlayerError" ? "warn" : "info", "player_message", {
+        type,
+        data,
+      })
+    }
+
+    window.addEventListener("message", handlePlayerMessage)
+    return () => window.removeEventListener("message", handlePlayerMessage)
+  }, [log])
 
   return (
     <div className="relative flex h-full w-full items-center justify-center bg-black">
@@ -494,7 +550,10 @@ export function TikTokBrowserEmbed({
           <p className="font-semibold">Não foi possível carregar este vídeo</p>
           <button
             type="button"
-            onClick={() => setAttempt((current) => current + 1)}
+            onClick={() => {
+              log("info", "retry_clicked")
+              setAttempt((current) => current + 1)
+            }}
             className="flex cursor-pointer items-center gap-1.5 text-sm underline"
           >
             <ArrowsClockwise className="size-4" />
@@ -513,6 +572,7 @@ export function TikTokBrowserEmbed({
       {playerUrl ? (
         <iframe
           key={`${playerUrl}-${attempt}`}
+          ref={iframeRef}
           src={playerUrl}
           title="Vídeo do TikTok"
           className="h-full w-full max-w-[540px] border-0"
@@ -520,8 +580,10 @@ export function TikTokBrowserEmbed({
           allowFullScreen
           onLoad={() => {
             window.clearTimeout(loadTimeoutRef.current)
+            log("info", "iframe_loaded")
             setIsLoading(false)
           }}
+          onError={() => log("warn", "iframe_error")}
         />
       ) : (
         <p className="p-6 text-center text-sm text-white/65">
@@ -1046,6 +1108,34 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
     window.addEventListener("keydown", handlePlayerKeyboard)
     return () => window.removeEventListener("keydown", handlePlayerKeyboard)
   }, [playerPost, playerPostIndex, postsData?.posts.length, showPlayerPost])
+
+  const playerPostPlatform = playerPost?.platform
+  const playerPostUrl = playerPost?.url
+  React.useEffect(() => {
+    if (!isPlayerOpen || !playerPostId) return
+    console.info("[PostsPlayer] post_opened", {
+      postId: playerPostId,
+      platform: playerPostPlatform,
+      url: playerPostUrl,
+      mode: playerVideoUrl
+        ? "bucket_video"
+        : playerPostPlatform === "INSTAGRAM"
+          ? "instagram_embed"
+          : playerPostPlatform === "TIKTOK"
+            ? "tiktok_embed"
+            : playerEmbedUrl
+              ? "iframe"
+              : "unavailable",
+      videoUrl: playerVideoUrl,
+    })
+  }, [
+    isPlayerOpen,
+    playerPostId,
+    playerPostPlatform,
+    playerPostUrl,
+    playerVideoUrl,
+    playerEmbedUrl,
+  ])
 
   React.useEffect(() => {
     if (!isPlayerOpen || !isPlayerLoading) return
@@ -1727,7 +1817,19 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                 preload="metadata"
                 onCanPlay={() => setIsPlayerLoading(false)}
                 onLoadedData={() => setIsPlayerLoading(false)}
-                onError={() => {
+                onStalled={() =>
+                  console.warn("[PostsPlayer] bucket_video_stalled", {
+                    postId: playerPost?.id,
+                    src: playerVideoUrl,
+                  })
+                }
+                onError={(event) => {
+                  console.warn("[PostsPlayer] bucket_video_failed", {
+                    postId: playerPost?.id,
+                    src: playerVideoUrl,
+                    code: event.currentTarget.error?.code ?? null,
+                    message: event.currentTarget.error?.message ?? null,
+                  })
                   setFailedVideoPostId(playerPost?.id ?? null)
                   setIsPlayerLoading(false)
                 }}
