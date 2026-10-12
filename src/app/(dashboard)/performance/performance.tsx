@@ -421,9 +421,11 @@ export default function ClientPerformance() {
       ) => { data: unknown; isLoading: boolean; isError: boolean };
     };
   };
+  // A série vem do job de métricas e cada consulta é pesada no banco:
+  // atualizar a cada 10 min é suficiente.
   const query = performanceRouter.getPerformance.useQuery(
     { campaignId: selectedId || undefined },
-    { refetchInterval: 60_000 },
+    { refetchInterval: 10 * 60_000 },
   );
   const data = normalizeResponse(
     query.data as PerformanceApiResponse | undefined,
@@ -473,7 +475,11 @@ export default function ClientPerformance() {
     investment: asNumber(point.investment),
     estimatedAdsCost: asNumber(point.estimatedAdsCost),
   }));
-  const showCpmChart = hasComparison && cpmPoints.length > 1;
+  const currentCpm = asNumber(summary?.effectiveCpm);
+  const marketCpm = asNumber(summary?.referenceCpm);
+  const isCpmBelowMarket =
+    hasComparison && currentCpm > 0 && marketCpm > 0 && currentCpm < marketCpm;
+  const showCpmChart = isCpmBelowMarket && cpmPoints.length > 1;
   const heroHistory = (data?.cpmHistory ?? []).slice(-12);
   const heroMaxViews = Math.max(
     1,
@@ -679,7 +685,7 @@ export default function ClientPerformance() {
                   />
                 </div>
               )}
-              {showCpmChart ? (
+              {showCpmChart && (
                 <CpmComparisonChart
                   points={cpmPoints}
                   totalViews={asNumber(summary?.totalViews)}
@@ -690,7 +696,8 @@ export default function ClientPerformance() {
                   formatViews={(value) => NUMBER.format(value)}
                   scope={isOverview ? "all" : "single"}
                 />
-              ) : (
+              )}
+              {isCpmBelowMarket && !showCpmChart && (
                 <EmptyState message="Ainda não há histórico suficiente para desenhar o comparativo." />
               )}
             </section>
