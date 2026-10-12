@@ -297,8 +297,7 @@ export function PerformanceTab({
 
   const query = api.admin.getCompetitionPerformance.useQuery(
     { campaignId },
-    // Consulta pesada (série diária × posts); o dado muda só com o job de métricas
-    { enabled: active && Boolean(campaignId), refetchInterval: 10 * 60_000 },
+    { enabled: active && Boolean(campaignId), refetchInterval: 60_000 },
   );
   const payload = record(query.data);
   const settings = record(payload.settings);

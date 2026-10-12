@@ -421,11 +421,9 @@ export default function ClientPerformance() {
       ) => { data: unknown; isLoading: boolean; isError: boolean };
     };
   };
-  // A série vem do job de métricas e cada consulta é pesada no banco:
-  // atualizar a cada 10 min é suficiente.
   const query = performanceRouter.getPerformance.useQuery(
     { campaignId: selectedId || undefined },
-    { refetchInterval: 10 * 60_000 },
+    { refetchInterval: 60_000 },
   );
   const data = normalizeResponse(
     query.data as PerformanceApiResponse | undefined,
