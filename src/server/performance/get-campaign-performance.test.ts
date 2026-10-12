@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildCumulativeCpmHistory,
@@ -41,28 +41,16 @@ describe("calculatePerformanceSummary", () => {
 });
 
 describe("buildCumulativeCpmHistory", () => {
-  it("carrega as views anteriores de cada post e mantém o CPM decrescente", () => {
+  it("usa o total acumulado de cada dia e mantém o CPM decrescente", () => {
     const history = buildCumulativeCpmHistory({
       investedAmount: 70_000,
       referenceCpm: 13,
       currentTotalViews: 10_000_000,
       currentDate: new Date("2026-09-13T12:00:00.000Z"),
       rows: [
-        {
-          date: new Date("2026-09-10T13:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 500_000n,
-        },
-        {
-          date: new Date("2026-09-11T13:00:00.000Z"),
-          clipPostId: "post-b",
-          views: 500_000n,
-        },
-        {
-          date: new Date("2026-09-12T13:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 1_500_000n,
-        },
+        { date: new Date("2026-09-10T13:00:00.000Z"), views: 500_000n },
+        { date: new Date("2026-09-11T13:00:00.000Z"), views: 1_000_000n },
+        { date: new Date("2026-09-12T13:00:00.000Z"), views: 2_000_000n },
       ],
     });
 
@@ -74,6 +62,23 @@ describe("buildCumulativeCpmHistory", () => {
     ]);
   });
 
+  it("repete o total anterior nos dias sem coleta", () => {
+    const history = buildCumulativeCpmHistory({
+      investedAmount: 10_000,
+      referenceCpm: 13,
+      currentTotalViews: 0,
+      currentDate: new Date("2026-09-13T12:00:00.000Z"),
+      rows: [
+        { date: new Date("2026-09-10T13:00:00.000Z"), views: 500_000n },
+        { date: new Date("2026-09-12T13:00:00.000Z"), views: 800_000n },
+      ],
+    });
+
+    expect(history.map((point) => point.totalViews)).toEqual([
+      500_000, 500_000, 800_000, 800_000,
+    ]);
+  });
+
   it("não deixa uma correção negativa de views criar um pico de CPM", () => {
     const history = buildCumulativeCpmHistory({
       investedAmount: 10_000,
@@ -81,16 +86,8 @@ describe("buildCumulativeCpmHistory", () => {
       currentTotalViews: 900_000,
       currentDate: new Date("2026-09-12T12:00:00.000Z"),
       rows: [
-        {
-          date: new Date("2026-09-10T13:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 1_000_000n,
-        },
-        {
-          date: new Date("2026-09-11T13:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 900_000n,
-        },
+        { date: new Date("2026-09-10T13:00:00.000Z"), views: 1_000_000n },
+        { date: new Date("2026-09-11T13:00:00.000Z"), views: 900_000n },
       ],
     });
 
@@ -106,13 +103,7 @@ describe("buildCumulativeCpmHistory", () => {
       referenceCpm: 13,
       currentTotalViews: 1_000_000,
       currentDate: new Date("2026-09-11T12:00:00.000Z"),
-      rows: [
-        {
-          date: new Date("2026-09-10T13:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 500_000n,
-        },
-      ],
+      rows: [{ date: new Date("2026-09-10T13:00:00.000Z"), views: 500_000n }],
     });
 
     expect(history.map((point) => point.date.slice(0, 10))).toEqual([
@@ -129,12 +120,8 @@ describe("buildCumulativeCpmHistory", () => {
       currentTotalViews: 1_000_000,
       currentDate: new Date("2026-09-22T02:00:00.000Z"),
       rows: [
-        {
-          // Está na janela de 22/09: [21/09 20h, 22/09 20h).
-          date: new Date("2026-09-22T01:00:00.000Z"),
-          clipPostId: "post-a",
-          views: 1_000_000n,
-        },
+        // Está na janela de 22/09: [21/09 20h, 22/09 20h).
+        { date: new Date("2026-09-22T01:00:00.000Z"), views: 1_000_000n },
       ],
     });
 
@@ -157,17 +144,21 @@ describe("performanceDayKey", () => {
 });
 
 describe("getCampaignPerformance", () => {
-  it("começa na primeira coleta após o início e segue após o fim da competição", async () => {
+  // A série fica em cache por competição: cada teste usa um id próprio.
+  let sequence = 0;
+
+  function setup(
+    rows: Array<{ date: Date; views: bigint }> = [],
+    overrides: { startDate?: Date; endDate?: Date } = {},
+  ) {
     const now = Date.now();
-    const firstAfterStart = new Date(now - 2.5 * 60_000);
-    const afterEnd = new Date(now - 60_000);
     const campaign = {
-      id: "campaign-1",
-      name: "Competição encerrada",
-      slug: "competicao-encerrada",
+      id: `campaign-${++sequence}`,
+      name: "Competição",
+      slug: "competicao",
       status: "COMPLETED",
-      startDate: new Date(now - 3 * 60_000),
-      endDate: new Date(now - 2 * 60_000),
+      startDate: overrides.startDate ?? new Date(now - 3 * 60_000),
+      endDate: overrides.endDate ?? new Date(now - 2 * 60_000),
       platforms: [],
       requiredMentions: [],
       performanceSettings: null,
@@ -175,42 +166,49 @@ describe("getCampaignPerformance", () => {
       performanceVideos: [],
     };
     const queryRaw = vi.fn(
-      async (strings: TemplateStringsArray, ...values: unknown[]) => {
-        const sql = strings.join("?");
-        expect(sql).toContain('MIN(first_metrics."collectedAt")');
-        expect(sql).not.toContain('MIN(post."postedAt")');
-        expect(sql.match(/metrics\."collectedAt" >=/g)).toHaveLength(2);
-        expect(sql).toContain(
-          `metrics."collectedAt" < performance_days.day + INTERVAL '20 hours'`,
-        );
-        expect(sql).not.toContain("INTERVAL '1 day 5 hours'");
-        expect(
-          values.filter((value) => value === campaign.startDate),
-        ).toHaveLength(2);
-        expect(values).not.toContain(campaign.endDate);
-        expect(
-          values.some(
-            (value) => value instanceof Date && value > campaign.endDate,
-          ),
-        ).toBe(true);
-        return [
-          { date: firstAfterStart, clipPostId: "post-1", views: 1_234n },
-          { date: afterEnd, clipPostId: "post-2", views: 567n },
-        ];
-      },
+      async (_strings: TemplateStringsArray, ..._values: unknown[]) => rows,
     );
-    const aggregate = vi.fn().mockResolvedValue({
-      _sum: { views: 2_000n },
-    });
+    const aggregate = vi.fn().mockResolvedValue({ _sum: { views: 2_000n } });
+    const findUnique = vi.fn().mockResolvedValue(campaign);
     const db = {
-      campaign: { findUnique: vi.fn().mockResolvedValue(campaign) },
+      campaign: { findUnique },
       clipPost: { aggregate },
       $queryRaw: queryRaw,
     } as unknown as PrismaClient;
+    return { campaign, db, queryRaw, aggregate, findUnique };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("começa na primeira coleta após o início e segue após o fim da competição", async () => {
+    const now = Date.now();
+    const firstAfterStart = new Date(now - 2.5 * 60_000);
+    const afterEnd = new Date(now - 60_000);
+    const { campaign, db, queryRaw, aggregate } = setup([
+      { date: firstAfterStart, views: 1_234n },
+      { date: afterEnd, views: 1_801n },
+    ]);
 
     const result = await getCampaignPerformance(db, campaign.id);
 
     expect(queryRaw).toHaveBeenCalledOnce();
+    const [strings, ...values] = queryRaw.mock.calls[0]!;
+    const sql = strings.join("?");
+    // Leitura post a post pelo índice (clipPostId, collectedAt).
+    expect(sql).toContain('metrics."clipPostId" = posts.id');
+    expect(sql).toContain("OFFSET 0");
+    // Dia operacional encerrado às 20h UTC, contando a partir da postagem.
+    expect(sql).toContain("INTERVAL '4 hours'");
+    expect(sql).toContain("posts.posted_day");
+    expect(values.filter((value) => value === campaign.startDate)).toHaveLength(
+      1,
+    );
+    expect(values).not.toContain(campaign.endDate);
+    expect(
+      values.some((value) => value instanceof Date && value > campaign.endDate),
+    ).toBe(true);
     expect(aggregate).toHaveBeenCalledWith({
       where: {
         campaignId: campaign.id,
@@ -224,5 +222,59 @@ describe("getCampaignPerformance", () => {
     );
     expect(result?.summary.totalViews).toBe(2_000);
     expect(result?.cpmHistory.at(-1)?.totalViews).toBe(2_000);
+  });
+
+  it("reaproveita a série entre consultas, inclusive simultâneas", async () => {
+    const { campaign, db, queryRaw, aggregate, findUnique } = setup();
+
+    await Promise.all([
+      getCampaignPerformance(db, campaign.id),
+      getCampaignPerformance(db, campaign.id),
+    ]);
+    await getCampaignPerformance(db, campaign.id);
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    // Configurações, perfis, vídeos e total atual continuam ao vivo.
+    expect(findUnique).toHaveBeenCalledTimes(3);
+    expect(aggregate).toHaveBeenCalledTimes(3);
+  });
+
+  it("lê a série de novo depois de 10 minutos", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T15:00:00.000Z"));
+    const { campaign, db, queryRaw } = setup();
+
+    await getCampaignPerformance(db, campaign.id);
+    vi.setSystemTime(new Date("2026-10-12T15:09:59.000Z"));
+    await getCampaignPerformance(db, campaign.id);
+    expect(queryRaw).toHaveBeenCalledOnce();
+
+    vi.setSystemTime(new Date("2026-10-12T15:10:01.000Z"));
+    await getCampaignPerformance(db, campaign.id);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("lê a série de novo quando a data de início muda", async () => {
+    const { campaign, db, queryRaw, findUnique } = setup();
+
+    await getCampaignPerformance(db, campaign.id);
+    findUnique.mockResolvedValueOnce({
+      ...campaign,
+      startDate: new Date(campaign.startDate.getTime() - 86_400_000),
+    });
+    await getCampaignPerformance(db, campaign.id);
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("não guarda falhas no cache", async () => {
+    const { campaign, db, queryRaw } = setup();
+    queryRaw.mockRejectedValueOnce(new Error("timeout"));
+
+    await expect(getCampaignPerformance(db, campaign.id)).rejects.toThrow(
+      "timeout",
+    );
+    await expect(getCampaignPerformance(db, campaign.id)).resolves.toBeTruthy();
+    expect(queryRaw).toHaveBeenCalledTimes(2);
   });
 });

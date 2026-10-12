@@ -29,9 +29,9 @@ export function calculatePerformanceSummary(input: {
   };
 }
 
-type ViewsHistoryRow = {
+/** Total da competição no fim de cada dia operacional com coleta. */
+type DailyViewsRow = {
   date: Date;
-  clipPostId: string;
   views: bigint;
 };
 
@@ -47,29 +47,27 @@ export function performanceDayKey(date: Date) {
 }
 
 export function buildCumulativeCpmHistory(input: {
-  rows: ViewsHistoryRow[];
+  rows: DailyViewsRow[];
   currentTotalViews: number;
   investedAmount: number;
   referenceCpm: number;
   currentDate?: Date;
 }) {
-  const rowsByDay = new Map<string, ViewsHistoryRow[]>();
+  const totalsByDay = new Map<string, number>();
   for (const row of input.rows) {
-    const day = performanceDayKey(row.date);
-    const rows = rowsByDay.get(day) ?? [];
-    rows.push(row);
-    rowsByDay.set(day, rows);
+    totalsByDay.set(performanceDayKey(row.date), Number(row.views));
   }
 
   const now = input.currentDate ?? new Date();
   const endDay = performanceDayKey(now);
-  const firstCollectionDay = [...rowsByDay.keys()]
+  const firstCollectionDay = [...totalsByDay.keys()]
     .sort()
     .find((day) => day <= endDay);
 
   if (!firstCollectionDay) return [];
 
-  const latestViewsByPost = new Map<string, number>();
+  // Dias sem coleta repetem o total anterior; o máximo impede que uma
+  // correção negativa de views crie um pico de CPM.
   let highestTotalViews = 0;
   const dailyTotals: Array<{ date: string; totalViews: number }> = [];
   for (
@@ -78,15 +76,8 @@ export function buildCumulativeCpmHistory(input: {
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   ) {
     const date = cursor.toISOString().slice(0, 10);
-    const rows = rowsByDay.get(date) ?? [];
-    if (rows.length > 0) {
-      for (const row of rows) {
-        latestViewsByPost.set(row.clipPostId, Number(row.views));
-      }
-      const collectedTotal = [...latestViewsByPost.values()].reduce(
-        (total, views) => total + views,
-        0,
-      );
+    const collectedTotal = totalsByDay.get(date);
+    if (collectedTotal !== undefined) {
       highestTotalViews = Math.max(highestTotalViews, collectedTotal);
     }
     dailyTotals.push({ date, totalViews: highestTotalViews });
@@ -120,89 +111,157 @@ export function buildCumulativeCpmHistory(input: {
   });
 }
 
-export async function getCampaignPerformance(
+/**
+ * Cada post conta a partir do dia em que foi postado, com a última coleta até
+ * o fim de cada dia. A última coleta do post em cada dia vira a variação dele
+ * naquele dia, e a soma acumulada das variações é o total da competição.
+ *
+ * O LATERAL com OFFSET 0 obriga a ler as métricas post a post pelo índice
+ * (clipPostId, collectedAt). Sem ele, o planner troca por uma varredura de
+ * todas as métricas do período: ClipPostMetrics tem dezenas de milhões de
+ * linhas e a consulta passa de 60 s.
+ */
+function queryDailyViewsHistory(
   db: PrismaClient,
   campaignId: string,
+  startDate: Date,
+  historyEnd: Date,
 ) {
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      status: true,
-      startDate: true,
-      endDate: true,
-      platforms: true,
-      requiredMentions: true,
-      performanceSettings: true,
-      performanceProfiles: {
-        orderBy: { createdAt: "asc" },
-        include: { snapshots: { orderBy: { collectedAt: "asc" } } },
-      },
-      performanceVideos: {
-        orderBy: { createdAt: "desc" },
-        include: { snapshots: { orderBy: { collectedAt: "asc" } } },
-      },
-    },
-  });
-
-  if (!campaign) return null;
-
-  const historyEnd = new Date();
-  const viewsHistory = await db.$queryRaw<ViewsHistoryRow[]>`
-      WITH day_bounds AS (
+  return db.$queryRaw<DailyViewsRow[]>`
+      WITH posts AS (
         SELECT
-          DATE_TRUNC('day', MIN(first_metrics."collectedAt") + INTERVAL '4 hours') AS first_day,
-          DATE_TRUNC('day', ${historyEnd}::timestamp + INTERVAL '4 hours') AS last_day
+          post.id,
+          DATE_TRUNC('day', post."postedAt" + INTERVAL '4 hours') AS posted_day
         FROM "ClipPost" post
-        INNER JOIN LATERAL (
-          SELECT metrics."collectedAt"
-          FROM "ClipPostMetrics" metrics
-          WHERE metrics."clipPostId" = post.id
-            AND metrics."collectedAt" >= ${campaign.startDate}
-          ORDER BY metrics."collectedAt" ASC
-          LIMIT 1
-        ) first_metrics ON true
         WHERE post."campaignId" = ${campaignId}
           AND post.status = 'ELIGIBLE'
           AND post."postedAt" IS NOT NULL
       ),
-      performance_days AS (
-        SELECT GENERATE_SERIES(first_day, last_day, INTERVAL '1 day') AS day
-        FROM day_bounds
-        WHERE first_day IS NOT NULL
+      post_days AS (
+        SELECT DISTINCT ON (posts.id, collected.day)
+          posts.id AS post_id,
+          collected.day,
+          collected.views
+        FROM posts
+        CROSS JOIN LATERAL (
+          SELECT
+            GREATEST(
+              DATE_TRUNC('day', metrics."collectedAt" + INTERVAL '4 hours'),
+              posts.posted_day
+            ) AS day,
+            metrics.views,
+            metrics."collectedAt"
+          FROM "ClipPostMetrics" metrics
+          WHERE metrics."clipPostId" = posts.id
+            AND metrics."collectedAt" >= ${startDate}::timestamp
+            AND metrics."collectedAt" <= ${historyEnd}::timestamp
+          OFFSET 0
+        ) collected
+        ORDER BY posts.id, collected.day, collected."collectedAt" DESC
+      ),
+      deltas AS (
+        SELECT
+          day,
+          views - LAG(views, 1, 0::bigint) OVER (
+            PARTITION BY post_id ORDER BY day
+          ) AS delta
+        FROM post_days
       )
       SELECT
-        performance_days.day AS date,
-        post.id AS "clipPostId",
-        latest_metrics.views::bigint AS views
-      FROM performance_days
-      INNER JOIN "ClipPost" post
-        ON post."campaignId" = ${campaignId}
-        AND post.status = 'ELIGIBLE'
-        AND post."postedAt" IS NOT NULL
-        AND post."postedAt" < performance_days.day + INTERVAL '20 hours'
-      INNER JOIN LATERAL (
-        SELECT metrics.views
-        FROM "ClipPostMetrics" metrics
-        WHERE metrics."clipPostId" = post.id
-          AND metrics."collectedAt" >= ${campaign.startDate}
-          AND metrics."collectedAt" < performance_days.day + INTERVAL '20 hours'
-          AND metrics."collectedAt" <= ${historyEnd}
-        ORDER BY metrics."collectedAt" DESC
-        LIMIT 1
-      ) latest_metrics ON true
-      ORDER BY performance_days.day ASC, post.id ASC
+        day AS date,
+        (SUM(SUM(delta)) OVER (ORDER BY day))::bigint AS views
+      FROM deltas
+      GROUP BY day
+      ORDER BY day
     `;
-  const currentViews = await db.clipPost.aggregate({
-    where: {
-      campaignId,
-      status: "ELIGIBLE",
-      postedAt: { not: null },
-    },
-    _sum: { views: true },
+}
+
+/**
+ * Dias encerrados não mudam, e o ponto de hoje é completado pela soma ao vivo
+ * de ClipPost.views. Por isso a série é reaproveitada entre consultas: o
+ * polling das telas e quem abre a mesma competição dividem uma única leitura.
+ */
+const VIEWS_HISTORY_TTL_MS = 10 * 60_000;
+const viewsHistoryCache = new Map<
+  string,
+  { expiresAt: number; rows: Promise<DailyViewsRow[]> }
+>();
+
+function getDailyViewsHistory(
+  db: PrismaClient,
+  campaignId: string,
+  startDate: Date,
+) {
+  const key = `${campaignId}:${startDate.getTime()}`;
+  const now = Date.now();
+  const cached = viewsHistoryCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.rows;
+
+  for (const [cachedKey, entry] of viewsHistoryCache) {
+    if (entry.expiresAt <= now) viewsHistoryCache.delete(cachedKey);
+  }
+
+  // A promessa entra no cache antes de resolver: consultas simultâneas
+  // aguardam a mesma leitura. Falhas saem do cache para a próxima tentar.
+  const rows = queryDailyViewsHistory(
+    db,
+    campaignId,
+    startDate,
+    new Date(now),
+  );
+  viewsHistoryCache.set(key, { expiresAt: now + VIEWS_HISTORY_TTL_MS, rows });
+  rows.catch(() => {
+    if (viewsHistoryCache.get(key)?.rows === rows) {
+      viewsHistoryCache.delete(key);
+    }
   });
+  return rows;
+}
+
+export async function getCampaignPerformance(
+  db: PrismaClient,
+  campaignId: string,
+) {
+  const [campaign, currentViews] = await Promise.all([
+    db.campaign.findUnique({
+      where: { id: campaignId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        status: true,
+        startDate: true,
+        endDate: true,
+        platforms: true,
+        requiredMentions: true,
+        performanceSettings: true,
+        performanceProfiles: {
+          orderBy: { createdAt: "asc" },
+          include: { snapshots: { orderBy: { collectedAt: "asc" } } },
+        },
+        performanceVideos: {
+          orderBy: { createdAt: "desc" },
+          include: { snapshots: { orderBy: { collectedAt: "asc" } } },
+        },
+      },
+    }),
+    db.clipPost.aggregate({
+      where: {
+        campaignId,
+        status: "ELIGIBLE",
+        postedAt: { not: null },
+      },
+      _sum: { views: true },
+    }),
+  ]);
+
+  if (!campaign) return null;
+
+  const viewsHistory = await getDailyViewsHistory(
+    db,
+    campaignId,
+    campaign.startDate,
+  );
 
   const investedAmount = Number(
     campaign.performanceSettings?.investedAmount ?? 0,
@@ -230,7 +289,6 @@ export async function getCampaignPerformance(
     currentTotalViews: Number(currentViews._sum.views ?? 0),
     investedAmount,
     referenceCpm,
-    currentDate: historyEnd,
   });
   const totalViews = cpmHistory.at(-1)?.totalViews ?? 0;
   const summary = calculatePerformanceSummary({

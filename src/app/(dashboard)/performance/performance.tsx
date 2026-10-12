@@ -473,7 +473,11 @@ export default function ClientPerformance() {
     investment: asNumber(point.investment),
     estimatedAdsCost: asNumber(point.estimatedAdsCost),
   }));
-  const showCpmChart = hasComparison && cpmPoints.length > 1;
+  const currentCpm = asNumber(summary?.effectiveCpm);
+  const marketCpm = asNumber(summary?.referenceCpm);
+  const isCpmBelowMarket =
+    hasComparison && currentCpm > 0 && marketCpm > 0 && currentCpm < marketCpm;
+  const showCpmChart = isCpmBelowMarket && cpmPoints.length > 1;
   const heroHistory = (data?.cpmHistory ?? []).slice(-12);
   const heroMaxViews = Math.max(
     1,
@@ -679,7 +683,7 @@ export default function ClientPerformance() {
                   />
                 </div>
               )}
-              {showCpmChart ? (
+              {showCpmChart && (
                 <CpmComparisonChart
                   points={cpmPoints}
                   totalViews={asNumber(summary?.totalViews)}
@@ -690,7 +694,8 @@ export default function ClientPerformance() {
                   formatViews={(value) => NUMBER.format(value)}
                   scope={isOverview ? "all" : "single"}
                 />
-              ) : (
+              )}
+              {isCpmBelowMarket && !showCpmChart && (
                 <EmptyState message="Ainda não há histórico suficiente para desenhar o comparativo." />
               )}
             </section>

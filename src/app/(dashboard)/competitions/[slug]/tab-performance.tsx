@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import {
-  At,
   ArrowSquareOut,
   ChartLineUp,
   CheckCircle,
@@ -52,6 +51,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
@@ -1004,12 +1004,22 @@ function ProfileRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const platform = platformConfig[profile.platform as PlatformKey];
+  const PlatformIcon = platform?.icon ?? UserCircle;
+
   return (
     <div className="border-border/60 bg-background/30 rounded-xl border p-3.5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 text-cyan-500">
-            <At className="size-4" />
+          <span
+            aria-hidden="true"
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-full",
+              platform?.bgColor ?? "bg-cyan-500/10",
+              platform?.color ?? "text-cyan-500",
+            )}
+          >
+            <PlatformIcon className="size-4" />
           </span>
           <div className="min-w-0">
             <p className="truncate font-semibold">
