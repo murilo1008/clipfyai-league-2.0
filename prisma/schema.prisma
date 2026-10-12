@@ -1753,7 +1753,7 @@ model ClipPostMetrics {
   // Relações
   clipPost ClipPost @relation(fields: [clipPostId], references: [id], onDelete: Cascade)
 
-  @@index([clipPostId, collectedAt])
+  @@index([clipPostId, collectedAt, views])
   @@index([collectedAt])
 }
 
