@@ -12,8 +12,11 @@ function safeFileName(value: string | null | undefined) {
   return sanitized || fallback;
 }
 
+/** Tempo máximo para o storage começar a responder. */
+const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
+
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ downloadId: string }> },
 ) {
   const { userId } = await auth();
@@ -22,29 +25,33 @@ export async function GET(
   }
 
   const { downloadId } = await context.params;
-  const download = await db.clipPostBucketVideo.findUnique({
-    where: { id: downloadId },
-    select: {
-      status: true,
-      publicUrl: true,
-      fileName: true,
-      destinationPath: true,
-      campaign: {
-        select: {
-          clientId: true,
+  // As duas leituras são independentes; a ordem das respostas (404, 403,
+  // 409) continua a mesma.
+  const [download, user] = await Promise.all([
+    db.clipPostBucketVideo.findUnique({
+      where: { id: downloadId },
+      select: {
+        status: true,
+        publicUrl: true,
+        fileName: true,
+        destinationPath: true,
+        campaign: {
+          select: {
+            clientId: true,
+          },
         },
       },
-    },
-  });
+    }),
+    db.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    }),
+  ]);
 
   if (!download) {
     return new Response("Download not found", { status: 404 });
   }
 
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  });
   const canDownload =
     user?.role === "ADMIN" || download.campaign.clientId === userId;
 
@@ -56,8 +63,27 @@ export async function GET(
     return new Response("Download is not ready", { status: 409 });
   }
 
-  const upstream = await fetch(download.publicUrl);
+  // O arquivo é repassado em stream (sem bufferizar na função). O prazo vale
+  // só até o storage responder os cabeçalhos; a transferência em si fica
+  // limitada pelo maxDuration. Se o cliente cancelar, o upstream é abortado.
+  const connect = new AbortController();
+  const connectTimeout = setTimeout(
+    () => connect.abort(),
+    UPSTREAM_CONNECT_TIMEOUT_MS,
+  );
+  const abortUpstream = () => connect.abort();
+  request.signal.addEventListener("abort", abortUpstream, { once: true });
+  let upstream: Response;
+  try {
+    upstream = await fetch(download.publicUrl, { signal: connect.signal });
+  } catch {
+    request.signal.removeEventListener("abort", abortUpstream);
+    return new Response("Could not fetch video file", { status: 502 });
+  } finally {
+    clearTimeout(connectTimeout);
+  }
   if (!upstream.ok || !upstream.body) {
+    request.signal.removeEventListener("abort", abortUpstream);
     return new Response("Could not fetch video file", { status: 502 });
   }
 

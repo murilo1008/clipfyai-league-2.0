@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter } from "next/navigation";
 import {
@@ -57,7 +58,14 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
-import { PostMetricsHistoryDialog } from "../post-metrics-history-dialog";
+// Só carrega quando o usuário abre o histórico completo.
+const PostMetricsHistoryDialog = dynamic(
+  () =>
+    import("../post-metrics-history-dialog").then(
+      (mod) => mod.PostMetricsHistoryDialog,
+    ),
+  { ssr: false },
+);
 
 /*
  * Cores das séries do gráfico — views usa o degradê da marca; as demais usam
@@ -197,6 +205,13 @@ export default function PostDetail({ postId }: PostDetailProps) {
   const { data: post, isLoading } = api.customers.getPostById.useQuery({
     postId,
   });
+
+  // A análise de comentários só monta depois do post; buscá-la já agora tira
+  // uma ida e volta da cascata (mesma chave do painel, que reaproveita).
+  const utils = api.useUtils();
+  React.useEffect(() => {
+    void utils.commentsAnalysis.getPostAggregate.prefetch({ postId });
+  }, [postId, utils]);
 
   const copyUrl = () => {
     if (!post) return;
@@ -1172,8 +1187,8 @@ export default function PostDetail({ postId }: PostDetailProps) {
                     className="border-brand-cyan/25 not-dark:border-primary/30 shrink-0 rounded-full text-[10px] font-bold"
                   >
                     <span className="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4]">
-                      {post.metricsHistory.length}{" "}
-                      {post.metricsHistory.length === 1 ? "coleta" : "coletas"}
+                      {post.metricsHistoryCount}{" "}
+                      {post.metricsHistoryCount === 1 ? "coleta" : "coletas"}
                     </span>
                   </Badge>
                 </div>
@@ -1274,9 +1289,9 @@ export default function PostDetail({ postId }: PostDetailProps) {
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  {post.metricsHistory.length > 10 ? (
+                  {post.metricsHistoryCount > 10 ? (
                     <p className="text-muted-foreground text-[11px]">
-                      Mostrando 10 de {post.metricsHistory.length} coletas
+                      Mostrando 10 de {post.metricsHistoryCount} coletas
                     </p>
                   ) : (
                     <span />
@@ -1307,11 +1322,13 @@ export default function PostDetail({ postId }: PostDetailProps) {
         </div>
       </div>
 
-      <PostMetricsHistoryDialog
-        postId={postId}
-        open={historyOpen}
-        onOpenChange={setHistoryOpen}
-      />
+      {historyOpen && (
+        <PostMetricsHistoryDialog
+          postId={postId}
+          open
+          onOpenChange={setHistoryOpen}
+        />
+      )}
     </div>
   );
 }

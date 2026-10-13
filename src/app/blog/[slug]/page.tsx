@@ -1,9 +1,26 @@
-import { use } from "react"
+import { cache } from "react"
 import { type Metadata } from "next"
 
+import {
+  publicPostSelect,
+  toPublicPost,
+  type PublicPostRecord,
+} from "@/server/blog/public-post"
 import { db } from "@/server/db"
 
 import BlogPost from "./blog-post"
+
+/**
+ * Uma leitura do post por requisição, compartilhada entre os metadados, o
+ * JSON-LD e o artigo renderizado no servidor (antes eram três: duas aqui e a
+ * do client, que só depois mostrava o texto).
+ */
+const getPost = cache((slug: string) =>
+  db.blogPost.findUnique({
+    where: { slug },
+    select: publicPostSelect,
+  }),
+)
 
 // ============================================================================
 // METADATA DINÂMICA (SEO)
@@ -15,21 +32,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params
 
-  const post = await db.blogPost.findUnique({
-    where: { slug },
-    select: {
-      title: true,
-      excerpt: true,
-      coverImageUrl: true,
-      metaTitle: true,
-      metaDescription: true,
-      tags: true,
-      publishedAt: true,
-      updatedAt: true,
-      author: { select: { name: true } },
-      category: { select: { title: true } },
-    },
-  })
+  const post = await getPost(slug)
 
   if (!post) {
     return {
@@ -111,23 +114,7 @@ export async function generateMetadata({
 // ============================================================================
 // DADOS ESTRUTURADOS JSON-LD
 // ============================================================================
-async function getJsonLd(slug: string) {
-  const post = await db.blogPost.findUnique({
-    where: { slug },
-    select: {
-      title: true,
-      excerpt: true,
-      content: true,
-      coverImageUrl: true,
-      publishedAt: true,
-      updatedAt: true,
-      readTimeMinutes: true,
-      tags: true,
-      author: { select: { name: true, imageUrl: true } },
-      category: { select: { title: true } },
-    },
-  })
-
+function getJsonLd(slug: string, post: PublicPostRecord | null) {
   if (!post) return null
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://league.clipfyai.com"
@@ -201,13 +188,20 @@ async function getJsonLd(slug: string) {
 // ============================================================================
 // PAGE COMPONENT
 // ============================================================================
-export default function BlogPostPage({
+export default async function BlogPostPage({
   params,
 }: {
   params: Promise<{ slug: string }>
 }) {
-  const { slug } = use(params)
-  const jsonLdData = use(getJsonLd(slug))
+  const { slug } = await params
+  const post = await getPost(slug)
+  const jsonLdData = getJsonLd(slug, post)
+  // O artigo publicado já sai no HTML. A view continua sendo contada pelo
+  // client, que busca o post de novo ao montar (com o contador já somado).
+  const initialPost =
+    post?.status === "PUBLISHED"
+      ? toPublicPost(post, post.viewsCount + 1)
+      : undefined
 
   return (
     <>
@@ -228,7 +222,7 @@ export default function BlogPostPage({
           />
         </>
       )}
-      <BlogPost slug={slug} />
+      <BlogPost slug={slug} initialPost={initialPost} />
     </>
   )
 }

@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
+import { useBoundedPolling } from "@/hooks/use-bounded-polling";
 import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/trpc/react";
 
@@ -69,6 +70,12 @@ type SentimentFilter = "all" | "positive" | "negative" | "neutral";
 
 const PAGE_SIZE = 20;
 const RUNNING_EXTRACTION_STATUSES = ["PENDING", "DELAYED", "RUNNING"];
+/** Polling do job de coleta: 2 s, recuando até 15 s, por no máximo 30 min. */
+const EXTRACTION_POLLING = {
+  initialMs: 2_000,
+  maxIntervalMs: 15_000,
+  maxDurationMs: 30 * 60_000,
+};
 
 interface PostCommentsPanelProps {
   postId: string;
@@ -117,15 +124,22 @@ export default function PostCommentsPanel({ postId }: PostCommentsPanelProps) {
     grouped,
   });
 
+  // Para em erro e depois de 30 min: um job travado não fica sendo
+  // consultado para sempre.
+  const extractionPolling = useBoundedPolling(
+    extractionJobId,
+    EXTRACTION_POLLING,
+  );
   const extractionJob = api.admin.getPostCommentsExtractionJob.useQuery(
     { jobId: extractionJobId ?? "" },
     {
       enabled: Boolean(extractionJobId),
       refetchInterval: (query) => {
         const status = query.state.data?.status;
-        return status && RUNNING_EXTRACTION_STATUSES.includes(status)
-          ? 2000
-          : false;
+        return extractionPolling.interval(
+          query,
+          Boolean(status && RUNNING_EXTRACTION_STATUSES.includes(status)),
+        );
       },
     },
   );

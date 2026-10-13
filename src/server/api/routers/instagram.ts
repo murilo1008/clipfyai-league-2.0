@@ -27,9 +27,15 @@ function getLeagueBaseUrl(): string {
   return baseUrl.replace(/\/$/, "");
 }
 
+/** Prazo padrão das chamadas à API de integração do League. */
+const LEAGUE_FETCH_TIMEOUT_MS = 15_000;
+/** A sincronização manual roda na hora no League e pode demorar mais. */
+const LEAGUE_SYNC_TIMEOUT_MS = 60_000;
+
 async function leagueFetch<T>(
   path: string,
   init: RequestInit = {},
+  timeoutMs = LEAGUE_FETCH_TIMEOUT_MS,
 ): Promise<T> {
   const baseUrl = getLeagueBaseUrl();
   const headers = new Headers(init.headers);
@@ -38,12 +44,29 @@ async function leagueFetch<T>(
     headers.set("x-internal-api-key", env.LEAGUE_INTERNAL_API_KEY);
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-  });
-
-  const text = await response.text();
+  let response: Response;
+  let text: string;
+  try {
+    // O prazo cobre também a leitura do corpo.
+    response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+    });
+    text = await response.text();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: `A integração Instagram não respondeu a tempo. Tente novamente em instantes.`,
+        cause: error,
+      });
+    }
+    throw error;
+  }
   let data: unknown = null;
   if (text) {
     try {
@@ -236,6 +259,7 @@ export const instagramRouter = createTRPCRouter({
       return leagueFetch<{ success: boolean; error?: string }>(
         `/api/v1/instagram-sync/full/${input.socialAccountId}`,
         { method: "POST" },
+        LEAGUE_SYNC_TIMEOUT_MS,
       );
     }),
 

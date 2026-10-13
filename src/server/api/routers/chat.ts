@@ -1,6 +1,7 @@
 import { createTRPCRouter, adminProcedure } from "../trpc"
 import { z } from "zod"
 import { TRPCError } from "@trpc/server"
+import { Prisma } from "@prisma/client"
 import OpenAI from "openai"
 import { env } from "@/env"
 import { calculateEngagementRate } from "@/lib/ranking-helpers"
@@ -1061,14 +1062,17 @@ EXEMPLOS DE USO:
 3. Clipadores com wallet bloqueada:
    model="wallet", operation="findMany", args={ where: { isActive: false }, include: { clipperProfile: { select: { fullName: true, userId: true } } } }
 
-4. Posts com crescimento anômalo de views:
-   model="clipPostMetrics", operation="findMany", args={ where: { velocity24h: { gt: 500 } }, include: { clipPost: { select: { submittedUrl: true, platform: true, username: true } } }, take: 20, orderBy: { velocity24h: "desc" } }
+4. Evolução das métricas de um post específico:
+   model="clipPostMetrics", operation="findMany", args={ where: { clipPostId: "xxx" }, select: { collectedAt: true, views: true, velocity24h: true }, take: 30, orderBy: { collectedAt: "desc" } }
 
 REGRAS:
-- Máximo 200 resultados para findMany
+- Máximo 200 resultados para findMany e groupBy; relações (listas) em include/select trazem no máximo 50 itens
+- clipPostMetrics e metricsExtractionFailure são tabelas enormes: SEMPRE filtre por clipPostId (where: { clipPostId: "..." } ou { clipPostId: { in: [...] } })
+- Cada consulta tem limite de 10 segundos e é somente leitura; filtre por campanha, post ou período para não estourar
+- "distinct" não é suportado (use groupBy)
 - Campos sensíveis (cpf, pixKey, tokens, etc.) são automaticamente removidos dos resultados
 - Para BigInt (views), os valores são automaticamente convertidos para Number
-- Use "include" para trazer relações e "select" para limitar campos retornados
+- Use "select" para limitar campos retornados e "include" só para relações necessárias
 - Datas devem ser strings ISO-8601 (ex: "2026-01-01T00:00:00Z")
 - Para aggregate, use _sum, _avg, _min, _max, _count como propriedades do args`,
       parameters: {
@@ -1085,7 +1089,7 @@ REGRAS:
           },
           args: {
             type: "object",
-            description: "Argumentos da query Prisma. Pode conter: where, select, include, orderBy, take, skip, distinct, cursor (para findMany/findFirst); where (para findUnique/count); _sum, _avg, _min, _max, _count, by, having (para aggregate/groupBy). Exemplo: { where: { status: \"ACTIVE\" }, take: 10, orderBy: { createdAt: \"desc\" }, include: { clipPosts: true } }",
+            description: "Argumentos da query Prisma. Pode conter: where, select, include, orderBy, take, skip, cursor (para findMany/findFirst); where (para findUnique/count); _sum, _avg, _min, _max, _count, by, having, orderBy, take (para aggregate/groupBy). Exemplo: { where: { status: \"ACTIVE\" }, take: 10, orderBy: { createdAt: \"desc\" }, select: { id: true, name: true, _count: { select: { clipPosts: true } } } }",
           },
         },
         required: ["model", "operation", "args"],
@@ -1097,6 +1101,38 @@ REGRAS:
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL EXECUTORS — Funções Prisma que executam as buscas no banco
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Inscrições distintas com post elegível na campanha, contadas no banco. O
+ * `distinct` do Prisma lia todos os posts elegíveis e deduplicava em memória.
+ */
+async function countClippersWithEligiblePosts(db: DB, campaignId: string) {
+  const [row] = await (db as any).$queryRaw`
+    SELECT COUNT(DISTINCT "applicationId")::int AS count
+    FROM "ClipPost"
+    WHERE "campaignId" = ${campaignId}
+      AND status = 'ELIGIBLE'
+  ` as Array<{ count: number }>
+  return row?.count ?? 0
+}
+
+/**
+ * Contagens de relações para os ids da página, em groupBy restrito a eles.
+ * O `_count` de relação no findMany agrega a tabela filha inteira.
+ */
+async function countByCampaign(
+  db: DB,
+  model: "clipPost" | "clipperApplication",
+  campaignIds: string[],
+) {
+  if (campaignIds.length === 0) return new Map<string, number>()
+  const rows = await (db[model] as any).groupBy({
+    by: ["campaignId"],
+    where: { campaignId: { in: campaignIds } },
+    _count: { _all: true },
+  }) as Array<{ campaignId: string; _count: { _all: number } }>
+  return new Map(rows.map((row) => [row.campaignId, row._count._all]))
+}
 
 // ── 1. Buscar clipadores com filtros ─────────────────────────────────────────
 
@@ -1329,17 +1365,29 @@ async function toolSearchCampaigns(db: DB, args: Record<string, unknown>) {
       isPrivate: true, isProOnly: true, rankingMetricType: true,
       coverImageUrl: true, createdAt: true,
       organization: { select: { id: true, name: true, slug: true, logoUrl: true } },
-      _count: { select: { applications: true, clipPosts: true } },
     },
     orderBy: orderMap[args.sortBy as string] || { createdAt: "desc" },
     take: limit,
-  })
+  }) as Array<{ id: string } & Record<string, unknown>>
 
-  const total = await (db.campaign as any).count({ where })
+  const ids = results.map((campaign) => campaign.id)
+  const [total, applications, clipPosts] = await Promise.all([
+    (db.campaign as any).count({ where }),
+    countByCampaign(db, "clipperApplication", ids),
+    countByCampaign(db, "clipPost", ids),
+  ])
 
   return {
     _meta: { totalCount: total, returned: results.length, hasMore: total > results.length },
-    data: serialize(results),
+    data: serialize(
+      results.map((campaign) => ({
+        ...campaign,
+        _count: {
+          applications: applications.get(campaign.id) ?? 0,
+          clipPosts: clipPosts.get(campaign.id) ?? 0,
+        },
+      })),
+    ),
   }
 }
 
@@ -1364,18 +1412,24 @@ async function toolGetCampaignFullDetails(db: DB, args: Record<string, unknown>)
           bonusMilestone: true, bonusAmount: true,
         },
       },
-      _count: {
-        select: {
-          applications: true, clipPosts: true, monthlyRankings: true,
-          dailyRankings: true, fraudFlags: true,
-        },
-      },
     },
   })
 
   if (!campaign) return { data: null, _meta: { error: "Campanha não encontrada" } }
 
-  const [applicationStats, clipStats, clipsByPlatform, uniqueClippers, topClippers] =
+  // Contagens filtradas pela campanha (o `_count` de relação agregava as
+  // tabelas filhas inteiras).
+  const relationCounts = Promise.all([
+    (db.clipperApplication as any).count({ where: { campaignId: campaign.id } }),
+    (db.clipPost as any).count({ where: { campaignId: campaign.id } }),
+    (db.monthlyRanking as any).count({ where: { campaignId: campaign.id } }),
+    (db.dailyRanking as any).count({ where: { campaignId: campaign.id } }),
+    (db.fraudFlag as any).count({ where: { campaignId: campaign.id } }),
+  ]).then(([applications, clipPosts, monthlyRankings, dailyRankings, fraudFlags]) => ({
+    applications, clipPosts, monthlyRankings, dailyRankings, fraudFlags,
+  }))
+
+  const [applicationStats, clipStats, clipsByPlatform, uniqueClippers, topClippers, _count] =
     await Promise.all([
       (db.clipperApplication as any).groupBy({
         by: ["status"],
@@ -1396,11 +1450,7 @@ async function toolGetCampaignFullDetails(db: DB, args: Record<string, unknown>)
         _sum: { views: true, likes: true },
         _avg: { views: true },
       }),
-      (db.clipPost as any).findMany({
-        where: { campaignId: campaign.id, status: "ELIGIBLE" },
-        select: { applicationId: true },
-        distinct: ["applicationId"],
-      }),
+      countClippersWithEligiblePosts(db, campaign.id),
       (db.monthlyRankingEntry as any).findMany({
         where: {
           monthlyRanking: { campaignId: campaign.id },
@@ -1414,6 +1464,7 @@ async function toolGetCampaignFullDetails(db: DB, args: Record<string, unknown>)
         orderBy: { totalViews: "desc" },
         take: 5,
       }),
+      relationCounts,
     ])
 
   const campaignDays = Math.max(1, Math.ceil(
@@ -1426,6 +1477,7 @@ async function toolGetCampaignFullDetails(db: DB, args: Record<string, unknown>)
   return {
     data: serialize({
       ...campaign,
+      _count,
       applicationFunnel: applicationStats,
       clipAggregates: {
         ...clipStats,
@@ -1433,10 +1485,10 @@ async function toolGetCampaignFullDetails(db: DB, args: Record<string, unknown>)
         avgLikesPerPost: Number(clipStats._avg?.likes || 0),
       },
       advancedMetrics: {
-        uniqueClippersPosted: uniqueClippers.length,
+        uniqueClippersPosted: uniqueClippers,
         avgPostsPerDay: Number(((clipStats._count || 0) / elapsedDays).toFixed(2)),
-        avgPostsPerClipper: uniqueClippers.length > 0
-          ? Number(((clipStats._count || 0) / uniqueClippers.length).toFixed(1)) : 0,
+        avgPostsPerClipper: uniqueClippers > 0
+          ? Number(((clipStats._count || 0) / uniqueClippers).toFixed(1)) : 0,
         campaignDuration: campaignDays,
         daysElapsed: elapsedDays,
         engagementRate: calculateEngagementRate(
@@ -1547,7 +1599,6 @@ async function toolGetCampaignApplications(db: DB, args: Record<string, unknown>
             user: { select: { imageUrl: true, subscriptionTier: true } },
           },
         },
-        _count: { select: { clipPosts: true } },
       },
       orderBy: orderMap[args.sortBy as string] || { createdAt: "desc" },
       take: limit,
@@ -1560,9 +1611,27 @@ async function toolGetCampaignApplications(db: DB, args: Record<string, unknown>
     }),
   ])
 
+  // Posts por inscrição só para as inscrições da página.
+  const applicationIds = (results as Array<{ id: string }>).map((app) => app.id)
+  const postCounts = applicationIds.length > 0
+    ? await (db.clipPost as any).groupBy({
+        by: ["applicationId"],
+        where: { applicationId: { in: applicationIds } },
+        _count: { _all: true },
+      }) as Array<{ applicationId: string; _count: { _all: number } }>
+    : []
+  const postsByApplication = new Map(
+    postCounts.map((row) => [row.applicationId, row._count._all]),
+  )
+
   return {
     _meta: { totalCount: total, returned: results.length, hasMore: total > results.length },
-    data: serialize(results),
+    data: serialize(
+      (results as Array<{ id: string } & Record<string, unknown>>).map((app) => ({
+        ...app,
+        _count: { clipPosts: postsByApplication.get(app.id) ?? 0 },
+      })),
+    ),
     funnel: serialize(statusCounts),
   }
 }
@@ -1622,49 +1691,58 @@ async function toolSearchClipPosts(db: DB, args: Record<string, unknown>) {
 // ── 9. Detalhes completos de um clip + histórico de métricas ─────────────────
 
 async function toolGetClipPostDetails(db: DB, args: Record<string, unknown>) {
-  const clip = await (db.clipPost as any).findUnique({
-    where: { id: args.clipPostId as string },
-    include: {
-      campaign: { select: { id: true, name: true, slug: true, status: true } },
-      application: {
-        select: {
-          id: true, status: true,
-          clipperProfile: {
-            select: {
-              id: true, fullName: true, artisticName: true,
-              user: { select: { imageUrl: true } },
+  const clipPostId = args.clipPostId as string
+  // O histórico de métricas sai numa consulta própria, com LIMIT no banco
+  // pelo índice (clipPostId, collectedAt): o `take` de uma relação aninhada é
+  // aplicado em memória, depois de ler todas as coletas do post.
+  const [clip, metricsHistory] = await Promise.all([
+    (db.clipPost as any).findUnique({
+      where: { id: clipPostId },
+      include: {
+        campaign: { select: { id: true, name: true, slug: true, status: true } },
+        application: {
+          select: {
+            id: true, status: true,
+            clipperProfile: {
+              select: {
+                id: true, fullName: true, artisticName: true,
+                user: { select: { imageUrl: true } },
+              },
             },
           },
         },
-      },
-      metrics: {
-        select: {
-          collectedAt: true, views: true, likes: true, comments: true,
-          shares: true, engagementRate: true, velocity24h: true,
-          viewsDelta: true, likesDelta: true,
+        fraudFlags: {
+          select: {
+            id: true, type: true, severity: true, status: true,
+            message: true, createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
         },
-        orderBy: { collectedAt: "desc" },
-        take: 30,
-      },
-      fraudFlags: {
-        select: {
-          id: true, type: true, severity: true, status: true,
-          message: true, createdAt: true,
+        dailyRankingEntries: {
+          select: {
+            position: true, dailyViews: true, dailyRankingScore: true,
+            dailyPrizeAmount: true, dailyPrizeStatus: true, createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 15,
         },
       },
-      dailyRankingEntries: {
-        select: {
-          position: true, dailyViews: true, dailyRankingScore: true,
-          dailyPrizeAmount: true, dailyPrizeStatus: true, createdAt: true,
-        },
-        orderBy: { createdAt: "desc" },
-        take: 15,
+    }),
+    (db.clipPostMetrics as any).findMany({
+      where: { clipPostId },
+      select: {
+        collectedAt: true, views: true, likes: true, comments: true,
+        shares: true, engagementRate: true, velocity24h: true,
+        viewsDelta: true, likesDelta: true,
       },
-    },
-  })
+      orderBy: { collectedAt: "desc" },
+      take: 30,
+    }),
+  ])
 
   if (!clip) return { data: null, _meta: { error: "Clip não encontrado" } }
-  return { data: serialize(clip) }
+  return { data: serialize({ ...clip, metricsHistory }) }
 }
 
 // ── 10. Top clips por performance ────────────────────────────────────────────
@@ -2077,7 +2155,6 @@ async function toolGetOrganizationDetails(db: DB, args: Record<string, unknown>)
         select: {
           id: true, name: true, slug: true, status: true,
           startDate: true, endDate: true,
-          _count: { select: { applications: true, clipPosts: true } },
         },
         orderBy: { createdAt: "desc" },
         take: 20,
@@ -2088,7 +2165,25 @@ async function toolGetOrganizationDetails(db: DB, args: Record<string, unknown>)
   })
 
   if (!org) return { data: null, _meta: { error: "Organização não encontrada" } }
-  return { data: serialize(org) }
+
+  const campaignIds = (org.campaigns as Array<{ id: string }>).map((campaign) => campaign.id)
+  const [applications, clipPosts] = await Promise.all([
+    countByCampaign(db, "clipperApplication", campaignIds),
+    countByCampaign(db, "clipPost", campaignIds),
+  ])
+
+  return {
+    data: serialize({
+      ...org,
+      campaigns: (org.campaigns as Array<{ id: string } & Record<string, unknown>>).map((campaign) => ({
+        ...campaign,
+        _count: {
+          applications: applications.get(campaign.id) ?? 0,
+          clipPosts: clipPosts.get(campaign.id) ?? 0,
+        },
+      })),
+    }),
+  }
 }
 
 // ── 20. Estatísticas da Academia Clipadora ───────────────────────────────────
@@ -2770,11 +2865,10 @@ async function toolGetCampaignPerformanceSummary(db: DB, args: Record<string, un
   const totalApps = appFunnel.reduce((s: number, f: any) => s + f._count, 0)
   const approvedApps = appFunnel.find((f: any) => f.status === "APPROVED")?._count || 0
 
-  const uniqueClippersWithPosts = await (db.clipPost as any).findMany({
-    where: { campaignId: campaign.id, status: "ELIGIBLE" },
-    select: { applicationId: true },
-    distinct: ["applicationId"],
-  })
+  const uniqueClippersWithPosts = await countClippersWithEligiblePosts(
+    db,
+    campaign.id,
+  )
 
   const campaignDays = Math.max(1, Math.ceil(
     (new Date(campaign.endDate).getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24),
@@ -2797,13 +2891,13 @@ async function toolGetCampaignPerformanceSummary(db: DB, args: Record<string, un
         totalViews: Number(postAgg._sum?.views || 0),
         totalPosts: postAgg._count || 0,
         totalEligiblePosts: postsEligible,
-        uniqueClippersPosted: uniqueClippersWithPosts.length,
+        uniqueClippersPosted: uniqueClippersWithPosts,
         maxViewsSinglePost: Number(postAgg._max?.views || 0),
         avgViewsPerPost: Number(postAgg._avg?.views || 0),
         avgLikesPerPost: Number(postAgg._avg?.likes || 0),
         avgPostsPerDay: Number((postsEligible / daysForAvg).toFixed(2)),
-        avgPostsPerClipper: uniqueClippersWithPosts.length > 0
-          ? Number((postsEligible / uniqueClippersWithPosts.length).toFixed(1)) : 0,
+        avgPostsPerClipper: uniqueClippersWithPosts > 0
+          ? Number((postsEligible / uniqueClippersWithPosts).toFixed(1)) : 0,
         campaignDuration: campaignDays,
         daysElapsed: elapsedDays,
       },
@@ -2813,7 +2907,7 @@ async function toolGetCampaignPerformanceSummary(db: DB, args: Record<string, un
         conversionRate: totalApps > 0
           ? `${((approvedApps / totalApps) * 100).toFixed(1)}%` : "0%",
         postedRate: approvedApps > 0
-          ? `${((uniqueClippersWithPosts.length / approvedApps) * 100).toFixed(1)}%` : "0%",
+          ? `${((uniqueClippersWithPosts / approvedApps) * 100).toFixed(1)}%` : "0%",
         breakdown: appFunnel,
       },
       platformBreakdown: postsByPlatform.map((p: any) => ({
@@ -2892,6 +2986,95 @@ function convertDateStrings(obj: unknown): unknown {
   return result
 }
 
+/** Teto de linhas de findMany/groupBy na consulta dinâmica. */
+const DYNAMIC_QUERY_MAX_ROWS = 200
+/** Teto de itens por relação (lista) aninhada em include/select. */
+const DYNAMIC_QUERY_NESTED_MAX_ROWS = 50
+/** Tempo máximo de cada consulta dinâmica no Postgres. */
+const DYNAMIC_QUERY_STATEMENT_TIMEOUT = "10s"
+
+/**
+ * ClipPostMetrics e MetricsExtractionFailure têm dezenas de milhões de linhas:
+ * sem filtro por post, qualquer consulta varre a tabela inteira.
+ */
+const POST_SCOPED_MODELS = new Set(["clipPostMetrics", "metricsExtractionFailure"])
+
+function hasClipPostFilter(where: unknown) {
+  if (!where || typeof where !== "object") return false
+  const value = (where as Record<string, unknown>).clipPostId
+  if (typeof value === "string") return value.length > 0
+  if (!value || typeof value !== "object") return false
+  const filter = value as Record<string, unknown>
+  return (
+    (typeof filter.equals === "string" && filter.equals.length > 0) ||
+    (Array.isArray(filter.in) &&
+      filter.in.length > 0 &&
+      filter.in.length <= DYNAMIC_QUERY_MAX_ROWS)
+  )
+}
+
+function containsKey(value: unknown, key: string): boolean {
+  if (!value || typeof value !== "object") return false
+  if (Array.isArray(value)) return value.some((item) => containsKey(item, key))
+  return Object.entries(value as Record<string, unknown>).some(
+    ([entryKey, entryValue]) => entryKey === key || containsKey(entryValue, key),
+  )
+}
+
+type RelationField = { model: string; isList: boolean }
+let relationFieldsByModel: Map<string, Map<string, RelationField>> | null = null
+
+/** Relações de cada modelo (nome camelCase), lidas do schema do Prisma. */
+function relationFields(model: string) {
+  if (!relationFieldsByModel) {
+    const camel = (name: string) => name.charAt(0).toLowerCase() + name.slice(1)
+    relationFieldsByModel = new Map(
+      Prisma.dmmf.datamodel.models.map((dmmfModel) => [
+        camel(dmmfModel.name),
+        new Map(
+          dmmfModel.fields
+            .filter((field) => field.kind === "object")
+            .map((field) => [
+              field.name,
+              { model: camel(field.type), isList: field.isList },
+            ]),
+        ),
+      ]),
+    )
+  }
+  return relationFieldsByModel.get(model) ?? new Map<string, RelationField>()
+}
+
+/**
+ * Limita as relações em lista de include/select: o `take` aninhado do Prisma
+ * é aplicado em memória, então sem ele uma relação traz todas as linhas.
+ */
+function capNestedReads(model: string, args: Record<string, unknown>, depth = 0) {
+  if (depth > 4) return
+  const relations = relationFields(model)
+  for (const key of ["include", "select"] as const) {
+    const nested = args[key]
+    if (!nested || typeof nested !== "object") continue
+    const fields = nested as Record<string, unknown>
+    for (const [field, value] of Object.entries(fields)) {
+      const relation = relations.get(field)
+      if (!relation || !value) continue
+      const relationArgs: Record<string, unknown> =
+        typeof value === "object" ? { ...(value as Record<string, unknown>) } : {}
+      if (relation.isList) {
+        const take =
+          typeof relationArgs.take === "number" ? relationArgs.take : DYNAMIC_QUERY_NESTED_MAX_ROWS
+        relationArgs.take =
+          Math.sign(take || 1) * Math.min(Math.abs(take), DYNAMIC_QUERY_NESTED_MAX_ROWS)
+      } else if (value === true) {
+        continue
+      }
+      capNestedReads(relation.model, relationArgs, depth + 1)
+      fields[field] = relationArgs
+    }
+  }
+}
+
 async function toolExecuteDynamicQuery(db: DB, args: Record<string, unknown>) {
   const model = args.model as string
   const operation = args.operation as string
@@ -2917,15 +3100,53 @@ async function toolExecuteDynamicQuery(db: DB, args: Record<string, unknown>) {
 
   const processedArgs = convertDateStrings(queryArgs) as Record<string, unknown>
 
+  if (POST_SCOPED_MODELS.has(model) && !hasClipPostFilter(processedArgs.where)) {
+    return {
+      error: `O modelo "${model}" exige filtro por post: use where: { clipPostId: "..." } ou { clipPostId: { in: [...] } } (até ${DYNAMIC_QUERY_MAX_ROWS} ids).`,
+    }
+  }
+
+  // O `distinct` do Prisma lê todas as linhas e deduplica em memória.
+  if (containsKey(processedArgs, "distinct")) {
+    return { error: `"distinct" não é suportado na consulta dinâmica. Use groupBy com "by".` }
+  }
+
   if (operation === "findMany" && !processedArgs.take) {
     processedArgs.take = 100
   }
   if (operation === "findMany" && typeof processedArgs.take === "number") {
-    processedArgs.take = Math.min(processedArgs.take, 200)
+    processedArgs.take = Math.min(processedArgs.take, DYNAMIC_QUERY_MAX_ROWS)
+  }
+  // groupBy só aceita `take` junto com `orderBy`; sem ele o corte é feito
+  // no resultado (e o statement_timeout limita o custo no banco).
+  if (operation === "groupBy" && processedArgs.orderBy) {
+    const take = typeof processedArgs.take === "number" ? processedArgs.take : DYNAMIC_QUERY_MAX_ROWS
+    processedArgs.take = Math.min(take, DYNAMIC_QUERY_MAX_ROWS)
+  }
+  if (operation !== "count" && operation !== "aggregate" && operation !== "groupBy") {
+    capNestedReads(model, processedArgs)
   }
 
   try {
-    const result = await prismaFn.call(prismaModel, processedArgs)
+    // Somente leitura e com tempo máximo: a IA monta filtros livres e uma
+    // consulta aberta poderia varrer tabelas de dezenas de GB sem limite.
+    const rawResult = await (db as any).$transaction(
+      async (tx: any) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`
+        await tx.$executeRawUnsafe(
+          `SET LOCAL statement_timeout = '${DYNAMIC_QUERY_STATEMENT_TIMEOUT}'`,
+        )
+        return tx[model][operation](processedArgs)
+      },
+      { maxWait: 5_000, timeout: 15_000 },
+    )
+    const groupByTruncated =
+      operation === "groupBy" &&
+      Array.isArray(rawResult) &&
+      rawResult.length > DYNAMIC_QUERY_MAX_ROWS
+    const result = groupByTruncated
+      ? (rawResult as unknown[]).slice(0, DYNAMIC_QUERY_MAX_ROWS)
+      : rawResult
     const safe = stripSensitiveDeep(serialize(result))
 
     const resultArray = Array.isArray(safe) ? safe : [safe]
@@ -2936,12 +3157,19 @@ async function toolExecuteDynamicQuery(db: DB, args: Record<string, unknown>) {
         model,
         operation,
         resultCount,
-        truncated: operation === "findMany" && resultCount >= (processedArgs.take as number || 100),
+        truncated:
+          groupByTruncated ||
+          ((operation === "findMany" || operation === "groupBy") &&
+            typeof processedArgs.take === "number" &&
+            resultCount >= processedArgs.take),
       },
       data: resultArray.length <= 1 ? (resultArray[0] ?? null) : resultArray,
     }
   } catch (err: any) {
     const msg = err.message || String(err)
+    if (msg.includes("statement timeout")) {
+      return { error: `A consulta passou de ${DYNAMIC_QUERY_STATEMENT_TIMEOUT} e foi cancelada. Filtre por campanha, post ou período e tente de novo.` }
+    }
     if (msg.includes("Unknown field") || msg.includes("Unknown arg")) {
       return { error: `Query inválida: ${msg.split("\n").slice(0, 3).join(" ")}. Verifique os campos/args contra o schema.` }
     }
