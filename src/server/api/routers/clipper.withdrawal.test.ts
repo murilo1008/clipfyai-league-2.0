@@ -85,6 +85,7 @@ function fixture() {
     wallet: { findUnique: vi.fn(), update: vi.fn() },
     transaction: {
       findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
     },
     dailyRankingEntry: {
