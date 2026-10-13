@@ -260,6 +260,7 @@ describe("saída voluntária da competição", () => {
       campaign: {
         findUnique: vi.fn().mockResolvedValue({
           id: "campaign-1",
+          startDate: new Date("2026-10-01T00:00:00Z"),
           rankingMetricType: "VIEWS",
           activeRankingRule: null,
         }),
@@ -291,6 +292,7 @@ describe("saída voluntária da competição", () => {
       campaign: {
         findUnique: vi.fn().mockResolvedValue({
           id: "campaign-1",
+          startDate: new Date("2026-10-01T00:00:00Z"),
           rankingMetricType: "VIEWS",
           activeRankingRule: null,
         }),
@@ -511,5 +513,121 @@ describe("saída voluntária da competição", () => {
     await expect(
       api.getCompetitionDetails({ slug: "competicao" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+describe("ranking diário: cache, ADMIN e datas aceitas", () => {
+  const campaignStart = new Date("2026-10-01T03:00:00Z");
+
+  function rankingFixture() {
+    const setup = fixture();
+    const dailyRankingFindFirst = vi.fn().mockResolvedValue(null);
+    const clipPostGroupBy = vi.fn().mockResolvedValue([]);
+    Object.assign(setup.db, {
+      dailyRanking: { findFirst: dailyRankingFindFirst },
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "campaign-1",
+          name: "Competição",
+          startDate: campaignStart,
+          rankingMetricType: "VIEWS",
+          activeRankingRule: null,
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: null,
+        }),
+      },
+      clipPost: {
+        count: vi.fn().mockResolvedValue(0),
+        groupBy: clipPostGroupBy,
+      },
+      topClippersDailyRankingEntry: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    });
+    return { ...setup, dailyRankingFindFirst, clipPostGroupBy };
+  }
+
+  it("clipador usa o cache do dia; ADMIN lê direto do banco", async () => {
+    const { api, db } = rankingFixture();
+    const input = { campaignId: "campaign-1", date: "2026-10-08" };
+
+    await api.getDailyRankingByDate(input);
+    await api.getDailyRankingByDate(input);
+    // Ranking ao vivo (SQL) calculado uma vez para os clipadores.
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+
+    db.user.findUnique.mockResolvedValue({ role: "ADMIN", clipperProfile: null });
+    await api.getDailyRankingByDate(input);
+    await api.getDailyRankingByDate(input);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
+  it("Top Clipadores: clipador usa o cache do dia; ADMIN lê direto do banco", async () => {
+    const { api, db, clipPostGroupBy } = rankingFixture();
+    const input = { campaignId: "campaign-1", date: "2026-10-08" };
+
+    await api.getDailyTopClippersByPostedVideos(input);
+    await api.getDailyTopClippersByPostedVideos(input);
+    expect(clipPostGroupBy).toHaveBeenCalledTimes(1);
+
+    db.user.findUnique.mockResolvedValue({ role: "ADMIN", clipperProfile: null });
+    await api.getDailyTopClippersByPostedVideos(input);
+    await api.getDailyTopClippersByPostedVideos(input);
+    expect(clipPostGroupBy).toHaveBeenCalledTimes(3);
+  });
+
+  it("fora dos dias possíveis da campanha devolve o ranking vazio sem consultar", async () => {
+    const { api, db, dailyRankingFindFirst, clipPostGroupBy } = rankingFixture();
+
+    // Antes do dia anterior ao início e depois de amanhã (agora: 2026-10-09).
+    for (const date of ["2026-09-29", "2026-10-11"]) {
+      expect(
+        await api.getDailyRankingByDate({ campaignId: "campaign-1", date }),
+      ).toEqual({
+        date,
+        source: "LIVE",
+        rankingMode: "TOP_POSTS",
+        posts: [],
+        totalPosts: 0,
+        windowStart: new Date(
+          Date.parse(`${date}T20:00:00Z`) - 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        windowEnd: `${date}T20:00:00.000Z`,
+      });
+      expect(
+        await api.getDailyTopClippersByPostedVideos({ campaignId: "campaign-1", date }),
+      ).toMatchObject({
+        date,
+        entries: [],
+        stats: {
+          totalPostsInWindow: 0,
+          totalViewsInWindow: 0,
+          totalClippersWithPosts: 0,
+          totalCampaigns: 1,
+        },
+      });
+    }
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(dailyRankingFindFirst).not.toHaveBeenCalled();
+    expect(clipPostGroupBy).not.toHaveBeenCalled();
+    expect(db.clipPost.count).not.toHaveBeenCalled();
+
+    // Os limites ainda consultam: dia anterior ao início e amanhã.
+    await api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-09-30" });
+    await api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-10-10" });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("recusa datas que não existem no calendário", async () => {
+    const { api } = rankingFixture();
+    await expect(
+      api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-02-31" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      api.getDailyTopClippersByPostedVideos({
+        campaignId: "campaign-1",
+        date: "2026-13-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

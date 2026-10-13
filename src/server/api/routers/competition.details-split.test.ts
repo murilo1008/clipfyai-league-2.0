@@ -233,9 +233,12 @@ describe("meus posts paginados", () => {
     const { text, values } = renderSql(pageCall);
     expect(text).toContain(`cp."platform"::text = ?`);
     expect(text).toContain(`cp."status"::text = ?`);
-    expect(text).toContain(`strpos(lower(COALESCE(cp."caption", '')), ?) > 0`);
+    // Legenda e termo em minúsculas pelo Postgres (mesma regra de acentos).
+    expect(text).toContain(
+      `strpos(lower(COALESCE(cp."caption", '')), lower(?::text)) > 0`,
+    );
     expect(values).toEqual(
-      expect.arrayContaining(["campaign-1", "app-1", "TIKTOK", "ELIGIBLE", "gol", from, to, 24, 24]),
+      expect.arrayContaining(["campaign-1", "app-1", "TIKTOK", "ELIGIBLE", "Gol", from, to, 24, 24]),
     );
 
     expect(result.total).toBe(30);

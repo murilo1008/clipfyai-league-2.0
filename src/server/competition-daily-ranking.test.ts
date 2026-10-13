@@ -4,9 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { calculateRankingScore } from "@/lib/ranking-helpers";
 import {
   dailyRankingCacheTtlMs,
+  getCachedDailyEligiblePostsCount,
   getCachedLiveDailyRanking,
+  getCachedSnapshotDailyRanking,
+  isCalendarDateYmd,
+  isDailyRankingDateInRange,
+  liveDailyPrizeTable,
   loadDailyTopClippersByPostedVideos,
   loadLiveDailyRanking,
+  snapshotDailyPrizeTable,
   withCurrentUser,
   type SharedDailyRankingItem,
 } from "./competition-daily-ranking";
@@ -79,7 +85,6 @@ describe("ranking diário ao vivo (SQL)", () => {
       dateYmd: "2026-10-09",
       metricType: RankingMetricType.VIEWS_X_ENGAGEMENT,
       topCount: 2,
-      dailyPrizeTable: { "1": 100, "2": 50 },
       entriesDailyRankingId: null,
     });
 
@@ -96,11 +101,18 @@ describe("ranking diário ao vivo (SQL)", () => {
     expect(ranked[0]).toMatchObject({
       position: 1,
       rankingScore: calculateRankingScore("VIEWS_X_ENGAGEMENT", 1000, 50, 0, 0),
-      prize: 100,
       clipperName: "Nome",
       ownerUserId: "user-a",
     });
     expect(ranked[0]).not.toHaveProperty("isCurrentUser");
+    // O prêmio sai do cache: quem chama aplica a tabela atual da campanha.
+    expect(ranked[0]).not.toHaveProperty("prize");
+    const withPrizes = withCurrentUser(
+      ranked,
+      "user-a",
+      liveDailyPrizeTable({ "1": 100, "2": 50 }),
+    );
+    expect(withPrizes.map((item) => item.prize)).toEqual([100, 50]);
   });
 
   it("com DailyRanking do dia usa as métricas diárias das entradas", async () => {
@@ -110,7 +122,6 @@ describe("ranking diário ao vivo (SQL)", () => {
       dateYmd: "2026-10-09",
       metricType: RankingMetricType.VIEWS,
       topCount: 15,
-      dailyPrizeTable: null,
       entriesDailyRankingId: "daily-1",
     });
     const { text, values } = renderSql(db.$queryRaw.mock.calls[0]!);
@@ -134,7 +145,6 @@ describe("ranking diário ao vivo (SQL)", () => {
       dateYmd: "2026-10-09",
       metricType: RankingMetricType.VIEWS,
       topCount: 15,
-      dailyPrizeTable: null,
       entriesDailyRankingId: null,
     };
     const first = await getCachedLiveDailyRanking(db as never, params);
@@ -142,8 +152,8 @@ describe("ranking diário ao vivo (SQL)", () => {
     expect(db.$queryRaw).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
 
-    const forUser1 = withCurrentUser(first, "user-1");
-    const forUser2 = withCurrentUser(first, "user-2");
+    const forUser1 = withCurrentUser(first, "user-1", []);
+    const forUser2 = withCurrentUser(first, "user-2", []);
     expect(forUser1.map((item) => item.isCurrentUser)).toEqual([true, false]);
     expect(forUser2.map((item) => item.isCurrentUser)).toEqual([false, true]);
     expect(Object.keys(forUser1[0]!)).toEqual([
@@ -172,7 +182,109 @@ describe("ranking diário ao vivo (SQL)", () => {
 
   it("nunca marca como atual um item sem dono", () => {
     const item = { ownerUserId: null } as unknown as SharedDailyRankingItem;
-    expect(withCurrentUser([item], "")[0]?.isCurrentUser).toBe(false);
+    expect(withCurrentUser([item], "", [])[0]?.isCurrentUser).toBe(false);
+  });
+
+  it("aplica o prêmio pela tabela atual, sem recalcular o ranking em cache", async () => {
+    const db = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue([
+          liveRow("a", { views: 10, likes: 1 }),
+          liveRow("b", { views: 5, likes: 1 }),
+        ]),
+    };
+    const params = {
+      campaignId: "campaign-1",
+      dateYmd: "2026-10-09",
+      metricType: RankingMetricType.VIEWS,
+      topCount: 15,
+      entriesDailyRankingId: null,
+    };
+    const cached = await getCachedLiveDailyRanking(db as never, params);
+    const before = withCurrentUser(cached, "", liveDailyPrizeTable({ "1": 10 }));
+    // Admin edita a tabela: a próxima leitura já usa a nova, com o mesmo cache.
+    const again = await getCachedLiveDailyRanking(db as never, params);
+    const after = withCurrentUser(
+      again,
+      "",
+      liveDailyPrizeTable({ "1": 30, "2": 20 }),
+    );
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(before.map((item) => item.prize)).toEqual([10, 0]);
+    expect(after.map((item) => item.prize)).toEqual([30, 20]);
+  });
+
+  it("mantém a leitura estrita da tabela no snapshot e a tolerante no ao vivo", () => {
+    expect(liveDailyPrizeTable({})).toEqual([]);
+    expect(() => snapshotDailyPrizeTable({})).toThrow(
+      "A tabela de prêmios não pode estar vazia.",
+    );
+  });
+});
+
+describe("leitura sem cache (ADMIN)", () => {
+  it("com fresh lê sempre do banco e não preenche o cache", async () => {
+    const db = {
+      $queryRaw: vi.fn().mockResolvedValue([liveRow("a", { views: 10, likes: 1 })]),
+      clipPost: { count: vi.fn().mockResolvedValue(4) },
+      campaign: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const params = {
+      campaignId: "campaign-1",
+      dateYmd: "2026-10-09",
+      metricType: RankingMetricType.VIEWS,
+      topCount: 15,
+      entriesDailyRankingId: null,
+    };
+
+    await getCachedLiveDailyRanking(db as never, params, { fresh: true });
+    await getCachedLiveDailyRanking(db as never, params, { fresh: true });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+    // A leitura do clipador depois disso ainda vai ao banco (nada em cache).
+    await getCachedLiveDailyRanking(db as never, params);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+
+    await getCachedDailyEligiblePostsCount(db as never, "campaign-1", "2026-10-09", {
+      fresh: true,
+    });
+    await getCachedDailyEligiblePostsCount(db as never, "campaign-1", "2026-10-09", {
+      fresh: true,
+    });
+    expect(db.clipPost.count).toHaveBeenCalledTimes(2);
+
+    await getCachedSnapshotDailyRanking(db as never, "campaign-1", "2026-10-09", {
+      fresh: true,
+    });
+    await getCachedSnapshotDailyRanking(db as never, "campaign-1", "2026-10-09", {
+      fresh: true,
+    });
+    expect(db.campaign.findUnique).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("datas aceitas no ranking diário", () => {
+  it.each([
+    ["2026-10-09", true],
+    ["2028-02-29", true],
+    ["2026-02-31", false],
+    ["2026-13-01", false],
+    ["2026-00-10", false],
+    ["0050-01-01", false],
+    ["2026-1-01", false],
+  ])("%s existe no calendário: %s", (date, expected) => {
+    expect(isCalendarDateYmd(date)).toBe(expected);
+  });
+
+  it("vai do dia anterior ao início da campanha até amanhã (UTC)", () => {
+    const campaignStart = new Date("2026-10-01T03:00:00Z");
+    const now = new Date("2026-10-13T23:30:00Z").getTime();
+    expect(isDailyRankingDateInRange("2026-09-29", campaignStart, now)).toBe(false);
+    expect(isDailyRankingDateInRange("2026-09-30", campaignStart, now)).toBe(true);
+    expect(isDailyRankingDateInRange("2026-10-13", campaignStart, now)).toBe(true);
+    expect(isDailyRankingDateInRange("2026-10-14", campaignStart, now)).toBe(true);
+    expect(isDailyRankingDateInRange("2026-10-15", campaignStart, now)).toBe(false);
+    expect(isDailyRankingDateInRange("9999-12-31", campaignStart, now)).toBe(false);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   getPrizeForPosition,
   loadDailyRankingDateContext,
   parsePrizeTable,
+  type PrizeTableEntry,
 } from "@/lib/daily-ranking-preview";
 import {
   rankLiveDailyPosts,
@@ -17,7 +18,9 @@ import { cachedQuery } from "@/server/memory-cache";
  * Ranking diário exibido ao clipador (página da competição e histórico por dia).
  *
  * Os dados são iguais para todos os clipadores da campanha: ficam em cache por
- * (campanha, dia) e o `isCurrentUser` é aplicado depois, por quem chama.
+ * (campanha, dia). O `isCurrentUser` e o prêmio de cada posição são aplicados
+ * depois, por quem chama (a tabela de prêmios vem da campanha lida na
+ * requisição, então uma edição dela não espera o cache vencer).
  */
 
 export function getFirstName(name?: string | null) {
@@ -34,18 +37,35 @@ export function getClipperRankingDisplayName(profile: {
   );
 }
 
-/** Item do ranking sem o campo por usuário (`isCurrentUser`). */
+/** Item do ranking sem o campo por usuário (`isCurrentUser`) e sem o prêmio. */
 export type SharedDailyRankingItem = Omit<
   DailyClipperRankingItem,
-  "isCurrentUser"
+  "isCurrentUser" | "prize"
 > & {
   ownerUserId: string | null;
 };
 
-/** Mesma forma (e ordem de campos) do item original, com `isCurrentUser`. */
+/**
+ * Tabela de prêmios do ranking vindo do snapshot (DailyRanking): a mesma
+ * leitura estrita de antes (tabela vazia ou inválida é erro).
+ */
+export function snapshotDailyPrizeTable(dailyPrizeTable: unknown) {
+  return parsePrizeTable(dailyPrizeTable);
+}
+
+/** Tabela de prêmios do ranking ao vivo (`rankLiveDailyPosts` aceita vazia). */
+export function liveDailyPrizeTable(dailyPrizeTable: unknown) {
+  return parsePrizeTable(dailyPrizeTable, { allowEmpty: true });
+}
+
+/**
+ * Mesma forma (e ordem de campos) do item original, com `isCurrentUser` e o
+ * prêmio da posição pela tabela informada.
+ */
 export function withCurrentUser(
   items: SharedDailyRankingItem[],
   userId: string,
+  prizeTable: PrizeTableEntry[],
 ): DailyClipperRankingItem[] {
   return items.map((item) => ({
     position: item.position,
@@ -64,7 +84,7 @@ export function withCurrentUser(
     isCurrentUser: item.ownerUserId !== null && item.ownerUserId === userId,
     engagementRate: item.engagementRate,
     rankingScore: item.rankingScore,
-    prize: item.prize,
+    prize: getPrizeForPosition(prizeTable, item.position),
     clanTag: item.clanTag,
     clanEmoji: item.clanEmoji,
     clanEmojiColor: item.clanEmojiColor,
@@ -87,6 +107,42 @@ export function dailyRankingCacheTtlMs(dateYmd: string, now = Date.now()) {
   if (closedForMs < 48 * HOUR_MS) return 5 * MINUTE_MS;
   return 6 * HOUR_MS;
 }
+
+const DAY_MS = 24 * HOUR_MS;
+
+/** YYYY-MM-DD que existe no calendário UTC (2026-02-31 e 2026-13-01 não passam). */
+export function isCalendarDateYmd(dateYmd: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateYmd);
+  if (!match) return false;
+  const [year, month, day] = match.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // Date.UTC trata anos 0–99 como 1900–1999: a volta para o texto também barra.
+  return date.toISOString().slice(0, 10) === dateYmd;
+}
+
+/**
+ * Dias de ranking que podem ter posts da campanha: do dia anterior ao início
+ * até amanhã (UTC). Fora disso o ranking é vazio e não vai ao banco nem ao
+ * cache — as chaves por dia não crescem com datas arbitrárias.
+ */
+export function isDailyRankingDateInRange(
+  dateYmd: string,
+  campaignStartDate: Date,
+  now = Date.now(),
+) {
+  const first = new Date(campaignStartDate.getTime() - DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+  const last = new Date(now + DAY_MS).toISOString().slice(0, 10);
+  return dateYmd >= first && dateYmd <= last;
+}
+
+/** `fresh`: lê direto do banco, sem usar nem preencher o cache (ADMIN). */
+type DailyRankingReadOptions = { fresh?: boolean };
 
 export type SnapshotDailyRanking = {
   posts: SharedDailyRankingItem[];
@@ -115,7 +171,6 @@ export async function loadSnapshotDailyRanking(
     };
   }
 
-  const prizeTable = parsePrizeTable(core.dailyPrizeTable);
   const entryIds = core.rawRows.map((row) => row.dailyRankingEntryId);
   const appIds = Array.from(
     new Set(core.rawRows.map((row) => row.applicationId)),
@@ -169,7 +224,6 @@ export async function loadSnapshotDailyRanking(
         postedAt: row.postedAt?.toISOString() ?? new Date().toISOString(),
         engagementRate: Number(row.er),
         rankingScore: Number(row.score),
-        prize: getPrizeForPosition(prizeTable, effectiveRank),
         clanTag: profile?.clan?.tag ?? null,
         clanEmoji: profile?.clan?.emoji ?? null,
         clanEmojiColor: profile?.clan?.emojiColor ?? null,
@@ -190,7 +244,9 @@ export function getCachedSnapshotDailyRanking(
   db: PrismaClient,
   campaignId: string,
   dateYmd: string,
+  options: DailyRankingReadOptions = {},
 ) {
+  if (options.fresh) return loadSnapshotDailyRanking(db, campaignId, dateYmd);
   return cachedQuery(
     `clipper-daily-snapshot:${campaignId}:${dateYmd}`,
     dailyRankingCacheTtlMs(dateYmd),
@@ -219,7 +275,9 @@ export function getCachedDailyEligiblePostsCount(
   db: PrismaClient,
   campaignId: string,
   dateYmd: string,
+  options: DailyRankingReadOptions = {},
 ) {
+  if (options.fresh) return countDailyEligiblePosts(db, campaignId, dateYmd);
   return cachedQuery(
     `clipper-daily-count:${campaignId}:${dateYmd}`,
     dailyRankingCacheTtlMs(dateYmd),
@@ -254,7 +312,8 @@ const LIVE_RANK_MARGIN = 10;
  * Ranking ao vivo do dia, ordenado no SQL (score DESC, views DESC) e limitado
  * ao top; só essas linhas são hidratadas. O score replica em float8 a conta de
  * `calculateRankingScore` (mesmas operações IEEE-754 do JS) e o ranking final
- * (posições, ER, prêmios) continua sendo feito por `rankLiveDailyPosts`.
+ * (posições, ER) continua sendo feito por `rankLiveDailyPosts`. O prêmio fica
+ * de fora: quem chama aplica a tabela atual da campanha (`withCurrentUser`).
  *
  * Com `entriesDailyRankingId` (já existe DailyRanking do dia com entradas),
  * usa as métricas do dia (DailyRankingEntry) e só os posts presentes nele —
@@ -267,7 +326,6 @@ export async function loadLiveDailyRanking(
     dateYmd: string;
     metricType: RankingMetricType;
     topCount: number;
-    dailyPrizeTable: unknown;
     entriesDailyRankingId: string | null;
   },
 ): Promise<SharedDailyRankingItem[]> {
@@ -374,19 +432,24 @@ export async function loadLiveDailyRanking(
     })),
     metricType: params.metricType,
     topCount: params.topCount,
-    dailyPrizeTable: params.dailyPrizeTable,
+    // O prêmio calculado aqui é descartado (ver `withCurrentUser`).
+    dailyPrizeTable: null,
   });
 
-  return ranked.map(({ isCurrentUser: _ignored, ...item }) => ({
-    ...item,
-    ownerUserId: ownerByPostId.get(item.postId) ?? null,
-  }));
+  return ranked.map(
+    ({ isCurrentUser: _ignored, prize: _prizeAppliedLater, ...item }) => ({
+      ...item,
+      ownerUserId: ownerByPostId.get(item.postId) ?? null,
+    }),
+  );
 }
 
 export function getCachedLiveDailyRanking(
   db: PrismaClient,
   params: Parameters<typeof loadLiveDailyRanking>[1],
+  options: DailyRankingReadOptions = {},
 ) {
+  if (options.fresh) return loadLiveDailyRanking(db, params);
   return cachedQuery(
     `clipper-daily-live:${params.campaignId}:${params.dateYmd}:${params.metricType}:${params.topCount}:${params.entriesDailyRankingId ?? "-"}`,
     dailyRankingCacheTtlMs(params.dateYmd),

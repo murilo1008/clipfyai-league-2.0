@@ -15,7 +15,10 @@ import {
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
+import {
+  computeMonthlyLeaderboard,
+  getMonthlyRankingCutoff,
+} from "@/lib/monthly-ranking-leaderboard";
 import {
   firstOpenDailyRankingDate,
   canRejoinCompetition,
@@ -27,7 +30,11 @@ import {
   getCachedDailyEligiblePostsCount,
   getCachedLiveDailyRanking,
   getCachedSnapshotDailyRanking,
+  isCalendarDateYmd,
+  isDailyRankingDateInRange,
+  liveDailyPrizeTable,
   loadDailyTopClippersByPostedVideos,
+  snapshotDailyPrizeTable,
   withCurrentUser,
 } from "@/server/competition-daily-ranking";
 import { cachedQuery } from "@/server/memory-cache";
@@ -173,9 +180,30 @@ function getCachedCampaignTotals(db: PrismaClient, campaignId: string) {
   });
 }
 
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+
 /**
- * Ranking mensal da campanha (igual para todos os clipadores): 60 s com a
- * campanha em andamento; 6 h depois de concluída (usa só métricas até o corte).
+ * TTL do ranking mensal no cache:
+ * - em andamento, ou concluída antes do corte (endDate + 3h30, métricas ainda
+ *   entrando): 60 s;
+ * - nas 48 h após o corte: 5 min (o admin ainda desqualifica/remove/paga);
+ * - depois disso: 6 h (não muda mais).
+ */
+export function monthlyLeaderboardCacheTtlMs(
+  campaign: { status: string; endDate: Date },
+  now = Date.now(),
+) {
+  if (campaign.status !== "COMPLETED") return MINUTE_MS;
+  const closedForMs = now - getMonthlyRankingCutoff(campaign.endDate).getTime();
+  if (closedForMs < 0) return MINUTE_MS;
+  if (closedForMs < 48 * HOUR_MS) return 5 * MINUTE_MS;
+  return 6 * HOUR_MS;
+}
+
+/**
+ * Ranking mensal da campanha (igual para todos os clipadores), com o TTL de
+ * `monthlyLeaderboardCacheTtlMs`.
  */
 function getCachedMonthlyLeaderboard(
   db: PrismaClient,
@@ -200,7 +228,7 @@ function getCachedMonthlyLeaderboard(
       rule?.monthlyTopCount ?? "-",
       campaign.endDate.getTime(),
     ].join(":"),
-    campaign.status === "COMPLETED" ? 6 * 60 * 60 * 1000 : 60 * 1000,
+    monthlyLeaderboardCacheTtlMs(campaign),
     () =>
       computeMonthlyLeaderboard(db, campaign.id, {
         endDate: campaign.endDate,
@@ -215,6 +243,12 @@ function getCachedMonthlyLeaderboard(
       }),
   );
 }
+
+/** Dia de ranking: YYYY-MM-DD que existe no calendário (2026-02-31 é BAD_REQUEST). */
+const dailyRankingDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(isCalendarDateYmd, "Data inexistente; use YYYY-MM-DD.");
 
 /**
  * O admin vê o ranking de qualquer competição (aba Diário). O clipador só vê
@@ -1658,19 +1692,29 @@ export const campaignRouter = createTRPCRouter({
           ),
         ]);
 
+        // Prêmios pela tabela atual da campanha (fora do cache). Com snapshot
+        // do dia a tabela é lida no modo estrito, como antes.
+        const dailyPrizeTable =
+          campaign.activeRankingRule?.dailyPrizeTable ?? null;
+        const snapshotPrizes = snapshot.hasSnapshot
+          ? snapshotDailyPrizeTable(dailyPrizeTable)
+          : [];
+
         // O ranking ao vivo só é calculado quando não há snapshot do dia.
         const fromSnapshot = snapshot.hasSnapshot && snapshot.posts.length > 0;
-        const dailyPosts = fromSnapshot
-          ? snapshot.posts
-          : await getCachedLiveDailyRanking(ctx.db, {
-              campaignId: campaign.id,
-              dateYmd: referenceDateYmd,
-              metricType: campaign.rankingMetricType,
-              topCount: dailyLimit,
-              dailyPrizeTable:
-                campaign.activeRankingRule?.dailyPrizeTable ?? null,
-              entriesDailyRankingId: snapshot.entriesDailyRankingId,
-            });
+        const topDailyPosts = fromSnapshot
+          ? withCurrentUser(snapshot.posts, ctx.userId, snapshotPrizes)
+          : withCurrentUser(
+              await getCachedLiveDailyRanking(ctx.db, {
+                campaignId: campaign.id,
+                dateYmd: referenceDateYmd,
+                metricType: campaign.rankingMetricType,
+                topCount: dailyLimit,
+                entriesDailyRankingId: snapshot.entriesDailyRankingId,
+              }),
+              ctx.userId,
+              liveDailyPrizeTable(dailyPrizeTable),
+            );
 
         // Mesma fonte do ADMIN para filtros, métricas históricas e desempates.
         const topRanking = (monthlyBoard?.rows ?? []).map((row) => ({
@@ -1689,7 +1733,7 @@ export const campaignRouter = createTRPCRouter({
 
         return {
           topRanking, // Já ordenado pela query
-          topDailyPosts: withCurrentUser(dailyPosts, ctx.userId),
+          topDailyPosts,
           todayPostsCount, // Total de posts submetidos hoje
           dailyRankingMode: "TOP_POSTS",
           dailyRankingReferenceDate: referenceDateYmd,
@@ -1777,8 +1821,10 @@ export const campaignRouter = createTRPCRouter({
         }
         if (input.search) {
           // Igual ao filtro antigo: legenda (vazia se nula) contém o termo.
+          // As duas pontas em minúsculas no Postgres: a mesma regra de
+          // maiúsculas/minúsculas (acentos) para a legenda e para o termo.
           filters.push(
-            Prisma.sql`strpos(lower(COALESCE(cp."caption", '')), ${input.search.toLowerCase()}) > 0`,
+            Prisma.sql`strpos(lower(COALESCE(cp."caption", '')), lower(${input.search}::text)) > 0`,
           );
         }
         const timeline = Prisma.sql`COALESCE(cp."postedAt", cp."createdAt" - interval '3 hours')`;
@@ -1927,15 +1973,19 @@ export const campaignRouter = createTRPCRouter({
     .input(
       z.object({
         campaignId: z.string(),
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        date: dailyRankingDateSchema,
       }),
     )
     .query(async ({ ctx, input }) => {
-      await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, getPostedAtWindowUtc(input.date).endDate);
+      const membership = await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, getPostedAtWindowUtc(input.date).endDate);
+      // ADMIN (sem inscrição) lê direto do banco: a aba Diário do painel mostra
+      // na hora desqualificações e recálculos. Clipadores usam o cache por dia.
+      const readOptions = { fresh: membership === null };
       const campaign = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
         select: {
           id: true,
+          startDate: true,
           rankingMetricType: true,
           activeRankingRule: {
             select: {
@@ -1953,20 +2003,44 @@ export const campaignRouter = createTRPCRouter({
         });
       }
 
-      // Dados iguais para todos (cache por campanha/dia); isCurrentUser aplicado depois.
+      const { startDate, endDate } = getPostedAtWindowUtc(input.date);
+      // Prêmios pela tabela atual da campanha, aplicados depois do cache.
+      const dailyPrizeTable =
+        campaign.activeRankingRule?.dailyPrizeTable ?? null;
+
+      // Fora dos dias em que a campanha pode ter posts: ranking vazio, sem
+      // consultar o banco nem criar chaves no cache.
+      if (!isDailyRankingDateInRange(input.date, campaign.startDate)) {
+        return {
+          date: input.date,
+          source: "LIVE" as const,
+          rankingMode: "TOP_POSTS" as const,
+          posts: [],
+          totalPosts: 0,
+          windowStart: startDate.toISOString(),
+          windowEnd: endDate.toISOString(),
+        };
+      }
+
+      // Dados iguais para todos (cache por campanha/dia); isCurrentUser e
+      // prêmio aplicados depois.
       const fromSnapshot = await getCachedSnapshotDailyRanking(
         ctx.db,
         campaign.id,
         input.date,
+        readOptions,
       );
-      const { startDate, endDate } = getPostedAtWindowUtc(input.date);
 
       if (fromSnapshot.hasSnapshot) {
         return {
           date: input.date,
           source: "SNAPSHOT" as const,
           rankingMode: "TOP_POSTS" as const,
-          posts: withCurrentUser(fromSnapshot.posts, ctx.userId),
+          posts: withCurrentUser(
+            fromSnapshot.posts,
+            ctx.userId,
+            snapshotDailyPrizeTable(dailyPrizeTable),
+          ),
           totalPosts: fromSnapshot.totalPosts,
           windowStart: startDate.toISOString(),
           windowEnd: endDate.toISOString(),
@@ -1975,22 +2049,34 @@ export const campaignRouter = createTRPCRouter({
 
       // Sem DailyRanking no dia: ranking ao vivo pelas métricas de ClipPost.
       const [ranked, totalPosts] = await Promise.all([
-        getCachedLiveDailyRanking(ctx.db, {
-          campaignId: campaign.id,
-          dateYmd: input.date,
-          metricType: campaign.rankingMetricType,
-          topCount: campaign.activeRankingRule?.dailyTopCount ?? 15,
-          dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
-          entriesDailyRankingId: null,
-        }),
-        getCachedDailyEligiblePostsCount(ctx.db, campaign.id, input.date),
+        getCachedLiveDailyRanking(
+          ctx.db,
+          {
+            campaignId: campaign.id,
+            dateYmd: input.date,
+            metricType: campaign.rankingMetricType,
+            topCount: campaign.activeRankingRule?.dailyTopCount ?? 15,
+            entriesDailyRankingId: null,
+          },
+          readOptions,
+        ),
+        getCachedDailyEligiblePostsCount(
+          ctx.db,
+          campaign.id,
+          input.date,
+          readOptions,
+        ),
       ]);
 
       return {
         date: input.date,
         source: "LIVE" as const,
         rankingMode: "TOP_POSTS" as const,
-        posts: withCurrentUser(ranked, ctx.userId),
+        posts: withCurrentUser(
+          ranked,
+          ctx.userId,
+          liveDailyPrizeTable(dailyPrizeTable),
+        ),
         totalPosts,
         windowStart: startDate.toISOString(),
         windowEnd: endDate.toISOString(),
@@ -2002,7 +2088,7 @@ export const campaignRouter = createTRPCRouter({
     .input(
       z.object({
         campaignId: z.string(),
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        date: dailyRankingDateSchema,
         limit: z.number().min(1).max(100).default(50),
       }),
     )
@@ -2010,6 +2096,7 @@ export const campaignRouter = createTRPCRouter({
       const campaignConfig = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
         select: {
+          startDate: true,
           topClippersRankingEnabled: true,
           topClippersPrizeTable: true,
         },
@@ -2035,18 +2122,36 @@ export const campaignRouter = createTRPCRouter({
       );
 
       const { startDate, endDate } = getLiveDailyWindowByReferenceDate(input.date);
-      await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, endDate);
-      // Igual para todos (cache por campanha/dia); isCurrentUser e prêmio depois.
-      const board = await cachedQuery(
-        `top-clippers-day:${input.campaignId}:${input.date}:${input.limit}`,
-        dailyRankingCacheTtlMs(input.date),
-        () =>
-          loadDailyTopClippersByPostedVideos(ctx.db, {
-            campaignId: input.campaignId,
-            date: input.date,
-            limit: input.limit,
-          }),
-      );
+      const membership = await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, endDate);
+      const loadBoard = () =>
+        loadDailyTopClippersByPostedVideos(ctx.db, {
+          campaignId: input.campaignId,
+          date: input.date,
+          limit: input.limit,
+        });
+      // Igual para todos (cache por campanha/dia); isCurrentUser e prêmio
+      // depois. ADMIN lê direto do banco; fora dos dias possíveis da campanha
+      // o ranking é vazio (sem banco nem cache).
+      const board = !isDailyRankingDateInRange(
+        input.date,
+        campaignConfig.startDate,
+      )
+        ? {
+            entries: [],
+            stats: {
+              totalPostsInWindow: 0,
+              totalViewsInWindow: 0,
+              totalClippersWithPosts: 0,
+              totalCampaigns: 1,
+            },
+          }
+        : membership === null
+          ? await loadBoard()
+          : await cachedQuery(
+              `top-clippers-day:${input.campaignId}:${input.date}:${input.limit}`,
+              dailyRankingCacheTtlMs(input.date),
+              loadBoard,
+            );
 
       const entries = board.entries.map((clipper, index) => ({
         position: index + 1,

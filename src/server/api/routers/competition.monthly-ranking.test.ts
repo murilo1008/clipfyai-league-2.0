@@ -8,7 +8,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 }));
 vi.mock("@/server/db", () => ({ db: {} }));
 
-import { campaignRouter } from "./competition";
+import { campaignRouter, monthlyLeaderboardCacheTtlMs } from "./competition";
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
 import { invalidateCachedQueries } from "@/server/memory-cache";
 
@@ -176,4 +176,22 @@ describe("ranking mensal do clipador alinhado ao ADMIN", () => {
       }
     },
   );
+});
+
+describe("TTL do ranking mensal no cache", () => {
+  const endDate = new Date("2026-10-02T23:00:00Z");
+  // Corte do ranking de campanha concluída: endDate + 3h30.
+  const cutoff = endDate.getTime() + (3 * 60 + 30) * 60 * 1000;
+  const hour = 60 * 60 * 1000;
+  it.each([
+    ["ACTIVE", cutoff + 100 * hour, 60 * 1000],
+    ["PAUSED", cutoff + 100 * hour, 60 * 1000],
+    // Concluída antes do corte: métricas ainda entram no ranking.
+    ["COMPLETED", cutoff - 1, 60 * 1000],
+    ["COMPLETED", cutoff, 5 * 60 * 1000],
+    ["COMPLETED", cutoff + 48 * hour - 1, 5 * 60 * 1000],
+    ["COMPLETED", cutoff + 48 * hour, 6 * hour],
+  ] as const)("%s em %s usa %s ms", (status, now, expected) => {
+    expect(monthlyLeaderboardCacheTtlMs({ status, endDate }, now)).toBe(expected);
+  });
 });
