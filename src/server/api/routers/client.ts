@@ -1313,6 +1313,79 @@ export const clientRouter = createTRPCRouter({
     }
   }),
 
+  // Números do topo de /posts e /client-comments: só os totais por
+  // competição, sem gráfico, top posts e top contas do getDashboard.
+  getHeroStats: privateProcedure.query(async ({ ctx }) => {
+    const dbUser = await ctx.db.user.findUnique({
+      where: { id: ctx.userId },
+      select: { role: true },
+    })
+
+    if (!dbUser || dbUser.role !== "CLIENT") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Você não tem permissão para acessar esta funcionalidade",
+      })
+    }
+
+    const [campaigns, postFilterCampaigns] = await Promise.all([
+      // Mesmo filtro e ordem do getDashboard
+      ctx.db.campaign.findMany({
+        where: {
+          clientId: ctx.userId,
+          status: {
+            in: ["ACTIVE", "COMPLETED", "SCHEDULED"],
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          platforms: true,
+        },
+        orderBy: {
+          startDate: "desc",
+        },
+      }),
+      // Mesma lista (e ordem) do filtro de competição do getAllPosts
+      ctx.db.campaign.findMany({
+        where: { clientId: ctx.userId },
+        select: { id: true, name: true, slug: true },
+        orderBy: { createdAt: "desc" },
+      }),
+    ])
+
+    const campaignsWithTotals = await Promise.all(
+      campaigns.map(async (campaign) => {
+        const totals = await getCampaignTotals(ctx.db, campaign)
+        return {
+          id: campaign.id,
+          name: campaign.name,
+          slug: campaign.slug,
+          status: campaign.status,
+          startDate: campaign.startDate.toISOString(),
+          endDate: campaign.endDate.toISOString(),
+          platforms: campaign.platforms,
+          totalPosts: totals.totalPosts,
+          totalViews: totals.totalViews,
+          totalLikes: totals.totalLikes,
+          totalComments: totals.totalComments,
+          totalShares: totals.totalShares,
+          totalSaves: totals.totalSaves,
+          engagementRate: totals.engagementRate,
+        }
+      }),
+    )
+
+    return {
+      campaigns: campaignsWithTotals,
+      postFilterCampaigns,
+    }
+  }),
+
   // ============================================================================
   // POSTS - LISTAGEM PARA CLIENTE
   // ============================================================================

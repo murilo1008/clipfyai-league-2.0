@@ -41,7 +41,7 @@ import { ClientCommentsHeroViz, ClientCommentsHeroVizSkeleton } from "./client-c
    ============================================================ */
 
 type ClientCampaign =
-  RouterOutputs["customers"]["getDashboard"]["campaigns"][number];
+  RouterOutputs["customers"]["getHeroStats"]["campaigns"][number];
 
 /* ── Status da competição (par claro/escuro obrigatório) ───────────────── */
 const STATUS_META: Record<string, { label: string; className: string }> = {
@@ -75,7 +75,9 @@ function formatDate(value: Date | string | null | undefined): string {
 /* ══════════════════════════════════════════════════════════════════════ */
 
 export default function ClientComments() {
-  const { data, isLoading } = api.customers.getDashboard.useQuery();
+  // Só os totais por competição: o getDashboard completo (gráfico, top posts
+  // e contas) não aparece nesta página.
+  const { data, isLoading } = api.customers.getHeroStats.useQuery();
 
   const campaigns = React.useMemo<ClientCampaign[]>(
     () => data?.campaigns ?? [],
@@ -83,6 +85,25 @@ export default function ClientComments() {
   );
 
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+
+  // A competição padrão é a primeira da lista leve da sidebar (mesmo filtro e
+  // ordem, normalmente já em cache): a análise dela começa junto com os
+  // totais, em vez de esperar por eles.
+  const utils = api.useUtils();
+  const { data: campaignOptions } =
+    api.customers.getMyCampaignOptions.useQuery();
+  const defaultCampaignId = campaignOptions?.[0]?.id;
+  React.useEffect(() => {
+    if (!defaultCampaignId || selectedId) return;
+    void utils.commentsAnalysis.getCampaignAggregate.prefetch({
+      campaignId: defaultCampaignId,
+    });
+    void utils.commentsAnalysis.getRepresentativeComments.prefetch({
+      campaignId: defaultCampaignId,
+      sentiment: "all",
+      limit: 30,
+    });
+  }, [defaultCampaignId, selectedId, utils]);
 
   React.useEffect(() => {
     if (!selectedId && campaigns.length > 0) {
