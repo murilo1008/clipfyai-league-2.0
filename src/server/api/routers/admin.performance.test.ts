@@ -1262,3 +1262,169 @@ describe("getCompetitionPostsAdmin", () => {
     });
   });
 });
+
+describe("getGlobalFinancials", () => {
+  it("agrupa por competição e clipador sem varreduras quadráticas", async () => {
+    const profile = (id: string) => ({
+      id,
+      fullName: `Nome ${id}`,
+      artisticName: null,
+      pixKey: null,
+      cpf: null,
+      user: { email: `${id}@x`, imageUrl: null },
+    });
+    const tx = (
+      id: string,
+      type: string,
+      amount: number,
+      campaignId: string | null,
+      clipper: string,
+      createdAt: string,
+    ) => ({
+      id,
+      type,
+      amount,
+      status: "COMPLETED",
+      campaignId,
+      rankingPosition: null,
+      description: id,
+      createdAt: new Date(createdAt),
+      proofUrls: [],
+      withdrawalDetails: null,
+      wallet: { clipperProfile: profile(clipper) },
+    });
+    const transactionFindMany = vi
+      .fn()
+      .mockResolvedValueOnce([
+        tx("t1", "PRIZE_CREDIT", 100, "c1", "k1", "2026-10-03T10:00:00Z"),
+        tx("t2", "BONUS", 50, "c2", "k1", "2026-10-02T10:00:00Z"),
+        tx("t3", "ADJUSTMENT", 10, null, "k2", "2026-10-01T10:00:00Z"),
+      ])
+      .mockResolvedValueOnce([
+        tx("p1", "WITHDRAWAL_COMPLETED", -30, "c1", "k1", "2026-10-04T10:00:00Z"),
+      ])
+      .mockResolvedValueOnce([]);
+    const api = caller({
+      campaign: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "c1", name: "Liga 1" },
+          { id: "c2", name: "Liga 2" },
+        ]),
+      },
+      transaction: { findMany: transactionFindMany },
+      clipPost: {
+        groupBy: vi.fn().mockResolvedValue([
+          {
+            campaignId: "c1",
+            _sum: { views: 10_000n },
+            _count: { id: 4 },
+          },
+        ]),
+      },
+    });
+
+    const result = await api.getGlobalFinancials({ period: "all" });
+
+    expect(
+      result.campaignFinancials.map((c) => [
+        c.id,
+        c.totalCredited,
+        c.totalPaid,
+        c.transactionCount,
+        c.clippersCount,
+        c.totalViews,
+        c.cpm,
+      ]),
+    ).toEqual([
+      ["c1", 100, 30, 1, 1, 10_000, 10],
+      ["c2", 50, 0, 1, 1, 0, 0],
+    ]);
+    expect(
+      result.topClippers.map((c) => [c.id, c.totalEarned, c.campaignCount]),
+    ).toEqual([
+      ["k1", 150, 2],
+      ["k2", 10, 0],
+    ]);
+    expect(
+      result.recentTransactions.map((t) => [t.id, t.campaignName]),
+    ).toEqual([
+      ["p1", "Liga 1"],
+      ["t1", "Liga 1"],
+      ["t2", "Liga 2"],
+      ["t3", "—"],
+    ]);
+    expect(result.summary).toMatchObject({
+      totalCredited: 160,
+      totalPaidPix: 30,
+      globalViews: 10_000,
+      totalClippers: 2,
+    });
+  });
+});
+
+describe("spotifyMetrics.listTracks", () => {
+  it("lê a métrica mais recente e a primeira do período em uma consulta", async () => {
+    const link = (id: string, trackId: string) => ({
+      id,
+      isActive: true,
+      createdAt: new Date("2026-10-01T00:00:00.000Z"),
+      spotifyTrackId: trackId,
+      spotifyTrack: {
+        id: trackId,
+        spotifyTrackId: `ext-${trackId}`,
+        spotifyUri: `spotify:track:${trackId}`,
+        shareUrl: null,
+        name: trackId,
+        artists: [],
+        albumName: null,
+        albumImageUrl: null,
+        lastCollectedAt: null,
+        lastError: null,
+      },
+    });
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        spotifyTrackId: "t1",
+        latestPlayCount: 500n,
+        latestCollectedAt: new Date("2026-10-10T00:00:00.000Z"),
+        firstPlayCount: 100n,
+      },
+      {
+        spotifyTrackId: "t2",
+        latestPlayCount: null,
+        latestCollectedAt: null,
+        firstPlayCount: null,
+      },
+    ]);
+    const api = caller({
+      campaignSpotifyTrack: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([link("l1", "t1"), link("l2", "t2")]),
+      },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await api.spotifyMetrics.listTracks({
+      campaignId: "c1",
+      range: "7d",
+    });
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    const query = sqlOf(queryRaw.mock.calls[0]!);
+    expect(query.sql).toContain("LIMIT 1");
+    expect(query.values[0]).toEqual(["t1", "t2"]);
+    expect(result.map((r) => r.track)).toEqual([
+      expect.objectContaining({
+        currentPlayCount: 500,
+        previousPlayCount: 100,
+        latestCollectedAt: new Date("2026-10-10T00:00:00.000Z"),
+      }),
+      expect.objectContaining({
+        currentPlayCount: null,
+        previousPlayCount: null,
+        latestCollectedAt: null,
+      }),
+    ]);
+  });
+});

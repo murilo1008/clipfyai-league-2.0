@@ -1694,46 +1694,84 @@ export const adminRouter = createTRPCRouter({
           orderBy: { createdAt: "desc" },
         });
 
-        return Promise.all(
-          tracks.map(async (link) => {
-            const [latest, firstInRange] = await Promise.all([
-              ctx.db.spotifyTrackMetric.findFirst({
-                where: { spotifyTrackId: link.spotifyTrackId },
-                orderBy: { collectedAt: "desc" },
-              }),
-              ctx.db.spotifyTrackMetric.findFirst({
-                where: {
-                  spotifyTrackId: link.spotifyTrackId,
-                  ...(since ? { collectedAt: { gte: since } } : {}),
-                },
-                orderBy: { collectedAt: "asc" },
-              }),
-            ]);
-
-            return {
-              id: link.id,
-              isActive: link.isActive,
-              createdAt: link.createdAt,
-              track: {
-                id: link.spotifyTrack.id,
-                spotifyTrackId: link.spotifyTrack.spotifyTrackId,
-                spotifyUri: link.spotifyTrack.spotifyUri,
-                shareUrl: link.spotifyTrack.shareUrl,
-                name: link.spotifyTrack.name,
-                artists: link.spotifyTrack.artists,
-                albumName: link.spotifyTrack.albumName,
-                albumImageUrl: link.spotifyTrack.albumImageUrl,
-                lastCollectedAt: link.spotifyTrack.lastCollectedAt,
-                lastError: link.spotifyTrack.lastError,
-                currentPlayCount: latest ? Number(latest.playCount) : null,
-                previousPlayCount: firstInRange
-                  ? Number(firstInRange.playCount)
-                  : null,
-                latestCollectedAt: latest?.collectedAt ?? null,
-              },
-            };
-          }),
+        // Métrica mais recente e primeira do período de todas as faixas em uma
+        // consulta (antes eram duas por faixa); cada LATERAL é uma busca no
+        // índice (spotifyTrackId, collectedAt).
+        const trackIds = [...new Set(tracks.map((link) => link.spotifyTrackId))];
+        const metricRows =
+          trackIds.length > 0
+            ? await ctx.db.$queryRaw<
+                Array<{
+                  spotifyTrackId: string;
+                  latestPlayCount: bigint | null;
+                  latestCollectedAt: Date | null;
+                  firstPlayCount: bigint | null;
+                }>
+              >`
+                SELECT
+                  t.id AS "spotifyTrackId",
+                  latest."playCount" AS "latestPlayCount",
+                  latest."collectedAt" AS "latestCollectedAt",
+                  first_in_range."playCount" AS "firstPlayCount"
+                FROM unnest(${trackIds}::text[]) AS t(id)
+                LEFT JOIN LATERAL (
+                  SELECT m."playCount", m."collectedAt"
+                  FROM "SpotifyTrackMetric" m
+                  WHERE m."spotifyTrackId" = t.id
+                  ORDER BY m."collectedAt" DESC
+                  LIMIT 1
+                ) latest ON true
+                LEFT JOIN LATERAL (
+                  SELECT m."playCount"
+                  FROM "SpotifyTrackMetric" m
+                  WHERE m."spotifyTrackId" = t.id
+                    ${since ? Prisma.sql`AND m."collectedAt" >= ${since}::timestamp` : Prisma.empty}
+                  ORDER BY m."collectedAt" ASC
+                  LIMIT 1
+                ) first_in_range ON true
+              `
+            : [];
+        const metricsByTrack = new Map(
+          metricRows.map((row) => [row.spotifyTrackId, row]),
         );
+
+        return tracks.map((link) => {
+          const metrics = metricsByTrack.get(link.spotifyTrackId);
+          const latest =
+            metrics?.latestPlayCount != null
+              ? {
+                  playCount: metrics.latestPlayCount,
+                  collectedAt: metrics.latestCollectedAt,
+                }
+              : null;
+          const firstInRange =
+            metrics?.firstPlayCount != null
+              ? { playCount: metrics.firstPlayCount }
+              : null;
+
+          return {
+            id: link.id,
+            isActive: link.isActive,
+            createdAt: link.createdAt,
+            track: {
+              id: link.spotifyTrack.id,
+              spotifyTrackId: link.spotifyTrack.spotifyTrackId,
+              spotifyUri: link.spotifyTrack.spotifyUri,
+              shareUrl: link.spotifyTrack.shareUrl,
+              name: link.spotifyTrack.name,
+              artists: link.spotifyTrack.artists,
+              albumName: link.spotifyTrack.albumName,
+              albumImageUrl: link.spotifyTrack.albumImageUrl,
+              lastCollectedAt: link.spotifyTrack.lastCollectedAt,
+              lastError: link.spotifyTrack.lastError,
+              currentPlayCount: latest ? Number(latest.playCount) : null,
+              previousPlayCount: firstInRange
+                ? Number(firstInRange.playCount)
+                : null,
+              latestCollectedAt: latest?.collectedAt ?? null,
+            },
+          };
+        });
       }),
 
     addTrack: adminProcedure
@@ -9508,117 +9546,129 @@ export const adminRouter = createTRPCRouter({
               }
             : {};
 
-        // Buscar todas as competições
-        const campaigns = await ctx.db.campaign.findMany({
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            status: true,
-            startDate: true,
-            endDate: true,
-            isPrivate: true,
-          },
-          orderBy: { createdAt: "desc" },
-        });
+        // Consultas independentes em paralelo
+        const [
+          campaigns,
+          creditTransactions,
+          pixTransactions,
+          pendingWithdrawals,
+          campaignPostTotals,
+        ] = await Promise.all([
+          // Buscar todas as competições
+          ctx.db.campaign.findMany({
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              status: true,
+              startDate: true,
+              endDate: true,
+              isPrivate: true,
+            },
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar todas as transações de crédito (prêmios, bônus, ajustes)
-        const creditTransactions = await ctx.db.transaction.findMany({
-          where: {
-            type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
-            status: "COMPLETED",
-            ...dateFilter,
-          },
-          select: {
-            id: true,
-            type: true,
-            amount: true,
-            status: true,
-            campaignId: true,
-            rankingPosition: true,
-            description: true,
-            createdAt: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar todas as transações de crédito (prêmios, bônus, ajustes)
+          ctx.db.transaction.findMany({
+            where: {
+              type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
+              status: "COMPLETED",
+              ...dateFilter,
+            },
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              status: true,
+              campaignId: true,
+              rankingPosition: true,
+              description: true,
+              createdAt: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar todas as transações de PIX (saques completados)
-        const pixTransactions = await ctx.db.transaction.findMany({
-          where: {
-            type: "WITHDRAWAL_COMPLETED",
-            status: "COMPLETED",
-            ...dateFilter,
-          },
-          select: {
-            id: true,
-            type: true,
-            amount: true,
-            status: true,
-            campaignId: true,
-            description: true,
-            createdAt: true,
-            proofUrls: true,
-            withdrawalDetails: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    pixKey: true,
-                    cpf: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar todas as transações de PIX (saques completados)
+          ctx.db.transaction.findMany({
+            where: {
+              type: "WITHDRAWAL_COMPLETED",
+              status: "COMPLETED",
+              ...dateFilter,
+            },
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              status: true,
+              campaignId: true,
+              description: true,
+              createdAt: true,
+              proofUrls: true,
+              withdrawalDetails: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      pixKey: true,
+                      cpf: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar saques pendentes
-        const pendingWithdrawals = await ctx.db.transaction.findMany({
-          where: {
-            type: { in: ["WITHDRAWAL_REQUEST", "WITHDRAWAL_APPROVED"] },
-            status: { in: ["PENDING", "PROCESSING"] },
-          },
-          select: {
-            id: true,
-            amount: true,
-            type: true,
-            status: true,
-            campaignId: true,
-            description: true,
-            createdAt: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    pixKey: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar saques pendentes
+          ctx.db.transaction.findMany({
+            where: {
+              type: { in: ["WITHDRAWAL_REQUEST", "WITHDRAWAL_APPROVED"] },
+              status: { in: ["PENDING", "PROCESSING"] },
+            },
+            select: {
+              id: true,
+              amount: true,
+              type: true,
+              status: true,
+              campaignId: true,
+              description: true,
+              createdAt: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      pixKey: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
+
+          // Total de views por competição (para CPM), agregação em cache curto
+          getCachedCampaignPostTotals(ctx.db),
+        ]);
 
         // === CÁLCULOS ===
 
@@ -9652,29 +9702,37 @@ export const adminRouter = createTRPCRouter({
         // Saldo restante a pagar (creditado - pago)
         const totalRemainingToPay = Math.max(0, totalCredited - totalPaidPix);
 
-        // Buscar total de views por competição (para CPM)
-        const campaignViews = await ctx.db.clipPost.groupBy({
-          by: ["campaignId"],
-          where: { status: "ELIGIBLE" },
-          _sum: { views: true },
-          _count: { id: true },
-        });
         const viewsMap = new Map(
-          campaignViews.map((v) => [
-            v.campaignId,
-            { views: Number(v._sum.views || 0), posts: v._count.id },
+          Array.from(campaignPostTotals, ([campaignId, totals]) => [
+            campaignId,
+            { views: Number(totals._sum.views || 0), posts: totals._count.id },
           ]),
         );
+        const campaignNameById = new Map(
+          campaigns.map((campaign) => [campaign.id, campaign.name]),
+        );
+
+        // Transações agrupadas por competição em uma passada (mantém a ordem)
+        const groupByCampaign = <T extends { campaignId: string | null }>(
+          transactions: T[],
+        ) => {
+          const grouped = new Map<string, T[]>();
+          for (const tx of transactions) {
+            if (!tx.campaignId) continue;
+            const current = grouped.get(tx.campaignId) ?? [];
+            current.push(tx);
+            grouped.set(tx.campaignId, current);
+          }
+          return grouped;
+        };
+        const creditsByCampaign = groupByCampaign(creditTransactions);
+        const pixByCampaign = groupByCampaign(pixTransactions);
 
         // Agrupar por competição
         const campaignFinancials = campaigns
           .map((campaign) => {
-            const campaignCredits = creditTransactions.filter(
-              (tx) => tx.campaignId === campaign.id,
-            );
-            const campaignPix = pixTransactions.filter(
-              (tx) => tx.campaignId === campaign.id,
-            );
+            const campaignCredits = creditsByCampaign.get(campaign.id) ?? [];
+            const campaignPix = pixByCampaign.get(campaign.id) ?? [];
             const credited = campaignCredits.reduce(
               (sum, tx) => sum + tx.amount,
               0,
@@ -9773,17 +9831,17 @@ export const adminRouter = createTRPCRouter({
           }
         });
 
-        // Contar competições por clipador
+        // Contar competições por clipador (uma passada pelos créditos)
+        const campaignsByClipper = new Map<string, Set<string>>();
+        for (const tx of creditTransactions) {
+          if (!tx.campaignId) continue;
+          const clipperId = tx.wallet.clipperProfile.id;
+          const current = campaignsByClipper.get(clipperId) ?? new Set<string>();
+          current.add(tx.campaignId);
+          campaignsByClipper.set(clipperId, current);
+        }
         clipperMap.forEach((clipper, clipperId) => {
-          const campaigns = new Set(
-            creditTransactions
-              .filter(
-                (tx) =>
-                  tx.wallet.clipperProfile.id === clipperId && tx.campaignId,
-              )
-              .map((tx) => tx.campaignId!),
-          );
-          clipper.campaignCount = campaigns.size;
+          clipper.campaignCount = campaignsByClipper.get(clipperId)?.size ?? 0;
           clipper.remaining = Math.max(
             0,
             clipper.totalEarned - clipper.totalPaid,
@@ -9898,7 +9956,7 @@ export const adminRouter = createTRPCRouter({
             status: tx.status,
             campaignId: tx.campaignId,
             campaignName:
-              campaigns.find((c) => c.id === tx.campaignId)?.name || "—",
+              (tx.campaignId && campaignNameById.get(tx.campaignId)) || "—",
             description: tx.description,
             createdAt: tx.createdAt,
             clipperName: tx.wallet.clipperProfile.fullName,
@@ -9933,7 +9991,7 @@ export const adminRouter = createTRPCRouter({
             status: tx.status,
             campaignId: tx.campaignId,
             campaignName:
-              campaigns.find((c) => c.id === tx.campaignId)?.name || "—",
+              (tx.campaignId && campaignNameById.get(tx.campaignId)) || "—",
             description: tx.description,
             createdAt: tx.createdAt,
             clipperName: tx.wallet.clipperProfile.fullName,
@@ -9972,61 +10030,71 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        // Buscar todas as transações relacionadas a esta campanha
-        const transactions = await ctx.db.transaction.findMany({
-          where: {
-            campaignId: campaign.id,
-            type: {
-              in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"], // Incluir ajustes no financeiro
-            },
-            status: "COMPLETED",
-          },
-          include: {
-            wallet: {
-              include: {
-                clipperProfile: {
-                  include: {
-                    user: {
-                      select: {
-                        email: true,
-                      },
-                    },
-                  },
+        // Só os campos usados abaixo (antes vinham as linhas inteiras)
+        const clipperSelect = {
+          wallet: {
+            select: {
+              clipperProfile: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  artisticName: true,
+                  phone: true,
+                  cpf: true,
+                  pixKey: true,
+                  user: { select: { email: true } },
                 },
               },
             },
           },
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+        } satisfies Prisma.TransactionSelect;
 
-        // Buscar todas as transações de PIX (WITHDRAWAL_COMPLETED) desta campanha
-        const pixTransactions = await ctx.db.transaction.findMany({
-          where: {
-            campaignId: campaign.id,
-            type: "WITHDRAWAL_COMPLETED",
-            status: "COMPLETED",
-          },
-          include: {
-            wallet: {
-              include: {
-                clipperProfile: {
-                  include: {
-                    user: {
-                      select: {
-                        email: true,
-                      },
-                    },
-                  },
-                },
+        const [transactions, pixTransactions] = await Promise.all([
+          // Buscar todas as transações relacionadas a esta campanha
+          ctx.db.transaction.findMany({
+            where: {
+              campaignId: campaign.id,
+              type: {
+                in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"], // Incluir ajustes no financeiro
               },
+              status: "COMPLETED",
             },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              description: true,
+              status: true,
+              rankingPosition: true,
+              createdAt: true,
+              ...clipperSelect,
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          }),
+          // Buscar todas as transações de PIX (WITHDRAWAL_COMPLETED) desta campanha
+          ctx.db.transaction.findMany({
+            where: {
+              campaignId: campaign.id,
+              type: "WITHDRAWAL_COMPLETED",
+              status: "COMPLETED",
+            },
+            select: {
+              id: true,
+              amount: true,
+              description: true,
+              status: true,
+              createdAt: true,
+              withdrawalDetails: true,
+              proofUrls: true,
+              ...clipperSelect,
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          }),
+        ]);
 
         // Agrupar transações por clipador
         const clipperFinancials = new Map<
