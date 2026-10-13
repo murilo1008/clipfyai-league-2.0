@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import {
   BookmarkSimple,
   CaretDown,
@@ -31,12 +32,7 @@ import {
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import { ApplicationDetailsDialog } from "./application-details-dialog"
-import { ClipperMetricsDialog } from "./clipper-metrics-dialog"
-import {
-  MonthlyRankResultModal,
-  type MonthlyRankPreview,
-} from "./monthly-rank-result-modal"
+import type { MonthlyRankPreview } from "./monthly-rank-result-modal"
 import {
   type AdminApplication,
   type CompetitionDetails,
@@ -48,10 +44,32 @@ import {
   useFormatCurrency,
 } from "./shared"
 
+// Dialogs abertos sob demanda: o chunk de cada um só é baixado no primeiro uso
+const ApplicationDetailsDialog = dynamic(() =>
+  import("./application-details-dialog").then(
+    (m) => m.ApplicationDetailsDialog,
+  ),
+)
+const ClipperMetricsDialog = dynamic(() =>
+  import("./clipper-metrics-dialog").then((m) => m.ClipperMetricsDialog),
+)
+const MonthlyRankResultModal = dynamic(() =>
+  import("./monthly-rank-result-modal").then((m) => m.MonthlyRankResultModal),
+)
+
+/** Monta o dialog na primeira abertura e o mantém montado (animação de fechar). */
+function useOpenedOnce(open: boolean) {
+  const [opened, setOpened] = React.useState(open)
+  React.useEffect(() => {
+    if (open) setOpened(true)
+  }, [open])
+  return opened || open
+}
+
 type MonthlyRankingEntry = CompetitionDetails["topMonthlyRanking"][number]
 
 export function MonthlyTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props
+  const { slug, campaignId, data } = props
   const formatCurrency = useFormatCurrency()
 
   const entries = React.useMemo(
@@ -121,24 +139,44 @@ export function MonthlyTab(props: CompetitionTabProps) {
   const [metricsOpen, setMetricsOpen] = React.useState(false)
 
   /* ===== Ver Aplicação ===== */
-  const { data: applicationsData } =
-    api.admin.getCompetitionApplicationsAdmin.useQuery(
-      { slug, page: 1, pageSize: 200 },
-      { enabled: active },
-    )
+  // A inscrição é buscada pelo id só no clique (antes a página baixava as 200
+  // primeiras inscrições e procurava pelo nome).
+  const utils = api.useUtils()
+  const [loadingApplicationId, setLoadingApplicationId] = React.useState<
+    string | null
+  >(null)
   const [selectedApplication, setSelectedApplication] =
     React.useState<AdminApplication | null>(null)
   const [isApplicationOpen, setIsApplicationOpen] = React.useState(false)
 
-  const handleOpenApplication = (entry: MonthlyRankingEntry) => {
-    const application = applicationsData?.applications.find(
-      (app) =>
-        app.clipperName === entry.clipperName ||
-        app.clipperArtisticName === entry.clipperUsername,
-    )
-    if (application) {
-      setSelectedApplication(application)
-      setIsApplicationOpen(true)
+  const mountResultModal = useOpenedOnce(resultOpen)
+  const mountMetricsDialog = useOpenedOnce(metricsOpen)
+  const mountApplicationDialog = useOpenedOnce(isApplicationOpen)
+
+  const handleOpenApplication = async (entry: MonthlyRankingEntry) => {
+    setLoadingApplicationId(entry.applicationId)
+    try {
+      const result = await utils.admin.getCompetitionApplicationsAdmin.fetch({
+        slug,
+        applicationId: entry.applicationId,
+        page: 1,
+        pageSize: 1,
+      })
+      const application = result.applications[0]
+      if (application) {
+        setSelectedApplication(application)
+        setIsApplicationOpen(true)
+      } else {
+        toast.error("Aplicação não encontrada")
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "Erro ao carregar a aplicação",
+      )
+    } finally {
+      setLoadingApplicationId(null)
     }
   }
 
@@ -401,9 +439,14 @@ export function MonthlyTab(props: CompetitionTabProps) {
                       variant="ghost"
                       size="sm"
                       className="text-muted-foreground hover:text-foreground ml-auto h-7 cursor-pointer gap-1.5 rounded-lg text-xs"
-                      onClick={() => handleOpenApplication(entry)}
+                      disabled={loadingApplicationId === entry.applicationId}
+                      onClick={() => void handleOpenApplication(entry)}
                     >
-                      <Eye className="size-3" />
+                      {loadingApplicationId === entry.applicationId ? (
+                        <Spinner className="size-3 animate-spin" />
+                      ) : (
+                        <Eye className="size-3" />
+                      )}
                       Ver Aplicação
                     </Button>
                   </div>
@@ -444,34 +487,39 @@ export function MonthlyTab(props: CompetitionTabProps) {
       </section>
 
       {/* ===== Modal: resultado do rank mensal ===== */}
-      <MonthlyRankResultModal
-        open={resultOpen}
-        onOpenChange={(open) => {
-          setResultOpen(open)
-          if (!open) setPreviewData(null)
-        }}
-        data={previewData}
-        slug={slug}
-        refetch={refetch}
-        onSilentRepreview={handleSilentRepreview}
-      />
+      {mountResultModal && (
+        <MonthlyRankResultModal
+          open={resultOpen}
+          onOpenChange={(open) => {
+            setResultOpen(open)
+            if (!open) setPreviewData(null)
+          }}
+          data={previewData}
+          slug={slug}
+          onSilentRepreview={handleSilentRepreview}
+        />
+      )}
 
       {/* ===== Dialog: métricas detalhadas ===== */}
-      <ClipperMetricsDialog
-        entry={metricsEntry}
-        open={metricsOpen}
-        onOpenChange={setMetricsOpen}
-        campaignId={campaignId}
-      />
+      {mountMetricsDialog && (
+        <ClipperMetricsDialog
+          entry={metricsEntry}
+          open={metricsOpen}
+          onOpenChange={setMetricsOpen}
+          campaignId={campaignId}
+        />
+      )}
 
       {/* ===== Dialog: detalhes da aplicação ===== */}
-      <ApplicationDetailsDialog
-        application={selectedApplication}
-        open={isApplicationOpen}
-        onOpenChange={setIsApplicationOpen}
-        slug={slug}
-        campaignId={campaignId}
-      />
+      {mountApplicationDialog && (
+        <ApplicationDetailsDialog
+          application={selectedApplication}
+          open={isApplicationOpen}
+          onOpenChange={setIsApplicationOpen}
+          slug={slug}
+          campaignId={campaignId}
+        />
+      )}
     </>
   )
 }

@@ -2,8 +2,11 @@ import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildHomeTickerClips,
   cachedAdminHomeQuery,
   getEligiblePlatformTotals,
+  getHomeTickerClips,
+  type HomeTickerPost,
   viewsGrowthStartDate,
 } from "./admin-home-metrics";
 
@@ -106,5 +109,90 @@ describe("getEligiblePlatformTotals", () => {
   it("começa o gráfico de crescimento à meia-noite de 89 dias atrás", () => {
     const start = viewsGrowthStartDate(new Date(2026, 9, 13, 15, 30));
     expect(start).toEqual(new Date(2026, 6, 16, 0, 0, 0, 0));
+  });
+});
+
+const tickerPost = (
+  id: string,
+  views: number,
+  thumbnailUrl: string | null = `https://img/${id}.jpg`,
+): HomeTickerPost => ({
+  id,
+  thumbnailUrl,
+  views,
+  likes: 5,
+  comments: 3,
+  shares: 2,
+  username: null,
+  platform: "TIKTOK",
+});
+
+describe("buildHomeTickerClips", () => {
+  it("intercala as competições e ignora thumbnails vazias ou repetidas", () => {
+    const clips = buildHomeTickerClips([
+      [
+        tickerPost("a1", 100),
+        tickerPost("a2", 50, "  "),
+        tickerPost("a3", 40),
+      ],
+      [tickerPost("b1", 80, "https://img/a1.jpg"), tickerPost("b2", 0)],
+    ]);
+
+    expect(clips.map((clip) => clip.id)).toEqual(["a1", "a3", "b2"]);
+    expect(clips[0]).toEqual({
+      id: "a1",
+      thumbnail: "https://img/a1.jpg",
+      views: 100,
+      engagementRate: 10,
+      username: "",
+      platform: "TIKTOK",
+    });
+    expect(clips[2]!.engagementRate).toBe(0);
+  });
+
+  it("limita a 20 vídeos", () => {
+    const campaigns = Array.from({ length: 5 }, (_, c) =>
+      Array.from({ length: 10 }, (_, i) => tickerPost(`c${c}-${i}`, 100 - i)),
+    );
+    const clips = buildHomeTickerClips(campaigns);
+    expect(clips).toHaveLength(20);
+    expect(clips.slice(0, 6).map((clip) => clip.id)).toEqual([
+      "c0-0",
+      "c1-0",
+      "c2-0",
+      "c3-0",
+      "c4-0",
+      "c0-1",
+    ]);
+  });
+});
+
+describe("getHomeTickerClips", () => {
+  it("busca o top de cada competição ativa em uma consulta", async () => {
+    const row = (campaignRank: number, id: string, views: bigint) => ({
+      ...tickerPost(id, 0),
+      campaignRank,
+      views,
+    });
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValue([
+        row(1, "a1", 300n),
+        row(1, "a2", 200n),
+        row(2, "b1", 250n),
+      ]);
+    const db = { $queryRaw: queryRaw } as unknown as PrismaClient;
+
+    const clips = await getHomeTickerClips(db);
+    await getHomeTickerClips(db);
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    const [strings] = queryRaw.mock.calls[0]!;
+    expect((strings as string[]).join("?")).toContain("CROSS JOIN LATERAL");
+    expect(clips.map((clip) => [clip.id, clip.views])).toEqual([
+      ["a1", 300],
+      ["b1", 250],
+      ["a2", 200],
+    ]);
   });
 });

@@ -68,7 +68,6 @@ interface MonthlyRankResultModalProps {
   onOpenChange: (open: boolean) => void
   data: MonthlyRankPreview | null
   slug: string
-  refetch: () => void
   /** Re-preview silencioso disparado após um pagamento concluído. */
   onSilentRepreview: () => void
 }
@@ -78,7 +77,6 @@ export function MonthlyRankResultModal({
   onOpenChange,
   data,
   slug,
-  refetch,
   onSilentRepreview,
 }: MonthlyRankResultModalProps) {
   const formatCurrency = useFormatCurrency()
@@ -131,8 +129,8 @@ export function MonthlyRankResultModal({
       setPayPlan(null)
       setPayInput("")
       onSilentRepreview()
+      // A invalidação já busca de novo os detalhes (sem refetch duplicado)
       await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
-      refetch()
     },
     onError: (error) =>
       toast.error(

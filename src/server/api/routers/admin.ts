@@ -9,6 +9,7 @@ import {
   Platform,
   Prisma,
   RankingMetricType,
+  type PrismaClient,
 } from "@prisma/client";
 import {
   calculateRankingScore,
@@ -60,8 +61,10 @@ import { buildOfficialProfileTargets } from "@/server/performance/profile-target
 import {
   cachedAdminHomeQuery,
   getEligiblePlatformTotals,
+  getHomeTickerClips,
   viewsGrowthStartDate,
 } from "@/server/admin-home-metrics";
+import { cachedQuery } from "@/server/memory-cache";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
 import { buildCompetitionVideoEmail } from "@/lib/emails/competition-video";
 
@@ -143,35 +146,98 @@ async function findUnreversedTopPostersPrize(
     orderBy: { createdAt: "desc" },
   });
 
-  for (const candidate of candidates) {
-    const reversal = await db.transaction.findFirst({
-      where: {
-        type: "ADJUSTMENT",
-        status: "COMPLETED",
-        AND: [
-          {
-            metadata: {
-              path: ["action"],
-              equals: "undo_top_posters_daily_rank",
-            },
+  const reversedIds = await findReversedTopPostersPrizeIds(
+    db,
+    candidates.map((candidate) => candidate.id),
+  );
+  return candidates.find((candidate) => !reversedIds.has(candidate.id)) ?? null;
+}
+
+/** Créditos de Top Postadores (entre os informados) que já foram estornados. */
+async function findReversedTopPostersPrizeIds(
+  db: Pick<Prisma.TransactionClient, "transaction">,
+  creditIds: string[],
+) {
+  if (creditIds.length === 0) return new Set<string>();
+  const reversals = await db.transaction.findMany({
+    where: {
+      type: "ADJUSTMENT",
+      status: "COMPLETED",
+      AND: [
+        {
+          metadata: {
+            path: ["action"],
+            equals: "undo_top_posters_daily_rank",
           },
-          {
+        },
+        {
+          OR: creditIds.map((creditId) => ({
             metadata: {
               path: ["reversedPrizeCreditId"],
-              equals: candidate.id,
+              equals: creditId,
             },
-          },
-        ],
-      },
-      select: { id: true },
-    });
-
-    if (!reversal) {
-      return candidate;
+          })),
+        },
+      ],
+    },
+    select: { metadata: true },
+  });
+  const ids = new Set(creditIds);
+  const reversedIds = new Set<string>();
+  for (const reversal of reversals) {
+    const metadata = reversal.metadata as {
+      reversedPrizeCreditId?: unknown;
+    } | null;
+    const creditId = metadata?.reversedPrizeCreditId;
+    if (typeof creditId === "string" && ids.has(creditId)) {
+      reversedIds.add(creditId);
     }
   }
+  return reversedIds;
+}
 
-  return null;
+/**
+ * findUnreversedTopPostersPrize para várias posições de uma vez: uma consulta
+ * para os créditos e outra para os estornos. Cada critério vale só para a sua
+ * posição (rankingPosition), então cada crédito encontrado pertence a uma
+ * única posição — o resultado é o mesmo de consultar posição por posição.
+ */
+async function findUnreversedTopPostersPrizesByPosition(
+  db: Pick<Prisma.TransactionClient, "transaction">,
+  criteria: Array<{ position: number; where: Prisma.TransactionWhereInput }>,
+) {
+  const prizes = new Map<
+    number,
+    { id: string; amount: number; processedAt: Date | null; createdAt: Date }
+  >();
+  if (criteria.length === 0) return prizes;
+
+  const candidates = await db.transaction.findMany({
+    where: {
+      OR: criteria.map(({ position, where }) => ({
+        AND: [where, { rankingPosition: position }],
+      })),
+    },
+    select: {
+      id: true,
+      amount: true,
+      processedAt: true,
+      createdAt: true,
+      rankingPosition: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const reversedIds = await findReversedTopPostersPrizeIds(
+    db,
+    candidates.map((candidate) => candidate.id),
+  );
+
+  for (const { rankingPosition, ...candidate } of candidates) {
+    if (rankingPosition === null || prizes.has(rankingPosition)) continue;
+    if (reversedIds.has(candidate.id)) continue;
+    prizes.set(rankingPosition, candidate);
+  }
+  return prizes;
 }
 
 function topClippersRankingDate(date: string) {
@@ -284,6 +350,96 @@ async function persistTopClippersEntries(
             },
       });
     }),
+  );
+}
+
+// Os totais por campanha mudam devagar e são iguais para todos os admins: a
+// lista de competições reaproveita as agregações por 2 minutos.
+const CAMPAIGN_TOTALS_TTL_MS = 2 * 60_000;
+
+/** Somas dos posts elegíveis por campanha, em uma única agregação. */
+async function getCachedCampaignPostTotals(db: PrismaClient) {
+  return cachedQuery("admin:campaign-post-totals", CAMPAIGN_TOTALS_TTL_MS, async () => {
+    const rows = await db.clipPost.groupBy({
+      by: ["campaignId"],
+      where: { status: "ELIGIBLE" },
+      _sum: {
+        views: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        saves: true,
+      },
+      _count: { id: true },
+    });
+    return new Map(
+      rows.map((row) => [
+        row.campaignId,
+        { _sum: row._sum, _count: { id: row._count.id } },
+      ]),
+    );
+  });
+}
+
+/** Inscrições aprovadas por campanha, em uma única agregação. */
+async function getCachedApprovedApplicationCounts(db: PrismaClient) {
+  return cachedQuery(
+    "admin:campaign-approved-applications",
+    CAMPAIGN_TOTALS_TTL_MS,
+    async () => {
+      const rows = await db.clipperApplication.groupBy({
+        by: ["campaignId"],
+        where: { status: "APPROVED" },
+        _count: { id: true },
+      });
+      return new Map(rows.map((row) => [row.campaignId, row._count.id]));
+    },
+  );
+}
+
+type SocialAccountPostStats = { totalPosts: number; totalViews: number };
+
+/**
+ * Posts elegíveis e views de cada conta social: posts das inscrições do mesmo
+ * clipador, na mesma plataforma e com o mesmo username (sem "@" e sem
+ * diferenciar maiúsculas). Sem `accountIds`, calcula para todas as contas.
+ */
+async function loadSocialAccountPostStats(
+  db: Pick<PrismaClient, "$queryRaw">,
+  accountIds?: string[],
+): Promise<Map<string, SocialAccountPostStats>> {
+  if (accountIds && accountIds.length === 0) return new Map();
+  const rows = await db.$queryRaw<
+    Array<{ accountId: string; totalPosts: bigint; totalViews: bigint }>
+  >`
+    SELECT
+      sa2.id as "accountId",
+      COUNT(cp2.id)::bigint as "totalPosts",
+      COALESCE(SUM(cp2.views), 0)::bigint as "totalViews"
+    FROM "SocialAccount" sa2
+    JOIN "ClipperApplication" ca2 ON ca2."clipperProfileId" = sa2."clipperProfileId"
+    JOIN "ClipPost" cp2 ON cp2."applicationId" = ca2.id
+      AND cp2."platform"::text = sa2."platform"::text
+      AND LOWER(REPLACE(COALESCE(cp2."username", ''), '@', '')) = LOWER(REPLACE(sa2."username", '@', ''))
+      AND cp2."status" = 'ELIGIBLE'
+    ${accountIds ? Prisma.sql`WHERE sa2.id = ANY(${accountIds})` : Prisma.empty}
+    GROUP BY sa2.id
+  `;
+  return new Map(
+    rows.map((row) => [
+      row.accountId,
+      {
+        totalPosts: Number(row.totalPosts),
+        totalViews: Number(row.totalViews),
+      },
+    ]),
+  );
+}
+
+/** Estatísticas de todas as contas, para ordenar por views/posts (5 min). */
+function getCachedSocialAccountPostStats(db: Pick<PrismaClient, "$queryRaw">) {
+  return cachedQuery("admin:social-account-post-stats", 5 * 60_000, () =>
+    loadSocialAccountPostStats(db),
   );
 }
 
@@ -475,6 +631,54 @@ async function leagueFetch<T>(
   }
 
   return data as T;
+}
+
+/**
+ * Quantos clipadores entram no Top Postadores de cada dia: inscrições com post
+ * elegível na janela [D-1 20:00, D 20:00) (a mesma de
+ * getTopPostersDailyWindowBrt), elegíveis ao ranking no corte do dia (mesma
+ * regra de rankingApplicationWhere) e não desclassificadas no ranking do dia.
+ * Uma única varredura agrupada por dia, em vez de duas consultas por dia.
+ */
+async function countTopPostersClippersByDate(
+  db: Pick<PrismaClient, "$queryRaw">,
+  campaignId: string,
+  dates: string[],
+): Promise<Map<string, number>> {
+  const sortedDates = [...dates].sort();
+  const firstWindow = getTopPostersDailyWindowBrt(sortedDates[0]!);
+  const lastWindow = getTopPostersDailyWindowBrt(sortedDates.at(-1)!);
+  const rows = await db.$queryRaw<Array<{ day: string; clippers: number }>>`
+    WITH posts AS (
+      SELECT
+        cp."applicationId",
+        (cp."postedAt" + interval '4 hours')::date AS day
+      FROM "ClipPost" cp
+      WHERE cp."campaignId" = ${campaignId}
+        AND cp.status = 'ELIGIBLE'
+        AND cp."postedAt" >= ${firstWindow.startDate}::timestamp
+        AND cp."postedAt" < ${lastWindow.endDate}::timestamp
+    )
+    SELECT to_char(p.day, 'YYYY-MM-DD') AS day, COUNT(DISTINCT p."applicationId")::int AS clippers
+    FROM posts p
+    JOIN "ClipperApplication" ca ON ca.id = p."applicationId"
+    WHERE (
+        ca.status = 'APPROVED'
+        OR (ca.status = 'WITHDRAWN' AND ca."withdrawnAt" >= p.day + interval '20 hours')
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "TopClippersDailyRankingEntry" e
+        JOIN "TopClippersDailyRanking" r ON r.id = e."topClippersDailyRankingId"
+        WHERE r."campaignId" = ${campaignId}
+          AND r."rankingDate" = p.day::timestamp
+          AND e."isDisqualified" = true
+          AND e."applicationId" = p."applicationId"
+      )
+    GROUP BY p.day
+  `;
+  const clippersByDate = new Map(rows.map((row) => [row.day, row.clippers]));
+  return new Map(dates.map((date) => [date, clippersByDate.get(date) ?? 0]));
 }
 
 function getTopPostersDailyWindowBrt(dateYmd: string): {
@@ -1491,46 +1695,84 @@ export const adminRouter = createTRPCRouter({
           orderBy: { createdAt: "desc" },
         });
 
-        return Promise.all(
-          tracks.map(async (link) => {
-            const [latest, firstInRange] = await Promise.all([
-              ctx.db.spotifyTrackMetric.findFirst({
-                where: { spotifyTrackId: link.spotifyTrackId },
-                orderBy: { collectedAt: "desc" },
-              }),
-              ctx.db.spotifyTrackMetric.findFirst({
-                where: {
-                  spotifyTrackId: link.spotifyTrackId,
-                  ...(since ? { collectedAt: { gte: since } } : {}),
-                },
-                orderBy: { collectedAt: "asc" },
-              }),
-            ]);
-
-            return {
-              id: link.id,
-              isActive: link.isActive,
-              createdAt: link.createdAt,
-              track: {
-                id: link.spotifyTrack.id,
-                spotifyTrackId: link.spotifyTrack.spotifyTrackId,
-                spotifyUri: link.spotifyTrack.spotifyUri,
-                shareUrl: link.spotifyTrack.shareUrl,
-                name: link.spotifyTrack.name,
-                artists: link.spotifyTrack.artists,
-                albumName: link.spotifyTrack.albumName,
-                albumImageUrl: link.spotifyTrack.albumImageUrl,
-                lastCollectedAt: link.spotifyTrack.lastCollectedAt,
-                lastError: link.spotifyTrack.lastError,
-                currentPlayCount: latest ? Number(latest.playCount) : null,
-                previousPlayCount: firstInRange
-                  ? Number(firstInRange.playCount)
-                  : null,
-                latestCollectedAt: latest?.collectedAt ?? null,
-              },
-            };
-          }),
+        // Métrica mais recente e primeira do período de todas as faixas em uma
+        // consulta (antes eram duas por faixa); cada LATERAL é uma busca no
+        // índice (spotifyTrackId, collectedAt).
+        const trackIds = [...new Set(tracks.map((link) => link.spotifyTrackId))];
+        const metricRows =
+          trackIds.length > 0
+            ? await ctx.db.$queryRaw<
+                Array<{
+                  spotifyTrackId: string;
+                  latestPlayCount: bigint | null;
+                  latestCollectedAt: Date | null;
+                  firstPlayCount: bigint | null;
+                }>
+              >`
+                SELECT
+                  t.id AS "spotifyTrackId",
+                  latest."playCount" AS "latestPlayCount",
+                  latest."collectedAt" AS "latestCollectedAt",
+                  first_in_range."playCount" AS "firstPlayCount"
+                FROM unnest(${trackIds}::text[]) AS t(id)
+                LEFT JOIN LATERAL (
+                  SELECT m."playCount", m."collectedAt"
+                  FROM "SpotifyTrackMetric" m
+                  WHERE m."spotifyTrackId" = t.id
+                  ORDER BY m."collectedAt" DESC
+                  LIMIT 1
+                ) latest ON true
+                LEFT JOIN LATERAL (
+                  SELECT m."playCount"
+                  FROM "SpotifyTrackMetric" m
+                  WHERE m."spotifyTrackId" = t.id
+                    ${since ? Prisma.sql`AND m."collectedAt" >= ${since}::timestamp` : Prisma.empty}
+                  ORDER BY m."collectedAt" ASC
+                  LIMIT 1
+                ) first_in_range ON true
+              `
+            : [];
+        const metricsByTrack = new Map(
+          metricRows.map((row) => [row.spotifyTrackId, row]),
         );
+
+        return tracks.map((link) => {
+          const metrics = metricsByTrack.get(link.spotifyTrackId);
+          const latest =
+            metrics?.latestPlayCount != null
+              ? {
+                  playCount: metrics.latestPlayCount,
+                  collectedAt: metrics.latestCollectedAt,
+                }
+              : null;
+          const firstInRange =
+            metrics?.firstPlayCount != null
+              ? { playCount: metrics.firstPlayCount }
+              : null;
+
+          return {
+            id: link.id,
+            isActive: link.isActive,
+            createdAt: link.createdAt,
+            track: {
+              id: link.spotifyTrack.id,
+              spotifyTrackId: link.spotifyTrack.spotifyTrackId,
+              spotifyUri: link.spotifyTrack.spotifyUri,
+              shareUrl: link.spotifyTrack.shareUrl,
+              name: link.spotifyTrack.name,
+              artists: link.spotifyTrack.artists,
+              albumName: link.spotifyTrack.albumName,
+              albumImageUrl: link.spotifyTrack.albumImageUrl,
+              lastCollectedAt: link.spotifyTrack.lastCollectedAt,
+              lastError: link.spotifyTrack.lastError,
+              currentPlayCount: latest ? Number(latest.playCount) : null,
+              previousPlayCount: firstInRange
+                ? Number(firstInRange.playCount)
+                : null,
+              latestCollectedAt: latest?.collectedAt ?? null,
+            },
+          };
+        });
       }),
 
     addTrack: adminProcedure
@@ -2144,458 +2386,10 @@ export const adminRouter = createTRPCRouter({
   }),
 
   // ============================================================================
-  // ORGANIZAÇÕES - CRUD
-  // ============================================================================
-
-  organizations: createTRPCRouter({
-    // Listar organizações
-    list: adminProcedure
-      .input(
-        z.object({
-          page: z.number().min(1).default(1),
-          limit: z.number().min(1).max(100).default(20),
-          search: z.string().optional(),
-          isActive: z.boolean().optional(),
-        }),
-      )
-      .query(async ({ ctx, input }) => {
-        const { page, limit, search, isActive } = input;
-        const skip = (page - 1) * limit;
-
-        const where = {
-          ...(isActive !== undefined && { isActive }),
-          ...(search && {
-            OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
-              { slug: { contains: search, mode: "insensitive" as const } },
-            ],
-          }),
-        };
-
-        const [organizations, total] = await Promise.all([
-          ctx.db.organization.findMany({
-            where,
-            skip,
-            take: limit,
-            orderBy: { createdAt: "desc" },
-            include: {
-              _count: {
-                select: {
-                  members: true,
-                  campaigns: true,
-                },
-              },
-            },
-          }),
-          ctx.db.organization.count({ where }),
-        ]);
-
-        return {
-          organizations,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit),
-          },
-        };
-      }),
-
-    // Buscar por ID
-    getById: adminProcedure
-      .input(z.object({ id: z.string() }))
-      .query(async ({ ctx, input }) => {
-        const organization = await ctx.db.organization.findUnique({
-          where: { id: input.id },
-          include: {
-            members: {
-              include: {
-                user: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                    imageUrl: true,
-                  },
-                },
-              },
-            },
-            campaigns: {
-              orderBy: { createdAt: "desc" },
-              take: 10,
-            },
-            quotaUsage: {
-              orderBy: { period: "desc" },
-              take: 6,
-            },
-            _count: {
-              select: {
-                members: true,
-                campaigns: true,
-                webhookEndpoints: true,
-              },
-            },
-          },
-        });
-
-        if (!organization) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Organization not found",
-          });
-        }
-
-        return organization;
-      }),
-
-    // Criar organização
-    create: adminProcedure
-      .input(
-        z.object({
-          name: z.string().min(1),
-          slug: z
-            .string()
-            .min(1)
-            .regex(/^[a-z0-9-]+$/),
-          description: z.string().optional(),
-          logoUrl: z.string().url().optional(),
-          website: z.string().url().optional(),
-          country: z.string().optional(),
-          timezone: z.string().default("UTC"),
-          quotaMonthlyIngest: z.number().int().min(0).default(100000),
-          quotaActiveCampaigns: z.number().int().min(1).default(5),
-          quotaCreatorsPerCampaign: z.number().int().min(1).default(1000),
-        }),
-      )
-      .mutation(async ({ ctx, input }) => {
-        // Verificar se slug já existe
-        const existing = await ctx.db.organization.findUnique({
-          where: { slug: input.slug },
-        });
-
-        if (existing) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "Organization slug already exists",
-          });
-        }
-
-        const organization = await ctx.db.organization.create({
-          data: input,
-        });
-
-        // Log de auditoria
-        await ctx.db.auditLog.create({
-          data: {
-            userId: ctx.userId,
-            action: "CREATE",
-            entityType: "Organization",
-            entityId: organization.id,
-            changes: { created: input },
-          },
-        });
-
-        return organization;
-      }),
-
-    // Atualizar organização
-    update: adminProcedure
-      .input(
-        z.object({
-          id: z.string(),
-          data: z.object({
-            name: z.string().min(1).optional(),
-            slug: z
-              .string()
-              .min(1)
-              .regex(/^[a-z0-9-]+$/)
-              .optional(),
-            description: z.string().optional(),
-            logoUrl: z.string().url().optional(),
-            website: z.string().url().optional(),
-            country: z.string().optional(),
-            timezone: z.string().optional(),
-            isActive: z.boolean().optional(),
-            quotaMonthlyIngest: z.number().int().min(0).optional(),
-            quotaActiveCampaigns: z.number().int().min(1).optional(),
-            quotaCreatorsPerCampaign: z.number().int().min(1).optional(),
-          }),
-        }),
-      )
-      .mutation(async ({ ctx, input }) => {
-        const before = await ctx.db.organization.findUnique({
-          where: { id: input.id },
-        });
-
-        if (!before) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Organization not found",
-          });
-        }
-
-        // Se mudando slug, verificar conflito
-        if (input.data.slug && input.data.slug !== before.slug) {
-          const slugExists = await ctx.db.organization.findUnique({
-            where: { slug: input.data.slug },
-          });
-
-          if (slugExists) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "Slug already in use",
-            });
-          }
-        }
-
-        const updated = await ctx.db.organization.update({
-          where: { id: input.id },
-          data: input.data,
-        });
-
-        // Log de auditoria
-        await ctx.db.auditLog.create({
-          data: {
-            userId: ctx.userId,
-            action: "UPDATE",
-            entityType: "Organization",
-            entityId: updated.id,
-            changes: { before, after: updated },
-          },
-        });
-
-        return updated;
-      }),
-
-    // Deletar organização
-    delete: adminProcedure
-      .input(z.object({ id: z.string() }))
-      .mutation(async ({ ctx, input }) => {
-        const organization = await ctx.db.organization.findUnique({
-          where: { id: input.id },
-          include: {
-            _count: {
-              select: { campaigns: true, members: true },
-            },
-          },
-        });
-
-        if (!organization) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Organization not found",
-          });
-        }
-
-        // Verificar se tem campanhas ativas
-        const activeCampaigns = await ctx.db.campaign.count({
-          where: {
-            organizationId: input.id,
-            status: { in: ["ACTIVE", "SCHEDULED"] },
-          },
-        });
-
-        if (activeCampaigns > 0) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Cannot delete organization with active campaigns",
-          });
-        }
-
-        await ctx.db.organization.delete({
-          where: { id: input.id },
-        });
-
-        // Log de auditoria
-        await ctx.db.auditLog.create({
-          data: {
-            userId: ctx.userId,
-            action: "DELETE",
-            entityType: "Organization",
-            entityId: input.id,
-            changes: { deleted: organization },
-          },
-        });
-
-        return { success: true };
-      }),
-
-    // Estatísticas
-    stats: adminProcedure.query(async ({ ctx }) => {
-      const [total, active, totalCampaigns, totalMembers] = await Promise.all([
-        ctx.db.organization.count(),
-        ctx.db.organization.count({ where: { isActive: true } }),
-        ctx.db.campaign.count(),
-        ctx.db.organizationMember.count(),
-      ]);
-
-      return {
-        total,
-        active,
-        inactive: total - active,
-        totalCampaigns,
-        totalMembers,
-      };
-    }),
-  }),
-
-  // ============================================================================
   // CAMPANHAS - CRUD
   // ============================================================================
 
   campaigns: createTRPCRouter({
-    // Listar todas as campanhas
-    list: adminProcedure
-      .input(
-        z.object({
-          page: z.number().min(1).default(1),
-          limit: z.number().min(1).max(100).default(20),
-          status: z
-            .enum([
-              "DRAFT",
-              "SCHEDULED",
-              "ACTIVE",
-              "PAUSED",
-              "COMPLETED",
-              "ARCHIVED",
-            ])
-            .optional(),
-          organizationId: z.string().optional(),
-          search: z.string().optional(),
-        }),
-      )
-      .query(async ({ ctx, input }) => {
-        const { page, limit, status, organizationId, search } = input;
-        const skip = (page - 1) * limit;
-
-        const where = {
-          ...(status && { status }),
-          ...(organizationId && { organizationId }),
-          ...(search && {
-            OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
-              { slug: { contains: search, mode: "insensitive" as const } },
-            ],
-          }),
-        };
-
-        const [campaigns, total] = await Promise.all([
-          ctx.db.campaign.findMany({
-            where,
-            skip,
-            take: limit,
-            orderBy: { createdAt: "desc" },
-            include: {
-              organization: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                },
-              },
-              creator: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-              _count: {
-                select: {
-                  applications: true,
-                  clipPosts: true,
-                  fraudFlags: true,
-                },
-              },
-            },
-          }),
-          ctx.db.campaign.count({ where }),
-        ]);
-
-        return {
-          campaigns,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit),
-          },
-        };
-      }),
-
-    // Buscar por ID
-    getById: adminProcedure
-      .input(z.object({ id: z.string() }))
-      .query(async ({ ctx, input }) => {
-        const campaign = await ctx.db.campaign.findUnique({
-          where: { id: input.id },
-          include: {
-            organization: true,
-            creator: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                imageUrl: true,
-              },
-            },
-            activeRankingRule: true,
-            rankingRules: {
-              orderBy: { version: "desc" },
-            },
-            _count: {
-              select: {
-                applications: true,
-                clipPosts: true,
-                fraudFlags: true,
-                auditLogs: true,
-              },
-            },
-          },
-        });
-
-        if (!campaign) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Campaign not found",
-          });
-        }
-
-        // Estatísticas adicionais
-        const [applicationsStats, clipPostsStats] = await Promise.all([
-          ctx.db.clipperApplication.groupBy({
-            by: ["status"],
-            where: { campaignId: input.id },
-            _count: true,
-          }),
-          ctx.db.clipPost.groupBy({
-            by: ["status"],
-            where: { campaignId: input.id },
-            _count: true,
-          }),
-        ]);
-
-        return {
-          campaign,
-          stats: {
-            applications: applicationsStats.reduce(
-              (acc, curr) => {
-                acc[curr.status] = curr._count;
-                return acc;
-              },
-              {} as Record<string, number>,
-            ),
-            clipPosts: clipPostsStats.reduce(
-              (acc, curr) => {
-                acc[curr.status] = curr._count;
-                return acc;
-              },
-              {} as Record<string, number>,
-            ),
-          },
-        };
-      }),
-
     // Criar campanha
     create: adminProcedure
       .input(
@@ -3220,356 +3014,6 @@ export const adminRouter = createTRPCRouter({
 
         return { success: true };
       }),
-
-    // Estatísticas
-    stats: adminProcedure.query(async ({ ctx }) => {
-      const [total, byStatus, totalClipPosts, totalClippers] =
-        await Promise.all([
-          ctx.db.campaign.count(),
-          ctx.db.campaign.groupBy({
-            by: ["status"],
-            _count: true,
-          }),
-          ctx.db.clipPost.count(),
-          ctx.db.clipperApplication.count({
-            where: { status: "APPROVED" },
-          }),
-        ]);
-
-      return {
-        total,
-        byStatus: byStatus.reduce(
-          (acc, curr) => {
-            acc[curr.status] = curr._count;
-            return acc;
-          },
-          {} as Record<string, number>,
-        ),
-        totalClipPosts,
-        totalClippers,
-      };
-    }),
-  }),
-
-  // ============================================================================
-  // FRAUD FLAGS - Gerenciamento
-  // ============================================================================
-
-  fraudFlags: createTRPCRouter({
-    // Listar flags
-    list: adminProcedure
-      .input(
-        z.object({
-          page: z.number().min(1).default(1),
-          limit: z.number().min(1).max(100).default(20),
-          status: z
-            .enum([
-              "OPEN",
-              "UNDER_REVIEW",
-              "RESOLVED_VALID",
-              "RESOLVED_FALSE",
-              "IGNORED",
-            ])
-            .optional(),
-          severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
-          campaignId: z.string().optional(),
-        }),
-      )
-      .query(async ({ ctx, input }) => {
-        const { page, limit, status, severity, campaignId } = input;
-        const skip = (page - 1) * limit;
-
-        const where = {
-          ...(status && { status }),
-          ...(severity && { severity }),
-          ...(campaignId && { campaignId }),
-        };
-
-        const [flags, total] = await Promise.all([
-          ctx.db.fraudFlag.findMany({
-            where,
-            skip,
-            take: limit,
-            orderBy: [{ severity: "desc" }, { createdAt: "desc" }],
-            include: {
-              campaign: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                },
-              },
-              clipPost: {
-                select: {
-                  id: true,
-                  submittedUrl: true,
-                  platform: true,
-                },
-              },
-              reviewer: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-            },
-          }),
-          ctx.db.fraudFlag.count({ where }),
-        ]);
-
-        return {
-          flags,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit),
-          },
-        };
-      }),
-
-    // Revisar flag
-    review: adminProcedure
-      .input(
-        z.object({
-          id: z.string(),
-          status: z.enum(["RESOLVED_VALID", "RESOLVED_FALSE", "IGNORED"]),
-          reviewNotes: z.string().optional(),
-          resolution: z.string().optional(),
-        }),
-      )
-      .mutation(async ({ ctx, input }) => {
-        const flag = await ctx.db.fraudFlag.update({
-          where: { id: input.id },
-          data: {
-            status: input.status,
-            reviewedBy: ctx.userId,
-            reviewedAt: new Date(),
-            reviewNotes: input.reviewNotes,
-            resolution: input.resolution,
-          },
-        });
-
-        // Log de auditoria
-        await ctx.db.auditLog.create({
-          data: {
-            userId: ctx.userId,
-            action: "UPDATE",
-            entityType: "FraudFlag",
-            entityId: flag.id,
-            campaignId: flag.campaignId,
-            changes: {
-              action: "reviewed",
-              status: input.status,
-              notes: input.reviewNotes,
-            },
-          },
-        });
-
-        return flag;
-      }),
-
-    // Estatísticas
-    stats: adminProcedure.query(async ({ ctx }) => {
-      const [total, bySeverity, byStatus, openCritical] = await Promise.all([
-        ctx.db.fraudFlag.count(),
-        ctx.db.fraudFlag.groupBy({
-          by: ["severity"],
-          _count: true,
-        }),
-        ctx.db.fraudFlag.groupBy({
-          by: ["status"],
-          _count: true,
-        }),
-        ctx.db.fraudFlag.count({
-          where: {
-            status: "OPEN",
-            severity: "CRITICAL",
-          },
-        }),
-      ]);
-
-      return {
-        total,
-        openCritical,
-        bySeverity: bySeverity.reduce(
-          (acc, curr) => {
-            acc[curr.severity] = curr._count;
-            return acc;
-          },
-          {} as Record<string, number>,
-        ),
-        byStatus: byStatus.reduce(
-          (acc, curr) => {
-            acc[curr.status] = curr._count;
-            return acc;
-          },
-          {} as Record<string, number>,
-        ),
-      };
-    }),
-  }),
-
-  // ============================================================================
-  // AUDITORIA - Visualização
-  // ============================================================================
-
-  auditLogs: createTRPCRouter({
-    // Listar logs
-    list: adminProcedure
-      .input(
-        z.object({
-          page: z.number().min(1).default(1),
-          limit: z.number().min(1).max(100).default(50),
-          userId: z.string().optional(),
-          entityType: z.string().optional(),
-          action: z
-            .enum([
-              "CREATE",
-              "UPDATE",
-              "DELETE",
-              "APPROVE",
-              "REJECT",
-              "ENABLE",
-              "DISABLE",
-              "EXPORT",
-              "LOGIN",
-              "LOGOUT",
-            ])
-            .optional(),
-          campaignId: z.string().optional(),
-          startDate: z.date().optional(),
-          endDate: z.date().optional(),
-        }),
-      )
-      .query(async ({ ctx, input }) => {
-        const {
-          page,
-          limit,
-          userId,
-          entityType,
-          action,
-          campaignId,
-          startDate,
-          endDate,
-        } = input;
-        const skip = (page - 1) * limit;
-
-        const where = {
-          ...(userId && { userId }),
-          ...(entityType && { entityType }),
-          ...(action && { action }),
-          ...(campaignId && { campaignId }),
-          ...((startDate || endDate) && {
-            createdAt: {
-              ...(startDate && { gte: startDate }),
-              ...(endDate && { lte: endDate }),
-            },
-          }),
-        };
-
-        const [logs, total] = await Promise.all([
-          ctx.db.auditLog.findMany({
-            where,
-            skip,
-            take: limit,
-            orderBy: { createdAt: "desc" },
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-              campaign: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                },
-              },
-            },
-          }),
-          ctx.db.auditLog.count({ where }),
-        ]);
-
-        return {
-          logs,
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit),
-          },
-        };
-      }),
-
-    // Estatísticas de auditoria
-    stats: adminProcedure
-      .input(
-        z.object({
-          startDate: z.date().optional(),
-          endDate: z.date().optional(),
-        }),
-      )
-      .query(async ({ ctx, input }) => {
-        const where = {
-          ...((input.startDate || input.endDate) && {
-            createdAt: {
-              ...(input.startDate && { gte: input.startDate }),
-              ...(input.endDate && { lte: input.endDate }),
-            },
-          }),
-        };
-
-        const [total, byAction, byEntityType, topUsers] = await Promise.all([
-          ctx.db.auditLog.count({ where }),
-          ctx.db.auditLog.groupBy({
-            by: ["action"],
-            where,
-            _count: true,
-          }),
-          ctx.db.auditLog.groupBy({
-            by: ["entityType"],
-            where,
-            _count: true,
-          }),
-          ctx.db.auditLog.groupBy({
-            by: ["userId"],
-            where: {
-              ...where,
-              userId: { not: null },
-            },
-            _count: true,
-            orderBy: { _count: { userId: "desc" } },
-            take: 10,
-          }),
-        ]);
-
-        return {
-          total,
-          byAction: byAction.reduce(
-            (acc, curr) => {
-              acc[curr.action] = curr._count;
-              return acc;
-            },
-            {} as Record<string, number>,
-          ),
-          byEntityType: byEntityType.reduce(
-            (acc, curr) => {
-              acc[curr.entityType] = curr._count;
-              return acc;
-            },
-            {} as Record<string, number>,
-          ),
-          topUsers: topUsers.map((u) => ({
-            userId: u.userId!,
-            count: u._count,
-          })),
-        };
-      }),
   }),
 
   // ============================================================================
@@ -3670,60 +3114,6 @@ export const adminRouter = createTRPCRouter({
         {} as Record<string, number>,
       ),
     };
-  }),
-
-  // Dados de crescimento ao longo do tempo (últimos 30 dias)
-  getGrowthData: adminProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const days = [];
-
-    // Gerar últimos 30 dias
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      date.setHours(0, 0, 0, 0);
-
-      const nextDay = new Date(date);
-      nextDay.setDate(nextDay.getDate() + 1);
-
-      // Formato: "04/Nov" ou "15/Out"
-      const dayLabel = date.toLocaleDateString("pt-BR", {
-        day: "2-digit",
-        month: "short",
-      });
-
-      // Buscar views e engagement do dia
-      const [viewsResult, likesResult] = await Promise.all([
-        ctx.db.clipPost.aggregate({
-          _sum: { views: true },
-          where: {
-            status: "ELIGIBLE",
-            createdAt: {
-              gte: date,
-              lt: nextDay,
-            },
-          },
-        }),
-        ctx.db.clipPost.aggregate({
-          _sum: { likes: true },
-          where: {
-            status: "ELIGIBLE",
-            createdAt: {
-              gte: date,
-              lt: nextDay,
-            },
-          },
-        }),
-      ]);
-
-      days.push({
-        month: dayLabel.replace(".", "").replace(" de ", "/"), // Formato: "04/nov"
-        views: Number(viewsResult._sum.views || 0),
-        engagement: likesResult._sum.likes || 0,
-      });
-    }
-
-    return days;
   }),
 
   getViewsByPlatformGrowth: adminProcedure.query(async ({ ctx }) => {
@@ -3854,6 +3244,11 @@ export const adminRouter = createTRPCRouter({
   ),
 
   // Top Clippers
+  // Ticker do hero da home: top vídeos das competições ativas, já intercalados
+  getHomeTickerClips: adminProcedure.query(({ ctx }) =>
+    getHomeTickerClips(ctx.db),
+  ),
+
   getTopClippers: adminProcedure.query(({ ctx }) =>
     cachedAdminHomeQuery("top-clippers", async () => {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -3954,175 +3349,6 @@ export const adminRouter = createTRPCRouter({
     }),
   ),
 
-  // Sincronizar fotos de perfil do Clerk para o banco
-  syncProfileImages: adminProcedure.mutation(async ({ ctx }) => {
-    try {
-      console.log("🔄 Iniciando sincronização de imagens via Admin...");
-
-      // Importar dinamicamente para evitar problemas
-      const { createClerkClient } = await import("@clerk/backend");
-
-      const clerkClient = createClerkClient({
-        secretKey: process.env.CLERK_SECRET_KEY,
-      });
-
-      // 1. Buscar usuários do banco
-      const dbUsers = await ctx.db.user.findMany({
-        select: {
-          id: true,
-          email: true,
-          imageUrl: true,
-        },
-      });
-
-      // 2. Buscar usuários do Clerk
-      const clerkUsers = await clerkClient.users.getUserList({
-        limit: 500,
-      });
-
-      // 3. Processar cada usuário
-      let updatedCount = 0;
-      let skippedCount = 0;
-      const updates: Array<{ email: string; status: string }> = [];
-
-      for (const clerkUser of clerkUsers.data) {
-        const dbUser = dbUsers.find((u) => u.id === clerkUser.id);
-
-        if (!dbUser) {
-          skippedCount++;
-          continue;
-        }
-
-        if (!clerkUser.imageUrl) {
-          skippedCount++;
-          continue;
-        }
-
-        if (dbUser.imageUrl === clerkUser.imageUrl) {
-          skippedCount++;
-          continue;
-        }
-
-        // Atualizar no banco
-        await ctx.db.user.update({
-          where: { id: clerkUser.id },
-          data: { imageUrl: clerkUser.imageUrl },
-        });
-
-        updatedCount++;
-        updates.push({
-          email: dbUser.email || "sem email",
-          status: "atualizado",
-        });
-      }
-
-      console.log(
-        `✅ Sincronização concluída: ${updatedCount} atualizados, ${skippedCount} ignorados`,
-      );
-
-      return {
-        success: true,
-        updatedCount,
-        skippedCount,
-        totalProcessed: clerkUsers.data.length,
-        updates,
-      };
-    } catch (error: any) {
-      console.error("❌ Erro na sincronização:", error);
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: error.message || "Erro ao sincronizar imagens",
-      });
-    }
-  }),
-
-  // Métricas de Performance (Radar Chart)
-  getPerformanceMetrics: adminProcedure.query(async ({ ctx }) => {
-    // Buscar totais de todas as métricas
-    const [totalMetrics, maxMetrics] = await Promise.all([
-      ctx.db.clipPost.aggregate({
-        where: { status: "ELIGIBLE" },
-        _sum: {
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-        },
-        _count: { _all: true },
-      }),
-      ctx.db.clipPost.aggregate({
-        where: { status: "ELIGIBLE" },
-        _max: {
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-        },
-      }),
-    ]);
-
-    const totalViews = Number(totalMetrics._sum.views || 0);
-    const totalLikes = totalMetrics._sum.likes || 0;
-    const totalComments = totalMetrics._sum.comments || 0;
-    const totalShares = totalMetrics._sum.shares || 0;
-    const totalSaves = totalMetrics._sum.saves || 0;
-    const totalPosts = totalMetrics._count._all;
-
-    // Calcular scores normalizados (0-100)
-    // Views: normalizado pela média
-    const avgViews = totalPosts > 0 ? totalViews / totalPosts : 0;
-    const maxViews = Number(maxMetrics._max.views || 1);
-    const viewsScore =
-      maxViews > 0 ? Math.min((avgViews / maxViews) * 100, 100) : 0;
-
-    // Likes: normalizado pela taxa (likes/views)
-    const likesRate = totalViews > 0 ? (totalLikes / totalViews) * 100 : 0;
-    const likesScore = Math.min(likesRate * 10, 100); // Taxa de 10% = score 100
-
-    // Comments: normalizado pela taxa (comments/views)
-    const commentsRate =
-      totalViews > 0 ? (totalComments / totalViews) * 100 : 0;
-    const commentsScore = Math.min(commentsRate * 20, 100); // Taxa de 5% = score 100
-
-    // Shares: normalizado pela taxa (shares/views)
-    const sharesRate = totalViews > 0 ? (totalShares / totalViews) * 100 : 0;
-    const sharesScore = Math.min(sharesRate * 25, 100); // Taxa de 4% = score 100
-
-    // Saves: normalizado pela taxa (saves/views)
-    const savesRate = totalViews > 0 ? (totalSaves / totalViews) * 100 : 0;
-    const savesScore = Math.min(savesRate * 20, 100); // Taxa de 5% = score 100
-
-    // Engagement Rate: (likes + comments + shares + saves) / views
-    const engagementRate = calculateEngagementRate(
-      totalViews,
-      totalLikes,
-      totalComments,
-      totalShares,
-      totalSaves,
-    );
-    const erScore = Math.min(engagementRate * 5, 100); // ER de 20% = score 100
-
-    const metrics = [
-      { metric: "Views", score: Math.round(viewsScore) },
-      { metric: "Likes", score: Math.round(likesScore) },
-      { metric: "Shares", score: Math.round(sharesScore) },
-      { metric: "Comments", score: Math.round(commentsScore) },
-      { metric: "Saves", score: Math.round(savesScore) },
-      { metric: "ER", score: Math.round(erScore) },
-    ];
-
-    // Calcular média geral
-    const averageScore =
-      metrics.reduce((sum, m) => sum + m.score, 0) / metrics.length;
-
-    return {
-      metrics,
-      averageScore: Number(averageScore.toFixed(1)),
-    };
-  }),
-
   // Buscar todas as campanhas com estatísticas
   getAllCampaignsWithStats: adminProcedure.query(async ({ ctx }) => {
     try {
@@ -4150,81 +3376,73 @@ export const adminRouter = createTRPCRouter({
         },
       });
 
-      // Para cada campanha, buscar estatísticas
-      const campaignsWithStats = await Promise.all(
-        campaigns.map(async (campaign) => {
-          // Buscar estatísticas de posts elegíveis
-          const postsStats = await ctx.db.clipPost.aggregate({
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-            },
-            _sum: {
-              views: true,
-              likes: true,
-              comments: true,
-              shares: true,
-              saves: true,
-            },
-            _count: {
-              id: true,
-            },
-          });
+      // Totais de todas as campanhas em duas agregações (cache curto)
+      const [postTotals, approvedCounts] = await Promise.all([
+        getCachedCampaignPostTotals(ctx.db),
+        getCachedApprovedApplicationCounts(ctx.db),
+      ]);
 
-          // Contar clippers ativos (aprovados)
-          const activeClippers = await ctx.db.clipperApplication.count({
-            where: {
-              campaignId: campaign.id,
-              status: "APPROVED",
-            },
-          });
+      const campaignsWithStats = campaigns.map((campaign) => {
+        // Estatísticas de posts elegíveis
+        const postsStats = postTotals.get(campaign.id) ?? {
+          _sum: {
+            views: null,
+            likes: null,
+            comments: null,
+            shares: null,
+            saves: null,
+          },
+          _count: { id: 0 },
+        };
 
-          const totalViews = Number(postsStats._sum.views || 0);
-          const totalLikes = postsStats._sum.likes || 0;
-          const totalComments = postsStats._sum.comments || 0;
-          const totalShares = postsStats._sum.shares || 0;
-          const totalSaves = postsStats._sum.saves || 0;
-          const totalPosts = postsStats._count.id;
+        // Clippers ativos (aprovados)
+        const activeClippers = approvedCounts.get(campaign.id) ?? 0;
 
-          const engagementRate = calculateEngagementRate(
-            totalViews,
-            totalLikes,
-            totalComments,
-            totalShares,
-            totalSaves,
-          );
+        const totalViews = Number(postsStats._sum.views || 0);
+        const totalLikes = postsStats._sum.likes || 0;
+        const totalComments = postsStats._sum.comments || 0;
+        const totalShares = postsStats._sum.shares || 0;
+        const totalSaves = postsStats._sum.saves || 0;
+        const totalPosts = postsStats._count.id;
 
-          // Formatar prêmio
-          const prize =
-            campaign.prizeInfo &&
-            typeof campaign.prizeInfo === "object" &&
-            "total" in campaign.prizeInfo
-              ? typeof campaign.prizeInfo.total === "object"
-                ? "R$ 0"
-                : String(campaign.prizeInfo.total)
-              : "R$ 0";
+        const engagementRate = calculateEngagementRate(
+          totalViews,
+          totalLikes,
+          totalComments,
+          totalShares,
+          totalSaves,
+        );
 
-          return {
-            id: campaign.id,
-            name: campaign.name,
-            slug: campaign.slug,
-            status: campaign.status,
-            description: campaign.description,
-            coverImageUrl: campaign.coverImageUrl,
-            startDate: campaign.startDate.toISOString(),
-            endDate: campaign.endDate.toISOString(),
-            platforms: campaign.platforms,
-            requiredHashtags: campaign.requiredHashtags,
-            prize,
-            isLeaderboardPublic: campaign.isLeaderboardPublic,
-            isPrivate: campaign.isPrivate,
-            totalViews,
-            totalPosts,
-            activeClippers,
-            engagementRate: Number(engagementRate.toFixed(2)),
-          };
-        }),
-      );
+        // Formatar prêmio
+        const prize =
+          campaign.prizeInfo &&
+          typeof campaign.prizeInfo === "object" &&
+          "total" in campaign.prizeInfo
+            ? typeof campaign.prizeInfo.total === "object"
+              ? "R$ 0"
+              : String(campaign.prizeInfo.total)
+            : "R$ 0";
+
+        return {
+          id: campaign.id,
+          name: campaign.name,
+          slug: campaign.slug,
+          status: campaign.status,
+          description: campaign.description,
+          coverImageUrl: campaign.coverImageUrl,
+          startDate: campaign.startDate.toISOString(),
+          endDate: campaign.endDate.toISOString(),
+          platforms: campaign.platforms,
+          requiredHashtags: campaign.requiredHashtags,
+          prize,
+          isLeaderboardPublic: campaign.isLeaderboardPublic,
+          isPrivate: campaign.isPrivate,
+          totalViews,
+          totalPosts,
+          activeClippers,
+          engagementRate: Number(engagementRate.toFixed(2)),
+        };
+      });
 
       return campaignsWithStats;
     } catch (error: any) {
@@ -4239,36 +3457,30 @@ export const adminRouter = createTRPCRouter({
   // Estatísticas gerais de campanhas
   getCampaignsStats: adminProcedure.query(async ({ ctx }) => {
     try {
-      // Contar campanhas por status
-      const [activeCampaigns, scheduledCampaigns, completedCampaigns] =
-        await Promise.all([
-          ctx.db.campaign.count({
-            where: { status: "ACTIVE" },
-          }),
-          ctx.db.campaign.count({
-            where: { status: "SCHEDULED" },
-          }),
-          ctx.db.campaign.count({
-            where: { status: "COMPLETED" },
-          }),
-        ]);
+      // Status de todas as campanhas (tabela pequena) + views elegíveis por
+      // campanha (agregação em cache compartilhada com a lista de campanhas)
+      const [campaigns, postTotals] = await Promise.all([
+        ctx.db.campaign.findMany({ select: { id: true, status: true } }),
+        getCachedCampaignPostTotals(ctx.db),
+      ]);
 
-      // Buscar views elegíveis de todas as campanhas ativas e concluídas
-      const totalViewsStats = await ctx.db.clipPost.aggregate({
-        where: {
-          campaign: {
-            status: {
-              in: ["ACTIVE", "COMPLETED"],
-            },
-          },
-          status: "ELIGIBLE",
-        },
-        _sum: {
-          views: true,
-        },
-      });
+      const countByStatus = (status: string) =>
+        campaigns.filter((campaign) => campaign.status === status).length;
+      const activeCampaigns = countByStatus("ACTIVE");
+      const scheduledCampaigns = countByStatus("SCHEDULED");
+      const completedCampaigns = countByStatus("COMPLETED");
 
-      const totalViews = Number(totalViewsStats._sum.views || 0);
+      // Views elegíveis de todas as campanhas ativas e concluídas
+      const totalViews = campaigns
+        .filter(
+          (campaign) =>
+            campaign.status === "ACTIVE" || campaign.status === "COMPLETED",
+        )
+        .reduce(
+          (sum, campaign) =>
+            sum + Number(postTotals.get(campaign.id)?._sum.views || 0),
+          0,
+        );
 
       return {
         activeCampaigns,
@@ -5696,54 +4908,61 @@ export const adminRouter = createTRPCRouter({
         const { startDate: todayStartUTC, endDate: todayEndUTC } =
           getLiveDailyWindowByReferenceDate(referenceDateYmd);
 
+        // Totais por conta (username + plataforma) em uma varredura dos posts
+        // da campanha: as somas dos elegíveis dão o ranking de contas e os
+        // totais gerais; a contagem de todos os status dá o total de posts.
+        type AccountGroupRow = {
+          username: string | null;
+          platform: Platform;
+          allPosts: number;
+          posts: number;
+          views: bigint;
+          likes: bigint;
+          comments: bigint;
+          shares: bigint;
+          saves: bigint | null;
+        };
+
         // Executar TODAS as queries em paralelo após obter campaign.id
         const [
-          [totalStats, totalClippers, totalPosts],
+          [accountGroups, totalClippers],
           monthlyBoard,
-          topAccountsGrouped,
           [todayPostsCountResult, todayPosts, dailyEntryMetricsMap],
           topPostsForReport,
         ] = await Promise.all([
-          // 1. Estatísticas gerais
+          // 1. Estatísticas gerais e top contas por rede social
           Promise.all([
-            ctx.db.clipPost.aggregate({
-              where: { campaignId: campaign.id, status: "ELIGIBLE" },
-              _sum: {
-                views: true,
-                likes: true,
-                comments: true,
-                shares: true,
-                saves: true,
-              },
-              _count: { id: true },
-            }),
+            ctx.db.$queryRaw<AccountGroupRow[]>`
+              SELECT
+                username,
+                platform,
+                COUNT(*)::int AS "allPosts",
+                (COUNT(*) FILTER (WHERE status = 'ELIGIBLE'))::int AS posts,
+                COALESCE(SUM(views) FILTER (WHERE status = 'ELIGIBLE'), 0)::bigint AS views,
+                COALESCE(SUM(likes) FILTER (WHERE status = 'ELIGIBLE'), 0)::bigint AS likes,
+                COALESCE(SUM(comments) FILTER (WHERE status = 'ELIGIBLE'), 0)::bigint AS comments,
+                COALESCE(SUM(shares) FILTER (WHERE status = 'ELIGIBLE'), 0)::bigint AS shares,
+                (SUM(saves) FILTER (WHERE status = 'ELIGIBLE'))::bigint AS saves
+              FROM "ClipPost"
+              WHERE "campaignId" = ${campaign.id}
+              GROUP BY username, platform
+            `,
             ctx.db.clipperApplication.count({
               where: { campaignId: campaign.id, status: "APPROVED" },
             }),
-            ctx.db.clipPost.count({ where: { campaignId: campaign.id } }),
           ]),
           // 2. Ranking mensal (com dados de campanha já carregados)
           computeMonthlyLeaderboard(ctx.db, campaign.id, campaignForMonthly),
-          // 3. Top contas por rede social
-          ctx.db.clipPost.groupBy({
-            by: ["username", "platform"],
-            where: { campaignId: campaign.id, status: "ELIGIBLE" },
-            _sum: {
-              views: true,
-              likes: true,
-              comments: true,
-              shares: true,
-              saves: true,
-            },
-            _count: { id: true },
-          }),
-          // 4. Posts e ranking diário de hoje
+          // 3. Posts e ranking diário de hoje (perfis só do top, abaixo)
           Promise.all([
             ctx.db.clipPost.count({
               where: {
                 campaignId: campaign.id,
                 postedAt: { gte: todayStartUTC, lt: todayEndUTC },
-                application: rankingApplicationWhere(todayEndUTC),
+                application: {
+                  campaignId: campaign.id,
+                  ...rankingApplicationWhere(todayEndUTC),
+                },
               },
             }),
             ctx.db.clipPost.findMany({
@@ -5751,21 +4970,24 @@ export const adminRouter = createTRPCRouter({
                 campaignId: campaign.id,
                 status: "ELIGIBLE",
                 postedAt: { gte: todayStartUTC, lt: todayEndUTC },
-                application: rankingApplicationWhere(todayEndUTC),
-              },
-              include: {
                 application: {
-                  include: {
-                    clipperProfile: {
-                      include: {
-                        user: { select: { imageUrl: true } },
-                        clan: {
-                          select: { tag: true, emoji: true, emojiColor: true },
-                        },
-                      },
-                    },
-                  },
+                  campaignId: campaign.id,
+                  ...rankingApplicationWhere(todayEndUTC),
                 },
+              },
+              select: {
+                id: true,
+                applicationId: true,
+                submittedUrl: true,
+                username: true,
+                platform: true,
+                thumbnailUrl: true,
+                postedAt: true,
+                views: true,
+                likes: true,
+                comments: true,
+                shares: true,
+                saves: true,
               },
             }),
             loadDailyRankingEntryMetricsMap(
@@ -5774,7 +4996,7 @@ export const adminRouter = createTRPCRouter({
               referenceDateYmd,
             ),
           ]),
-          // 5. Top 10 posts para relatório
+          // 4. Top 10 posts para relatório
           ctx.db.clipPost.findMany({
             where: { campaignId: campaign.id, status: "ELIGIBLE" },
             orderBy: { views: "desc" },
@@ -5800,13 +5022,27 @@ export const adminRouter = createTRPCRouter({
             },
           }),
         ]);
+        const eligibleAccountGroups = accountGroups.filter(
+          (row) => row.posts > 0,
+        );
+        const sumEligible = (
+          field: "views" | "likes" | "comments" | "shares" | "saves",
+        ) =>
+          eligibleAccountGroups.reduce(
+            (sum, row) => sum + Number(row[field] ?? 0),
+            0,
+          );
+        const totalPosts = accountGroups.reduce(
+          (sum, row) => sum + row.allPosts,
+          0,
+        );
         const topMonthlyRanking = monthlyBoard?.rows ?? [];
 
-        const totalViews = Number(totalStats._sum.views || 0);
-        const totalLikes = totalStats._sum.likes || 0;
-        const totalComments = totalStats._sum.comments || 0;
-        const totalShares = totalStats._sum.shares || 0;
-        const totalSaves = totalStats._sum.saves || 0;
+        const totalViews = sumEligible("views");
+        const totalLikes = sumEligible("likes");
+        const totalComments = sumEligible("comments");
+        const totalShares = sumEligible("shares");
+        const totalSaves = sumEligible("saves");
         const engagementRate = calculateEngagementRate(
           totalViews,
           totalLikes,
@@ -5815,13 +5051,13 @@ export const adminRouter = createTRPCRouter({
           totalSaves,
         );
 
-        const topAccountsRanking = topAccountsGrouped
+        const topAccountsRanking = eligibleAccountGroups
           .map((row) => {
-            const totalViews = Number(row._sum.views ?? 0);
-            const totalLikes = row._sum.likes ?? 0;
-            const totalComments = row._sum.comments ?? 0;
-            const totalShares = row._sum.shares ?? 0;
-            const totalSaves = row._sum.saves ?? 0;
+            const totalViews = Number(row.views);
+            const totalLikes = Number(row.likes);
+            const totalComments = Number(row.comments);
+            const totalShares = Number(row.shares);
+            const totalSaves = Number(row.saves ?? 0);
             const engagementRate = calculateEngagementRate(
               totalViews,
               totalLikes,
@@ -5847,7 +5083,7 @@ export const adminRouter = createTRPCRouter({
               totalComments,
               totalShares,
               totalSaves,
-              postsCount: row._count.id,
+              postsCount: row.posts,
               engagementRate,
               rankingScore,
             };
@@ -5882,11 +5118,9 @@ export const adminRouter = createTRPCRouter({
             }
             return {
               postId: post.id,
-              clipperName:
-                post.application.clipperProfile.artisticName ||
-                post.application.clipperProfile.fullName,
-              clipperImageUrl:
-                post.application.clipperProfile.user?.imageUrl || null,
+              // Perfil e clã são preenchidos depois, só para o top do dia
+              clipperName: "",
+              clipperImageUrl: null,
               username: post.username || "",
               platform: post.platform,
               thumbnailUrl: post.thumbnailUrl || "",
@@ -5898,10 +5132,9 @@ export const adminRouter = createTRPCRouter({
               postedAtIso:
                 post.postedAt?.toISOString() || new Date().toISOString(),
               isCurrentUser: false,
-              clanTag: post.application.clipperProfile.clan?.tag ?? null,
-              clanEmoji: post.application.clipperProfile.clan?.emoji ?? null,
-              clanEmojiColor:
-                post.application.clipperProfile.clan?.emojiColor ?? null,
+              clanTag: null,
+              clanEmoji: null,
+              clanEmojiColor: null,
             };
           }),
           metricType:
@@ -5911,13 +5144,57 @@ export const adminRouter = createTRPCRouter({
           topCount: dailyLimit,
           dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
         });
-        const todayPostUrlMap = new Map(
-          todayPosts.map((p) => [p.id, p.submittedUrl]),
+        const todayPostById = new Map(todayPosts.map((p) => [p.id, p]));
+        const topDailyApplicationIds = [
+          ...new Set(
+            rankedDailyPosts.flatMap((item) => {
+              const applicationId = todayPostById.get(item.postId)?.applicationId;
+              return applicationId ? [applicationId] : [];
+            }),
+          ),
+        ];
+        const topDailyApplications =
+          topDailyApplicationIds.length > 0
+            ? await ctx.db.clipperApplication.findMany({
+                where: { id: { in: topDailyApplicationIds } },
+                select: {
+                  id: true,
+                  clipperProfile: {
+                    select: {
+                      artisticName: true,
+                      fullName: true,
+                      user: { select: { imageUrl: true } },
+                      clan: {
+                        select: { tag: true, emoji: true, emojiColor: true },
+                      },
+                    },
+                  },
+                },
+              })
+            : [];
+        const topDailyProfileByApplication = new Map(
+          topDailyApplications.map((application) => [
+            application.id,
+            application.clipperProfile,
+          ]),
         );
-        const topDailyRanking = rankedDailyPosts.map((item) => ({
-          ...item,
-          postUrl: todayPostUrlMap.get(item.postId) ?? "",
-        }));
+        const topDailyRanking = rankedDailyPosts.map((item) => {
+          const post = todayPostById.get(item.postId);
+          const profile = post
+            ? topDailyProfileByApplication.get(post.applicationId)
+            : undefined;
+          return {
+            ...item,
+            clipperName: profile
+              ? profile.artisticName || profile.fullName
+              : item.clipperName,
+            clipperImageUrl: profile?.user?.imageUrl || null,
+            clanTag: profile?.clan?.tag ?? null,
+            clanEmoji: profile?.clan?.emoji ?? null,
+            clanEmojiColor: profile?.clan?.emojiColor ?? null,
+            postUrl: post?.submittedUrl ?? "",
+          };
+        });
 
         const formattedTopPostsForReport = topPostsForReport.map((post) => ({
           id: post.id,
@@ -6054,6 +5331,8 @@ export const adminRouter = createTRPCRouter({
           .enum(["PENDING", "APPROVED", "REJECTED", "UNDER_REVIEW", "REVOKED", "WITHDRAWN"])
           .optional(),
         search: z.string().max(200).optional(),
+        /** Carrega uma inscrição específica (ex.: "Ver aplicação" do ranking). */
+        applicationId: z.string().optional(),
         page: z.number().min(1).default(1),
         pageSize: z.number().min(1).max(200).default(100),
       }),
@@ -6074,22 +5353,10 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        // Contagens por status (sempre, independente do filtro ativo)
-        const statusCounts = await ctx.db.clipperApplication.groupBy({
-          by: ["status"],
-          where: { campaignId: campaign.id },
-          _count: { id: true },
-        });
-        const countByStatus = new Map(
-          statusCounts.map((r) => [r.status, r._count.id]),
-        );
-        const pendingCount = countByStatus.get("PENDING") ?? 0;
-        const approvedCount = countByStatus.get("APPROVED") ?? 0;
-        const totalCount = statusCounts.reduce((s, r) => s + r._count.id, 0);
-
         const searchTrimmed = input.search?.trim() ?? "";
         const applicationsWhere: Prisma.ClipperApplicationWhereInput = {
           campaignId: campaign.id,
+          ...(input.applicationId ? { id: input.applicationId } : {}),
           ...(input.status ? { status: input.status } : {}),
           ...(searchTrimmed
             ? {
@@ -6166,7 +5433,13 @@ export const adminRouter = createTRPCRouter({
 
         const skip = (input.page - 1) * input.pageSize;
 
-        const [applications, listMatchCount] = await Promise.all([
+        const [statusCounts, applications, listMatchCount] = await Promise.all([
+          // Contagens por status (sempre, independente do filtro ativo)
+          ctx.db.clipperApplication.groupBy({
+            by: ["status"],
+            where: { campaignId: campaign.id },
+            _count: { id: true },
+          }),
           ctx.db.clipperApplication.findMany({
             where: applicationsWhere,
             skip,
@@ -6190,17 +5463,6 @@ export const adminRouter = createTRPCRouter({
                   },
                 },
               },
-              clipPosts: {
-                select: {
-                  id: true,
-                  status: true,
-                  views: true,
-                  likes: true,
-                  username: true,
-                  platform: true,
-                  submittedUrl: true,
-                },
-              },
               socialAccounts: {
                 include: {
                   socialAccount: true,
@@ -6213,60 +5475,90 @@ export const adminRouter = createTRPCRouter({
           }),
           ctx.db.clipperApplication.count({ where: applicationsWhere }),
         ]);
+        const countByStatus = new Map(
+          statusCounts.map((r) => [r.status, r._count.id]),
+        );
+        const pendingCount = countByStatus.get("PENDING") ?? 0;
+        const approvedCount = countByStatus.get("APPROVED") ?? 0;
+        const totalCount = statusCounts.reduce((s, r) => s + r._count.id, 0);
 
-        // Buscar transações de todos os clippers para calcular total ganho NESTA competição
+        // Totais dos posts (por status, plataforma e conta) e o total ganho
+        // NESTA competição, agregados no banco só para as inscrições da página
+        const applicationIds = applications.map((app) => app.id);
         const clipperProfileIds = applications.map(
           (app) => app.clipperProfileId,
         );
-        const transactions =
-          clipperProfileIds.length > 0
-            ? await ctx.db.transaction.findMany({
-                where: {
-                  wallet: {
-                    clipperProfileId: {
-                      in: clipperProfileIds,
+        const [postGroups, wallets, earningsByWallet] =
+          applications.length > 0
+            ? await Promise.all([
+                ctx.db.clipPost.groupBy({
+                  by: ["applicationId", "status", "platform", "username"],
+                  where: { applicationId: { in: applicationIds } },
+                  _count: { _all: true },
+                  _sum: { views: true, likes: true },
+                }),
+                ctx.db.wallet.findMany({
+                  where: { clipperProfileId: { in: clipperProfileIds } },
+                  select: { id: true, clipperProfileId: true },
+                }),
+                ctx.db.transaction.groupBy({
+                  by: ["walletId"],
+                  where: {
+                    wallet: { clipperProfileId: { in: clipperProfileIds } },
+                    campaignId: campaign.id,
+                    status: "COMPLETED",
+                    type: {
+                      in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"],
                     },
                   },
-                  campaignId: campaign.id,
-                  status: "COMPLETED",
-                  type: {
-                    in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"],
-                  },
-                },
-                select: {
-                  wallet: {
-                    select: {
-                      clipperProfileId: true,
-                    },
-                  },
-                  amount: true,
-                },
-              })
-            : [];
+                  _sum: { amount: true },
+                }),
+              ])
+            : [[], [], []];
 
-        // Criar um mapa com o total ganho por clipper NESTA competição
+        // Mapa com o total ganho por clipper NESTA competição
+        const clipperByWallet = new Map(
+          wallets.map((wallet) => [wallet.id, wallet.clipperProfileId]),
+        );
         const earningsMap = new Map<string, number>();
-        transactions.forEach((transaction) => {
-          const clipperProfileId = transaction.wallet.clipperProfileId;
-          const currentTotal = earningsMap.get(clipperProfileId) || 0;
-          earningsMap.set(
-            clipperProfileId,
-            currentTotal + Number(transaction.amount),
+        for (const row of earningsByWallet) {
+          const clipperProfileId = clipperByWallet.get(row.walletId);
+          if (clipperProfileId) {
+            earningsMap.set(clipperProfileId, Number(row._sum.amount ?? 0));
+          }
+        }
+
+        const postGroupsByApplication = new Map<string, typeof postGroups>();
+        for (const group of postGroups) {
+          const current = postGroupsByApplication.get(group.applicationId) ?? [];
+          current.push(group);
+          postGroupsByApplication.set(group.applicationId, current);
+        }
+        const summarizePosts = (groups: typeof postGroups) => {
+          const eligible = groups.filter(
+            (group) => group.status === "ELIGIBLE",
           );
-        });
+          return {
+            postsCount: groups.reduce((sum, g) => sum + g._count._all, 0),
+            eligiblePostsCount: eligible.reduce(
+              (sum, g) => sum + g._count._all,
+              0,
+            ),
+            totalViews: eligible.reduce(
+              (sum, g) => sum + Number(g._sum.views ?? 0),
+              0,
+            ),
+            totalLikes: eligible.reduce(
+              (sum, g) => sum + (g._sum.likes ?? 0),
+              0,
+            ),
+          };
+        };
 
         const formattedApplications = applications.map((app) => {
-          const eligiblePosts = app.clipPosts.filter(
-            (post) => post.status === "ELIGIBLE",
-          );
-          const totalViews = eligiblePosts.reduce(
-            (sum, post) => sum + Number(post.views),
-            0,
-          );
-          const totalLikes = eligiblePosts.reduce(
-            (sum, post) => sum + post.likes,
-            0,
-          );
+          const appPostGroups = postGroupsByApplication.get(app.id) ?? [];
+          const { postsCount, eligiblePostsCount, totalViews, totalLikes } =
+            summarizePosts(appPostGroups);
           const totalEarned = earningsMap.get(app.clipperProfileId) || 0;
 
           return {
@@ -6286,8 +5578,8 @@ export const adminRouter = createTRPCRouter({
             clanTag: app.clipperProfile.clan?.tag ?? null,
             clanEmoji: app.clipperProfile.clan?.emoji ?? null,
             clanEmojiColor: app.clipperProfile.clan?.emojiColor ?? null,
-            postsCount: app.clipPosts.length,
-            eligiblePostsCount: eligiblePosts.length,
+            postsCount,
+            eligiblePostsCount,
             totalViews,
             totalLikes,
             totalEarned,
@@ -6298,18 +5590,13 @@ export const adminRouter = createTRPCRouter({
             rejectionReason: app.rejectionReason,
             socialAccounts: app.socialAccounts.map((acc) => {
               // Contar posts desta conta nesta competição
-              const accountPosts = app.clipPosts.filter(
-                (post) =>
-                  post.username?.toLowerCase() ===
-                    acc.socialAccount.username?.toLowerCase() &&
-                  post.platform === acc.socialAccount.platform,
-              );
-              const eligibleAccountPosts = accountPosts.filter(
-                (p) => p.status === "ELIGIBLE",
-              );
-              const accountViews = eligibleAccountPosts.reduce(
-                (sum, p) => sum + Number(p.views),
-                0,
+              const accountPosts = summarizePosts(
+                appPostGroups.filter(
+                  (group) =>
+                    group.username?.toLowerCase() ===
+                      acc.socialAccount.username?.toLowerCase() &&
+                    group.platform === acc.socialAccount.platform,
+                ),
               );
 
               return {
@@ -6320,20 +5607,11 @@ export const adminRouter = createTRPCRouter({
                 isPrimary: acc.socialAccount.isPrimary,
                 isVerified: acc.socialAccount.isVerified,
                 followers: acc.socialAccount.followers,
-                postsCount: accountPosts.length,
-                eligiblePostsCount: eligibleAccountPosts.length,
-                totalViews: accountViews,
+                postsCount: accountPosts.postsCount,
+                eligiblePostsCount: accountPosts.eligiblePostsCount,
+                totalViews: accountPosts.totalViews,
               };
             }),
-            posts: app.clipPosts.map((post) => ({
-              id: post.id,
-              status: post.status,
-              views: Number(post.views),
-              likes: post.likes,
-              username: post.username,
-              platform: post.platform,
-              submittedUrl: post.submittedUrl,
-            })),
           };
         });
 
@@ -6387,167 +5665,6 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        // Estatísticas gerais para ajuste do último ponto do gráfico
-        const totalStatsAgg = await ctx.db.clipPost.aggregate({
-          where: { campaignId: campaign.id, status: "ELIGIBLE" },
-          _sum: {
-            views: true,
-            likes: true,
-          },
-        });
-        const totalViews = Number(totalStatsAgg._sum.views || 0);
-        const totalLikes = totalStatsAgg._sum.likes || 0;
-
-        // ============================================================================
-        // CRESCIMENTO AO LONGO DO TEMPO — single query com generate_series
-        // ============================================================================
-        const growthData: Array<{
-          date: string;
-          views: number;
-          likes: number;
-          viewsDelta: number;
-          likesDelta: number;
-        }> = [];
-
-        const competitionStart = new Date(campaign.startDate);
-        competitionStart.setUTCDate(competitionStart.getUTCDate() - 1);
-        competitionStart.setUTCHours(0, 0, 0, 0);
-
-        const competitionEnd = new Date(campaign.endDate);
-        competitionEnd.setUTCDate(competitionEnd.getUTCDate() + 1);
-        competitionEnd.setUTCHours(23, 59, 59, 999);
-
-        const nowBR = new Date();
-        nowBR.setUTCHours(23, 59, 59, 999);
-
-        const effectiveEnd = competitionEnd > nowBR ? nowBR : competitionEnd;
-
-        const daysDiff = Math.ceil(
-          (effectiveEnd.getTime() - competitionStart.getTime()) /
-            (1000 * 60 * 60 * 24),
-        );
-        const totalDays = Math.min(daysDiff, 90);
-
-        if (totalDays > 0) {
-          // Último dia da série (inclusive)
-          const lastDayEnd = new Date(competitionStart);
-          lastDayEnd.setUTCDate(competitionStart.getUTCDate() + totalDays - 1);
-          lastDayEnd.setUTCHours(23, 59, 59, 999);
-
-          // Strategy: single DISTINCT ON (clipPostId, day) scan → group by day → ~90 rows.
-          // Avoids the LATERAL que roda um full-scan por dia (lento com 10k+ posts).
-          // runningMax em JS compensa posts sem métrica em dias intermediários.
-          type DailyTotalRow = {
-            snap_day: Date;
-            total_views: bigint;
-            total_likes: bigint;
-          };
-
-          const dailyTotals = await ctx.db.$queryRaw<DailyTotalRow[]>`
-            WITH per_post_day AS (
-              SELECT DISTINCT ON (cpm."clipPostId", DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC'))
-                DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC') AS snap_day,
-                cpm."views"::bigint  AS views,
-                cpm."likes"::bigint  AS likes
-              FROM "ClipPostMetrics" cpm
-              INNER JOIN "ClipPost" cp ON cp."id" = cpm."clipPostId"
-              WHERE cp."campaignId" = ${campaign.id}
-                AND cp."status" = 'ELIGIBLE'
-                AND cpm."collectedAt" >= ${competitionStart}
-                AND cpm."collectedAt" <= ${lastDayEnd}
-              ORDER BY
-                cpm."clipPostId",
-                DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC'),
-                cpm."collectedAt" DESC
-            )
-            SELECT
-              snap_day,
-              COALESCE(SUM(views), 0)::bigint AS total_views,
-              COALESCE(SUM(likes), 0)::bigint AS total_likes
-            FROM per_post_day
-            GROUP BY snap_day
-            ORDER BY snap_day
-          `;
-          // Build lookup map from date string → totals
-          const dailyMap = new Map<string, { views: number; likes: number }>();
-          for (const row of dailyTotals) {
-            const dayStr = row.snap_day.toISOString().split("T")[0]!;
-            dailyMap.set(dayStr, {
-              views: Number(row.total_views),
-              likes: Number(row.total_likes),
-            });
-          }
-
-          // Generate day series and apply runningMax (compensates for forward-fill gaps)
-          let runningMaxViews = 0;
-          let runningMaxLikes = 0;
-
-          for (let i = 0; i < totalDays; i++) {
-            const day = new Date(competitionStart);
-            day.setUTCDate(competitionStart.getUTCDate() + i);
-            const dayStr = day.toISOString().split("T")[0]!;
-
-            const prevViews = runningMaxViews;
-            const prevLikes = runningMaxLikes;
-
-            const entry = dailyMap.get(dayStr);
-            if (entry) {
-              runningMaxViews = Math.max(runningMaxViews, entry.views);
-              runningMaxLikes = Math.max(runningMaxLikes, entry.likes);
-            }
-
-            growthData.push({
-              date: dayStr,
-              views: runningMaxViews,
-              likes: runningMaxLikes,
-              viewsDelta: runningMaxViews - prevViews,
-              likesDelta: runningMaxLikes - prevLikes,
-            });
-          }
-
-          // Ajustar último ponto para bater com totalViews real
-          if (growthData.length > 0) {
-            const lastEntry = growthData[growthData.length - 1]!;
-            if (lastEntry.views < totalViews) {
-              const extraViews = totalViews - lastEntry.views;
-              const extraLikes = Math.max(0, totalLikes - lastEntry.likes);
-              lastEntry.views = totalViews;
-              lastEntry.likes = Math.max(lastEntry.likes, totalLikes);
-              lastEntry.viewsDelta += extraViews;
-              lastEntry.likesDelta += extraLikes;
-            }
-          }
-        }
-
-        // Distribuição por plataforma
-        const platformStats = await ctx.db.clipPost.groupBy({
-          by: ["platform"],
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        });
-
-        const platformDistribution = platformStats.map((stat) => ({
-          platform: stat.platform,
-          posts: stat._count.id,
-          views: Number(stat._sum.views || 0),
-          likes: stat._sum.likes || 0,
-          comments: stat._sum.comments || 0,
-          shares: stat._sum.shares || 0,
-          saves: stat._sum.saves || 0,
-        }));
-
         // Per-platform cumulative growth (same style as admin dashboard)
         const growthStartDate = new Date(campaign.startDate);
         growthStartDate.setHours(0, 0, 0, 0);
@@ -6560,25 +5677,58 @@ export const adminRouter = createTRPCRouter({
           `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const todayStr = toLocalDateStr(new Date());
 
-        const [postsInRange, allPlatformsInCampaign] = await Promise.all([
-          ctx.db.clipPost.findMany({
+        // Os dias são agrupados no fuso do processo (o mesmo de toLocalDateStr),
+        // para manter o agrupamento que antes era feito em JS post a post.
+        const localTimeZone =
+          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+        // Distribuição por plataforma (também dá os totais do último ponto) e
+        // views dos posts criados no período, somadas por dia e plataforma.
+        const [platformStats, postsInRangeByDay] = await Promise.all([
+          ctx.db.clipPost.groupBy({
+            by: ["platform"],
             where: {
               campaignId: campaign.id,
               status: "ELIGIBLE",
-              createdAt: { gte: growthStartDate, lte: growthEndDate },
             },
-            select: { platform: true, views: true, createdAt: true },
+            _sum: {
+              views: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+            },
+            _count: {
+              id: true,
+            },
           }),
-          ctx.db.clipPost.groupBy({
-            by: ["platform"],
-            where: { campaignId: campaign.id, status: "ELIGIBLE" },
-            _sum: { views: true },
-          }),
+          ctx.db.$queryRaw<
+            Array<{ day: string; platform: Platform; views: bigint }>
+          >`
+            SELECT
+              to_char(("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE ${localTimeZone}, 'YYYY-MM-DD') AS day,
+              platform,
+              COALESCE(SUM(views), 0)::bigint AS views
+            FROM "ClipPost"
+            WHERE "campaignId" = ${campaign.id}
+              AND status = 'ELIGIBLE'
+              AND "createdAt" >= ${growthStartDate}::timestamp
+              AND "createdAt" <= ${growthEndDate}::timestamp
+            GROUP BY 1, 2
+          `,
         ]);
 
-        const growthPlatforms = allPlatformsInCampaign
-          .map((p) => p.platform)
-          .sort();
+        const platformDistribution = platformStats.map((stat) => ({
+          platform: stat.platform,
+          posts: stat._count.id,
+          views: Number(stat._sum.views || 0),
+          likes: stat._sum.likes || 0,
+          comments: stat._sum.comments || 0,
+          shares: stat._sum.shares || 0,
+          saves: stat._sum.saves || 0,
+        }));
+
+        const growthPlatforms = platformStats.map((p) => p.platform).sort();
 
         const totalDaysRange = Math.ceil(
           (growthEndDate.getTime() - growthStartDate.getTime()) /
@@ -6595,13 +5745,12 @@ export const adminRouter = createTRPCRouter({
           platformDayMap.set(key, row);
         }
 
-        for (const post of postsInRange) {
-          const key = toLocalDateStr(post.createdAt);
-          const row = platformDayMap.get(key);
+        for (const dayRow of postsInRangeByDay) {
+          const row = platformDayMap.get(dayRow.day);
           if (!row) continue;
-          const views = Number(post.views || 0);
+          const views = Number(dayRow.views || 0);
           row.total = (row.total || 0) + views;
-          row[post.platform] = (row[post.platform] || 0) + views;
+          row[dayRow.platform] = (row[dayRow.platform] || 0) + views;
         }
 
         const cumPlatformTotals: Record<string, number> = {};
@@ -6628,23 +5777,16 @@ export const adminRouter = createTRPCRouter({
           const lastEntry = platformGrowthData[
             platformGrowthData.length - 1
           ] as Record<string, number | string>;
-          const realTotal = allPlatformsInCampaign.reduce(
-            (acc, p) => acc + Number(p._sum.views || 0),
+          lastEntry.total = platformDistribution.reduce(
+            (acc, p) => acc + p.views,
             0,
           );
-          lastEntry.total = realTotal;
-          for (const p of growthPlatforms) {
-            const platformData = allPlatformsInCampaign.find(
-              (x) => x.platform === p,
-            );
-            if (platformData) {
-              lastEntry[p] = Number(platformData._sum.views || 0);
-            }
+          for (const p of platformDistribution) {
+            lastEntry[p.platform] = p.views;
           }
         }
 
         return {
-          growthData,
           platformDistribution,
           platformGrowthData,
           growthPlatforms,
@@ -6657,6 +5799,156 @@ export const adminRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar dados de gráficos",
+        });
+      }
+    }),
+
+  // ============================================================================
+  // EVOLUÇÃO DIÁRIA DE VIEWS (somente para a exportação em Excel)
+  // ============================================================================
+  getCompetitionGrowthExportAdmin: adminProcedure
+    .input(z.object({ slug: z.string() }))
+    .query(async ({ ctx, input }) => {
+      try {
+        const campaign = await ctx.db.campaign.findUnique({
+          where: { slug: input.slug },
+          select: {
+            id: true,
+            startDate: true,
+            endDate: true,
+          },
+        });
+
+        if (!campaign) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Competição não encontrada",
+          });
+        }
+
+        // ============================================================================
+        // CRESCIMENTO AO LONGO DO TEMPO — single query com generate_series
+        // ============================================================================
+        const growthData: Array<{
+          date: string;
+          views: number;
+          viewsDelta: number;
+        }> = [];
+
+        const competitionStart = new Date(campaign.startDate);
+        competitionStart.setUTCDate(competitionStart.getUTCDate() - 1);
+        competitionStart.setUTCHours(0, 0, 0, 0);
+
+        const competitionEnd = new Date(campaign.endDate);
+        competitionEnd.setUTCDate(competitionEnd.getUTCDate() + 1);
+        competitionEnd.setUTCHours(23, 59, 59, 999);
+
+        const nowBR = new Date();
+        nowBR.setUTCHours(23, 59, 59, 999);
+
+        const effectiveEnd = competitionEnd > nowBR ? nowBR : competitionEnd;
+
+        const daysDiff = Math.ceil(
+          (effectiveEnd.getTime() - competitionStart.getTime()) /
+            (1000 * 60 * 60 * 24),
+        );
+        const totalDays = Math.min(daysDiff, 90);
+
+        if (totalDays <= 0) {
+          return { growthData };
+        }
+
+        // Último dia da série (inclusive)
+        const lastDayEnd = new Date(competitionStart);
+        lastDayEnd.setUTCDate(competitionStart.getUTCDate() + totalDays - 1);
+        lastDayEnd.setUTCHours(23, 59, 59, 999);
+
+        // Strategy: single DISTINCT ON (clipPostId, day) scan → group by day → ~90 rows.
+        // Avoids the LATERAL que roda um full-scan por dia (lento com 10k+ posts).
+        // runningMax em JS compensa posts sem métrica em dias intermediários.
+        // Só lê views: o índice (clipPostId, collectedAt, views) cobre a consulta.
+        type DailyTotalRow = {
+          snap_day: Date;
+          total_views: bigint;
+        };
+
+        const [totalStatsAgg, dailyTotals] = await Promise.all([
+          // Total atual para ajuste do último ponto do gráfico
+          ctx.db.clipPost.aggregate({
+            where: { campaignId: campaign.id, status: "ELIGIBLE" },
+            _sum: { views: true },
+          }),
+          ctx.db.$queryRaw<DailyTotalRow[]>`
+            WITH per_post_day AS (
+              SELECT DISTINCT ON (cpm."clipPostId", DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC'))
+                DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC') AS snap_day,
+                cpm."views"::bigint  AS views
+              FROM "ClipPostMetrics" cpm
+              INNER JOIN "ClipPost" cp ON cp."id" = cpm."clipPostId"
+              WHERE cp."campaignId" = ${campaign.id}
+                AND cp."status" = 'ELIGIBLE'
+                AND cpm."collectedAt" >= ${competitionStart}
+                AND cpm."collectedAt" <= ${lastDayEnd}
+              ORDER BY
+                cpm."clipPostId",
+                DATE_TRUNC('day', cpm."collectedAt" AT TIME ZONE 'UTC'),
+                cpm."collectedAt" DESC
+            )
+            SELECT
+              snap_day,
+              COALESCE(SUM(views), 0)::bigint AS total_views
+            FROM per_post_day
+            GROUP BY snap_day
+            ORDER BY snap_day
+          `,
+        ]);
+        const totalViews = Number(totalStatsAgg._sum.views || 0);
+
+        // Build lookup map from date string → totals
+        const dailyMap = new Map<string, number>();
+        for (const row of dailyTotals) {
+          const dayStr = row.snap_day.toISOString().split("T")[0]!;
+          dailyMap.set(dayStr, Number(row.total_views));
+        }
+
+        // Generate day series and apply runningMax (compensates for forward-fill gaps)
+        let runningMaxViews = 0;
+
+        for (let i = 0; i < totalDays; i++) {
+          const day = new Date(competitionStart);
+          day.setUTCDate(competitionStart.getUTCDate() + i);
+          const dayStr = day.toISOString().split("T")[0]!;
+
+          const prevViews = runningMaxViews;
+
+          const views = dailyMap.get(dayStr);
+          if (views !== undefined) {
+            runningMaxViews = Math.max(runningMaxViews, views);
+          }
+
+          growthData.push({
+            date: dayStr,
+            views: runningMaxViews,
+            viewsDelta: runningMaxViews - prevViews,
+          });
+        }
+
+        // Ajustar último ponto para bater com totalViews real
+        const lastEntry = growthData[growthData.length - 1];
+        if (lastEntry && lastEntry.views < totalViews) {
+          lastEntry.viewsDelta += totalViews - lastEntry.views;
+          lastEntry.views = totalViews;
+        }
+
+        return { growthData };
+      } catch (error: any) {
+        console.error("Erro ao buscar evolução diária:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message || "Erro ao buscar evolução diária",
         });
       }
     }),
@@ -6704,73 +5996,57 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        // Construir where clause
-        const where: any = {
-          campaignId: campaign.id,
-        };
+        // Filtros em SQL (mesma semântica dos filtros do Prisma de antes:
+        // `contains` + insensitive = ILIKE '%valor%'). Assim a ordenação por
+        // engajamento também roda no banco, com LIMIT/OFFSET.
+        const conditions: Prisma.Sql[] = [
+          Prisma.sql`cp."campaignId" = ${campaign.id}`,
+        ];
 
         if (input.status && input.status !== "all") {
-          where.status = input.status;
+          conditions.push(
+            Prisma.sql`cp.status = ${input.status}::"ClipPostStatus"`,
+          );
         }
 
         if (input.platform && input.platform !== "all") {
-          where.platform = input.platform;
+          conditions.push(Prisma.sql`cp.platform = ${input.platform}::"Platform"`);
         }
 
         if (input.accountSearch) {
-          where.username = {
-            contains: input.accountSearch.replace("@", ""),
-            mode: "insensitive",
-          };
+          conditions.push(
+            Prisma.sql`cp.username ILIKE ${`%${input.accountSearch.replace("@", "")}%`}`,
+          );
         }
 
         if (input.linkSearch) {
-          where.submittedUrl = {
-            contains: input.linkSearch,
-            mode: "insensitive",
-          };
-        }
-
-        if (input.postedAtFrom || input.postedAtTo) {
-          where.postedAt = {};
-
-          if (input.postedAtFrom) {
-            where.postedAt.gte = new Date(input.postedAtFrom);
-          }
-
-          if (input.postedAtTo) {
-            where.postedAt.lte = new Date(input.postedAtTo);
-          }
-        }
-
-        if (input.commentsDataFilter !== "all") {
-          const postsWithDetailedComments = await ctx.db.$queryRaw<
-            Array<{ clipPostId: string }>
-          >`
-            SELECT DISTINCT cpc."clipPostId"
-            FROM "ClipPostComment" cpc
-            INNER JOIN "ClipPost" cp ON cp."id" = cpc."clipPostId"
-            WHERE cp."campaignId" = ${campaign.id}
-          `;
-          const postIdsWithDetailedComments = postsWithDetailedComments.map(
-            (row) => row.clipPostId,
+          conditions.push(
+            Prisma.sql`cp."submittedUrl" ILIKE ${`%${input.linkSearch}%`}`,
           );
+        }
 
-          if (input.commentsDataFilter === "with") {
-            where.id = {
-              in:
-                postIdsWithDetailedComments.length > 0
-                  ? postIdsWithDetailedComments
-                  : ["__no_posts_with_detailed_comments__"],
-            };
-          }
+        if (input.postedAtFrom) {
+          conditions.push(
+            Prisma.sql`cp."postedAt" >= ${new Date(input.postedAtFrom)}::timestamp`,
+          );
+        }
 
-          if (
-            input.commentsDataFilter === "without" &&
-            postIdsWithDetailedComments.length > 0
-          ) {
-            where.id = { notIn: postIdsWithDetailedComments };
-          }
+        if (input.postedAtTo) {
+          conditions.push(
+            Prisma.sql`cp."postedAt" <= ${new Date(input.postedAtTo)}::timestamp`,
+          );
+        }
+
+        // Posts com/sem comentários detalhados (EXISTS pelo índice de clipPostId)
+        if (input.commentsDataFilter !== "all") {
+          const hasCommentsData = Prisma.sql`EXISTS (
+            SELECT 1 FROM "ClipPostComment" cpc WHERE cpc."clipPostId" = cp.id
+          )`;
+          conditions.push(
+            input.commentsDataFilter === "with"
+              ? hasCommentsData
+              : Prisma.sql`NOT ${hasCommentsData}`,
+          );
         }
 
         // Se buscar por clipper, filtrar por aplicação
@@ -6799,110 +6075,64 @@ export const adminRouter = createTRPCRouter({
               select: { id: true },
             },
           );
-          where.applicationId = { in: matchingApplications.map((a) => a.id) };
+          conditions.push(
+            Prisma.sql`cp."applicationId" = ANY(${matchingApplications.map((a) => a.id)}::text[])`,
+          );
         }
 
-        // Contar total
-        const totalCount = await ctx.db.clipPost.count({ where });
+        const whereSql = Prisma.join(conditions, " AND ");
 
-        // Determinar ordenação
-        let orderBy: any;
+        // Determinar ordenação (id desempata para a paginação ser estável)
+        let orderBySql: Prisma.Sql;
         switch (input.sortBy) {
           case "views":
-            orderBy = { views: "desc" };
+            orderBySql = Prisma.sql`cp.views DESC, cp.id`;
             break;
           case "likes":
-            orderBy = { likes: "desc" };
+            orderBySql = Prisma.sql`cp.likes DESC, cp.id`;
             break;
           case "comments":
-            orderBy = { comments: "desc" };
+            orderBySql = Prisma.sql`cp.comments DESC, cp.id`;
             break;
           case "shares":
-            orderBy = { shares: "desc" };
+            orderBySql = Prisma.sql`cp.shares DESC, cp.id`;
+            break;
+          case "engagement":
+            // Mesma conta de antes: (likes + comments + shares) / views, 0 sem views
+            orderBySql = Prisma.sql`CASE WHEN cp.views > 0
+              THEN (cp.likes::bigint + cp.comments + cp.shares)::float8 / cp.views::float8
+              ELSE 0 END DESC, cp.id`;
             break;
           case "recent":
           default:
-            orderBy = { createdAt: "desc" };
+            orderBySql = Prisma.sql`cp."createdAt" DESC, cp.id`;
             break;
         }
 
-        const isEngagementSort = input.sortBy === "engagement";
         const skip = (input.page - 1) * input.pageSize;
 
+        // Contagem e ids da página em paralelo
+        const [countRows, pageRows] = await Promise.all([
+          ctx.db.$queryRaw<[{ count: number }]>`
+            SELECT COUNT(*)::int AS count FROM "ClipPost" cp WHERE ${whereSql}
+          `,
+          ctx.db.$queryRaw<Array<{ id: string }>>`
+            SELECT cp.id FROM "ClipPost" cp
+            WHERE ${whereSql}
+            ORDER BY ${orderBySql}
+            OFFSET ${skip} LIMIT ${input.pageSize}
+          `,
+        ]);
+        const totalCount = countRows[0]?.count ?? 0;
+        const pageIds = pageRows.map((row) => row.id);
+
         let posts: any[];
-        if (isEngagementSort) {
-          // Fase 1: buscar só id + métricas para ordenar (sem relações, sem colunas extras)
-          const allPostsForSort = await ctx.db.clipPost.findMany({
-            where,
-            select: {
-              id: true,
-              views: true,
-              likes: true,
-              comments: true,
-              shares: true,
-            },
-          });
-
-          allPostsForSort.sort((a, b) => {
-            const viewsA = Number(a.views);
-            const viewsB = Number(b.views);
-            const engA =
-              viewsA > 0 ? (a.likes + a.comments + a.shares) / viewsA : 0;
-            const engB =
-              viewsB > 0 ? (b.likes + b.comments + b.shares) / viewsB : 0;
-            return engB - engA;
-          });
-
-          const pageIds = allPostsForSort
-            .slice(skip, skip + input.pageSize)
-            .map((p) => p.id);
-
-          if (pageIds.length === 0) {
-            posts = [];
-          } else {
-            const idOrder = new Map(pageIds.map((id, i) => [id, i]));
-            const pagePosts = await ctx.db.clipPost.findMany({
-              where: { id: { in: pageIds } },
-              select: {
-                id: true,
-                submittedUrl: true,
-                platformVideoId: true,
-                thumbnailUrl: true,
-                platform: true,
-                username: true,
-                views: true,
-                likes: true,
-                comments: true,
-                shares: true,
-                postedAt: true,
-                createdAt: true,
-                status: true,
-                ineligibilityReason: true,
-                bucketVideo: {
-                  select: { status: true, publicUrl: true, errorMessage: true },
-                },
-                application: {
-                  select: {
-                    clipperProfile: {
-                      select: {
-                        artisticName: true,
-                        fullName: true,
-                      },
-                    },
-                  },
-                },
-              },
-            });
-            posts = pagePosts.sort(
-              (a, b) => (idOrder.get(a.id) ?? 0) - (idOrder.get(b.id) ?? 0),
-            );
-          }
+        if (pageIds.length === 0) {
+          posts = [];
         } else {
-          posts = await ctx.db.clipPost.findMany({
-            where,
-            orderBy,
-            skip,
-            take: input.pageSize,
+          const idOrder = new Map(pageIds.map((id, i) => [id, i]));
+          const pagePosts = await ctx.db.clipPost.findMany({
+            where: { id: { in: pageIds } },
             select: {
               id: true,
               submittedUrl: true,
@@ -6933,6 +6163,9 @@ export const adminRouter = createTRPCRouter({
               },
             },
           });
+          posts = pagePosts.sort(
+            (a, b) => (idOrder.get(a.id) ?? 0) - (idOrder.get(b.id) ?? 0),
+          );
         }
 
         const instagramVideoIdByPostId = new Map<string, string>();
@@ -7982,39 +7215,16 @@ export const adminRouter = createTRPCRouter({
         oldest: `sa."createdAt" ASC`,
         followers_desc: `sa."followers" DESC NULLS LAST`,
         followers_asc: `sa."followers" ASC NULLS LAST`,
-        totalViews_desc: `"totalViews" DESC NULLS LAST`,
-        totalPosts_desc: `"totalPosts" DESC NULLS LAST`,
       };
-      const orderBy = orderByMap[sortBy] ?? `sa."createdAt" DESC`;
+      const statsSortKey =
+        sortBy === "totalViews_desc"
+          ? "totalViews"
+          : sortBy === "totalPosts_desc"
+            ? "totalPosts"
+            : null;
 
-      const offsetParam = `$${paramIdx}`;
-      const limitParam = `$${paramIdx + 1}`;
-      params.push((page - 1) * perPage, perPage);
-
-      const countResult = await ctx.db.$queryRawUnsafe<[{ count: bigint }]>(
-        `SELECT COUNT(sa.id)::bigint as count
-         FROM "SocialAccount" sa
-         JOIN "ClipperProfile" cp ON sa."clipperProfileId" = cp.id
-         ${whereClause}`,
-        ...params.slice(0, paramIdx - 1),
-      );
-      const totalCount = Number(countResult[0]?.count ?? 0);
-
-      const rawAccounts = await ctx.db.$queryRawUnsafe<any[]>(
-        `WITH account_stats AS (
-          SELECT
-            sa2.id as "accountId",
-            COUNT(cp2.id)::bigint as "totalPosts",
-            COALESCE(SUM(cp2.views), 0)::bigint as "totalViews"
-          FROM "SocialAccount" sa2
-          JOIN "ClipperApplication" ca2 ON ca2."clipperProfileId" = sa2."clipperProfileId"
-          JOIN "ClipPost" cp2 ON cp2."applicationId" = ca2.id
-            AND cp2."platform"::text = sa2."platform"::text
-            AND LOWER(REPLACE(COALESCE(cp2."username", ''), '@', '')) = LOWER(REPLACE(sa2."username", '@', ''))
-            AND cp2."status" = 'ELIGIBLE'
-          GROUP BY sa2.id
-        )
-        SELECT
+      const filterParams = params.slice(0, paramIdx - 1);
+      const accountColumnsSql = `
           sa.id,
           sa.platform::text as platform,
           sa.username,
@@ -8031,18 +7241,81 @@ export const adminRouter = createTRPCRouter({
           cp."fullName",
           cp."artisticName",
           cp."verificationStatus"::text as "verificationStatus",
-          u."imageUrl",
-          COALESCE(ast."totalPosts", 0)::int as "totalPosts",
-          COALESCE(ast."totalViews", 0)::bigint as "totalViews"
+          u."imageUrl"`;
+      const accountFromSql = `
         FROM "SocialAccount" sa
         JOIN "ClipperProfile" cp ON sa."clipperProfileId" = cp.id
-        JOIN "User" u ON cp."userId" = u.id
-        LEFT JOIN account_stats ast ON sa.id = ast."accountId"
+        JOIN "User" u ON cp."userId" = u.id`;
+
+      const countPromise = ctx.db
+        .$queryRawUnsafe<[{ count: bigint }]>(
+          `SELECT COUNT(sa.id)::bigint as count
+         FROM "SocialAccount" sa
+         JOIN "ClipperProfile" cp ON sa."clipperProfileId" = cp.id
+         ${whereClause}`,
+          ...filterParams,
+        )
+        .then((result) => Number(result[0]?.count ?? 0));
+
+      let totalCount: number;
+      let rawAccounts: any[];
+      let accountStats: Map<string, SocialAccountPostStats>;
+
+      if (statsSortKey) {
+        // Ordenação pelas estatísticas: usa o mapa de todas as contas (cache de
+        // 5 min) e ordena em memória os ids filtrados; só a página é lida.
+        const [count, filteredIds, allStats] = await Promise.all([
+          countPromise,
+          ctx.db.$queryRawUnsafe<Array<{ id: string }>>(
+            `SELECT sa.id ${accountFromSql}
+        ${whereClause}
+        ORDER BY sa."createdAt" DESC`,
+            ...filterParams,
+          ),
+          getCachedSocialAccountPostStats(ctx.db),
+        ]);
+        const statValue = (id: string) =>
+          allStats.get(id)?.[statsSortKey] ?? 0;
+        const pageIds = filteredIds
+          .map((row) => row.id)
+          .sort((a, b) => statValue(b) - statValue(a))
+          .slice((page - 1) * perPage, page * perPage);
+        const pageRows =
+          pageIds.length > 0
+            ? await ctx.db.$queryRaw<any[]>`
+                SELECT ${Prisma.raw(accountColumnsSql)} ${Prisma.raw(accountFromSql)}
+                WHERE sa.id = ANY(${pageIds})`
+            : [];
+        const rowsById = new Map(pageRows.map((row) => [row.id as string, row]));
+        totalCount = count;
+        rawAccounts = pageIds
+          .map((id) => rowsById.get(id))
+          .filter((row) => row !== undefined);
+        accountStats = allStats;
+      } else {
+        const orderBy = orderByMap[sortBy] ?? `sa."createdAt" DESC`;
+        const offsetParam = `$${paramIdx}`;
+        const limitParam = `$${paramIdx + 1}`;
+        params.push((page - 1) * perPage, perPage);
+
+        const [count, pageRows] = await Promise.all([
+          countPromise,
+          ctx.db.$queryRawUnsafe<any[]>(
+            `SELECT ${accountColumnsSql} ${accountFromSql}
         ${whereClause}
         ORDER BY ${orderBy}
         OFFSET ${offsetParam} LIMIT ${limitParam}`,
-        ...params,
-      );
+            ...params,
+          ),
+        ]);
+        totalCount = count;
+        rawAccounts = pageRows;
+        // Estatísticas apenas das contas da página
+        accountStats = await loadSocialAccountPostStats(
+          ctx.db,
+          pageRows.map((row) => row.id as string),
+        );
+      }
 
       const accounts = rawAccounts.map((r) => ({
         id: r.id as string,
@@ -8064,8 +7337,8 @@ export const adminRouter = createTRPCRouter({
           verificationStatus: r.verificationStatus as string,
           user: { imageUrl: r.imageUrl as string | null },
         },
-        totalPosts: Number(r.totalPosts),
-        totalViews: Number(r.totalViews),
+        totalPosts: accountStats.get(r.id as string)?.totalPosts ?? 0,
+        totalViews: accountStats.get(r.id as string)?.totalViews ?? 0,
       }));
 
       return {
@@ -8077,59 +7350,64 @@ export const adminRouter = createTRPCRouter({
       };
     }),
 
-  getSocialAccountsStats: adminProcedure.query(async ({ ctx }) => {
-    const [
-      totalAccounts,
-      activeAccounts,
-      inactiveAccounts,
-      platformCounts,
-      nicheCounts,
-      viewsAgg,
-      followersAgg,
-      accountsWithViews,
-      accountsWithFollowers,
-      clipPostAgg,
-    ] = await Promise.all([
-      ctx.db.socialAccount.count(),
-      ctx.db.socialAccount.count({ where: { isActive: true } }),
-      ctx.db.socialAccount.count({ where: { isActive: false } }),
-      ctx.db.socialAccount.groupBy({
-        by: ["platform"],
-        _count: { id: true },
-        orderBy: { _count: { id: "desc" } },
-      }),
-      ctx.db.socialAccount.groupBy({
-        by: ["niche"],
-        _count: { id: true },
-        _sum: { avgViews: true, followers: true },
-        _avg: { avgViews: true, followers: true },
-        orderBy: { _count: { id: "desc" } },
-      }),
-      ctx.db.socialAccount.aggregate({
-        _sum: { avgViews: true },
-        _avg: { avgViews: true },
-        _max: { avgViews: true },
-        where: { avgViews: { not: null } },
-      }),
-      ctx.db.socialAccount.aggregate({
-        _sum: { followers: true },
-        _avg: { followers: true },
-        _max: { followers: true },
-        where: { followers: { not: null } },
-      }),
-      ctx.db.socialAccount.count({ where: { avgViews: { not: null, gt: 0 } } }),
-      ctx.db.socialAccount.count({
-        where: { followers: { not: null, gt: 0 } },
-      }),
-      ctx.db.$queryRaw<
-        [
-          {
-            total_posts: bigint;
-            total_views: bigint;
-            clippers_with_posts: bigint;
-          },
-        ]
-      >`
+  // Igual para todos os admins e caro (agrega todos os posts elegíveis):
+  // reaproveitado por 5 minutos.
+  getSocialAccountsStats: adminProcedure.query(({ ctx }) =>
+    cachedQuery("admin:social-accounts-stats", 5 * 60_000, async () => {
+      const [accountTotals, platformCounts, nicheCounts, clipPostAgg] =
+        await Promise.all([
+          ctx.db.$queryRaw<
+            [
+              {
+                totalAccounts: number;
+                activeAccounts: number;
+                inactiveAccounts: number;
+                accountsWithViews: number;
+                accountsWithFollowers: number;
+                viewsSum: bigint | null;
+                viewsAvg: number | null;
+                viewsMax: number | null;
+                followersSum: bigint | null;
+                followersAvg: number | null;
+                followersMax: number | null;
+              },
+            ]
+          >`
+            SELECT
+              COUNT(*)::int AS "totalAccounts",
+              COUNT(*) FILTER (WHERE "isActive" = true)::int AS "activeAccounts",
+              COUNT(*) FILTER (WHERE "isActive" = false)::int AS "inactiveAccounts",
+              COUNT(*) FILTER (WHERE "avgViews" > 0)::int AS "accountsWithViews",
+              COUNT(*) FILTER (WHERE "followers" > 0)::int AS "accountsWithFollowers",
+              SUM("avgViews")::bigint AS "viewsSum",
+              AVG("avgViews")::float8 AS "viewsAvg",
+              MAX("avgViews") AS "viewsMax",
+              SUM("followers")::bigint AS "followersSum",
+              AVG("followers")::float8 AS "followersAvg",
+              MAX("followers") AS "followersMax"
+            FROM "SocialAccount"
+          `,
+          ctx.db.socialAccount.groupBy({
+            by: ["platform"],
+            _count: { id: true },
+            orderBy: { _count: { id: "desc" } },
+          }),
+          ctx.db.socialAccount.groupBy({
+            by: ["niche"],
+            _count: { id: true },
+            _sum: { avgViews: true, followers: true },
+            _avg: { avgViews: true, followers: true },
+            orderBy: { _count: { id: "desc" } },
+          }),
+          ctx.db.$queryRaw<
+            [
+              {
+                total_posts: bigint;
+                total_views: bigint;
+                clippers_with_posts: bigint;
+              },
+            ]
+          >`
           SELECT
             COUNT(cp.id)::bigint as total_posts,
             COALESCE(SUM(cp.views), 0)::bigint as total_views,
@@ -8138,49 +7416,51 @@ export const adminRouter = createTRPCRouter({
           JOIN "ClipperApplication" ca ON cp."applicationId" = ca.id
           WHERE cp."status" = 'ELIGIBLE'
         `,
-    ]);
+        ]);
 
-    const postData = clipPostAgg[0] ?? {
-      total_posts: BigInt(0),
-      total_views: BigInt(0),
-      clippers_with_posts: BigInt(0),
-    };
+      const totals = accountTotals[0];
+      const postData = clipPostAgg[0] ?? {
+        total_posts: BigInt(0),
+        total_views: BigInt(0),
+        clippers_with_posts: BigInt(0),
+      };
 
-    return {
-      totalAccounts,
-      activeAccounts,
-      inactiveAccounts,
-      platformCounts: platformCounts.map((p) => ({
-        platform: p.platform,
-        count: p._count.id,
-      })),
-      nicheCounts: nicheCounts.map((n) => ({
-        niche: n.niche,
-        count: n._count.id,
-        totalViews: n._sum.avgViews ?? 0,
-        totalFollowers: n._sum.followers ?? 0,
-        avgViews: Math.round(n._avg.avgViews ?? 0),
-        avgFollowers: Math.round(n._avg.followers ?? 0),
-      })),
-      viewsStats: {
-        total: viewsAgg._sum.avgViews ?? 0,
-        average: Math.round(viewsAgg._avg.avgViews ?? 0),
-        max: viewsAgg._max.avgViews ?? 0,
-        accountsWithData: accountsWithViews,
-      },
-      followersStats: {
-        total: followersAgg._sum.followers ?? 0,
-        average: Math.round(followersAgg._avg.followers ?? 0),
-        max: followersAgg._max.followers ?? 0,
-        accountsWithData: accountsWithFollowers,
-      },
-      clipPostStats: {
-        totalPosts: Number(postData.total_posts),
-        totalViews: Number(postData.total_views),
-        clippersWithPosts: Number(postData.clippers_with_posts),
-      },
-    };
-  }),
+      return {
+        totalAccounts: totals.totalAccounts,
+        activeAccounts: totals.activeAccounts,
+        inactiveAccounts: totals.inactiveAccounts,
+        platformCounts: platformCounts.map((p) => ({
+          platform: p.platform,
+          count: p._count.id,
+        })),
+        nicheCounts: nicheCounts.map((n) => ({
+          niche: n.niche,
+          count: n._count.id,
+          totalViews: n._sum.avgViews ?? 0,
+          totalFollowers: n._sum.followers ?? 0,
+          avgViews: Math.round(n._avg.avgViews ?? 0),
+          avgFollowers: Math.round(n._avg.followers ?? 0),
+        })),
+        viewsStats: {
+          total: Number(totals.viewsSum ?? 0),
+          average: Math.round(totals.viewsAvg ?? 0),
+          max: totals.viewsMax ?? 0,
+          accountsWithData: totals.accountsWithViews,
+        },
+        followersStats: {
+          total: Number(totals.followersSum ?? 0),
+          average: Math.round(totals.followersAvg ?? 0),
+          max: totals.followersMax ?? 0,
+          accountsWithData: totals.accountsWithFollowers,
+        },
+        clipPostStats: {
+          totalPosts: Number(postData.total_posts),
+          totalViews: Number(postData.total_views),
+          clippersWithPosts: Number(postData.clippers_with_posts),
+        },
+      };
+    }),
+  ),
 
   updateClipperInfo: adminProcedure
     .input(
@@ -9251,117 +8531,129 @@ export const adminRouter = createTRPCRouter({
               }
             : {};
 
-        // Buscar todas as competições
-        const campaigns = await ctx.db.campaign.findMany({
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            status: true,
-            startDate: true,
-            endDate: true,
-            isPrivate: true,
-          },
-          orderBy: { createdAt: "desc" },
-        });
+        // Consultas independentes em paralelo
+        const [
+          campaigns,
+          creditTransactions,
+          pixTransactions,
+          pendingWithdrawals,
+          campaignPostTotals,
+        ] = await Promise.all([
+          // Buscar todas as competições
+          ctx.db.campaign.findMany({
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              status: true,
+              startDate: true,
+              endDate: true,
+              isPrivate: true,
+            },
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar todas as transações de crédito (prêmios, bônus, ajustes)
-        const creditTransactions = await ctx.db.transaction.findMany({
-          where: {
-            type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
-            status: "COMPLETED",
-            ...dateFilter,
-          },
-          select: {
-            id: true,
-            type: true,
-            amount: true,
-            status: true,
-            campaignId: true,
-            rankingPosition: true,
-            description: true,
-            createdAt: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar todas as transações de crédito (prêmios, bônus, ajustes)
+          ctx.db.transaction.findMany({
+            where: {
+              type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
+              status: "COMPLETED",
+              ...dateFilter,
+            },
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              status: true,
+              campaignId: true,
+              rankingPosition: true,
+              description: true,
+              createdAt: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar todas as transações de PIX (saques completados)
-        const pixTransactions = await ctx.db.transaction.findMany({
-          where: {
-            type: "WITHDRAWAL_COMPLETED",
-            status: "COMPLETED",
-            ...dateFilter,
-          },
-          select: {
-            id: true,
-            type: true,
-            amount: true,
-            status: true,
-            campaignId: true,
-            description: true,
-            createdAt: true,
-            proofUrls: true,
-            withdrawalDetails: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    pixKey: true,
-                    cpf: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar todas as transações de PIX (saques completados)
+          ctx.db.transaction.findMany({
+            where: {
+              type: "WITHDRAWAL_COMPLETED",
+              status: "COMPLETED",
+              ...dateFilter,
+            },
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              status: true,
+              campaignId: true,
+              description: true,
+              createdAt: true,
+              proofUrls: true,
+              withdrawalDetails: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      pixKey: true,
+                      cpf: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
 
-        // Buscar saques pendentes
-        const pendingWithdrawals = await ctx.db.transaction.findMany({
-          where: {
-            type: { in: ["WITHDRAWAL_REQUEST", "WITHDRAWAL_APPROVED"] },
-            status: { in: ["PENDING", "PROCESSING"] },
-          },
-          select: {
-            id: true,
-            amount: true,
-            type: true,
-            status: true,
-            campaignId: true,
-            description: true,
-            createdAt: true,
-            wallet: {
-              select: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    fullName: true,
-                    artisticName: true,
-                    pixKey: true,
-                    user: { select: { email: true, imageUrl: true } },
+          // Buscar saques pendentes
+          ctx.db.transaction.findMany({
+            where: {
+              type: { in: ["WITHDRAWAL_REQUEST", "WITHDRAWAL_APPROVED"] },
+              status: { in: ["PENDING", "PROCESSING"] },
+            },
+            select: {
+              id: true,
+              amount: true,
+              type: true,
+              status: true,
+              campaignId: true,
+              description: true,
+              createdAt: true,
+              wallet: {
+                select: {
+                  clipperProfile: {
+                    select: {
+                      id: true,
+                      fullName: true,
+                      artisticName: true,
+                      pixKey: true,
+                      user: { select: { email: true, imageUrl: true } },
+                    },
                   },
                 },
               },
             },
-          },
-          orderBy: { createdAt: "desc" },
-        });
+            orderBy: { createdAt: "desc" },
+          }),
+
+          // Total de views por competição (para CPM), agregação em cache curto
+          getCachedCampaignPostTotals(ctx.db),
+        ]);
 
         // === CÁLCULOS ===
 
@@ -9395,29 +8687,37 @@ export const adminRouter = createTRPCRouter({
         // Saldo restante a pagar (creditado - pago)
         const totalRemainingToPay = Math.max(0, totalCredited - totalPaidPix);
 
-        // Buscar total de views por competição (para CPM)
-        const campaignViews = await ctx.db.clipPost.groupBy({
-          by: ["campaignId"],
-          where: { status: "ELIGIBLE" },
-          _sum: { views: true },
-          _count: { id: true },
-        });
         const viewsMap = new Map(
-          campaignViews.map((v) => [
-            v.campaignId,
-            { views: Number(v._sum.views || 0), posts: v._count.id },
+          Array.from(campaignPostTotals, ([campaignId, totals]) => [
+            campaignId,
+            { views: Number(totals._sum.views || 0), posts: totals._count.id },
           ]),
         );
+        const campaignNameById = new Map(
+          campaigns.map((campaign) => [campaign.id, campaign.name]),
+        );
+
+        // Transações agrupadas por competição em uma passada (mantém a ordem)
+        const groupByCampaign = <T extends { campaignId: string | null }>(
+          transactions: T[],
+        ) => {
+          const grouped = new Map<string, T[]>();
+          for (const tx of transactions) {
+            if (!tx.campaignId) continue;
+            const current = grouped.get(tx.campaignId) ?? [];
+            current.push(tx);
+            grouped.set(tx.campaignId, current);
+          }
+          return grouped;
+        };
+        const creditsByCampaign = groupByCampaign(creditTransactions);
+        const pixByCampaign = groupByCampaign(pixTransactions);
 
         // Agrupar por competição
         const campaignFinancials = campaigns
           .map((campaign) => {
-            const campaignCredits = creditTransactions.filter(
-              (tx) => tx.campaignId === campaign.id,
-            );
-            const campaignPix = pixTransactions.filter(
-              (tx) => tx.campaignId === campaign.id,
-            );
+            const campaignCredits = creditsByCampaign.get(campaign.id) ?? [];
+            const campaignPix = pixByCampaign.get(campaign.id) ?? [];
             const credited = campaignCredits.reduce(
               (sum, tx) => sum + tx.amount,
               0,
@@ -9516,17 +8816,17 @@ export const adminRouter = createTRPCRouter({
           }
         });
 
-        // Contar competições por clipador
+        // Contar competições por clipador (uma passada pelos créditos)
+        const campaignsByClipper = new Map<string, Set<string>>();
+        for (const tx of creditTransactions) {
+          if (!tx.campaignId) continue;
+          const clipperId = tx.wallet.clipperProfile.id;
+          const current = campaignsByClipper.get(clipperId) ?? new Set<string>();
+          current.add(tx.campaignId);
+          campaignsByClipper.set(clipperId, current);
+        }
         clipperMap.forEach((clipper, clipperId) => {
-          const campaigns = new Set(
-            creditTransactions
-              .filter(
-                (tx) =>
-                  tx.wallet.clipperProfile.id === clipperId && tx.campaignId,
-              )
-              .map((tx) => tx.campaignId!),
-          );
-          clipper.campaignCount = campaigns.size;
+          clipper.campaignCount = campaignsByClipper.get(clipperId)?.size ?? 0;
           clipper.remaining = Math.max(
             0,
             clipper.totalEarned - clipper.totalPaid,
@@ -9641,7 +8941,7 @@ export const adminRouter = createTRPCRouter({
             status: tx.status,
             campaignId: tx.campaignId,
             campaignName:
-              campaigns.find((c) => c.id === tx.campaignId)?.name || "—",
+              (tx.campaignId && campaignNameById.get(tx.campaignId)) || "—",
             description: tx.description,
             createdAt: tx.createdAt,
             clipperName: tx.wallet.clipperProfile.fullName,
@@ -9676,7 +8976,7 @@ export const adminRouter = createTRPCRouter({
             status: tx.status,
             campaignId: tx.campaignId,
             campaignName:
-              campaigns.find((c) => c.id === tx.campaignId)?.name || "—",
+              (tx.campaignId && campaignNameById.get(tx.campaignId)) || "—",
             description: tx.description,
             createdAt: tx.createdAt,
             clipperName: tx.wallet.clipperProfile.fullName,
@@ -9715,61 +9015,71 @@ export const adminRouter = createTRPCRouter({
           });
         }
 
-        // Buscar todas as transações relacionadas a esta campanha
-        const transactions = await ctx.db.transaction.findMany({
-          where: {
-            campaignId: campaign.id,
-            type: {
-              in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"], // Incluir ajustes no financeiro
-            },
-            status: "COMPLETED",
-          },
-          include: {
-            wallet: {
-              include: {
-                clipperProfile: {
-                  include: {
-                    user: {
-                      select: {
-                        email: true,
-                      },
-                    },
-                  },
+        // Só os campos usados abaixo (antes vinham as linhas inteiras)
+        const clipperSelect = {
+          wallet: {
+            select: {
+              clipperProfile: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  artisticName: true,
+                  phone: true,
+                  cpf: true,
+                  pixKey: true,
+                  user: { select: { email: true } },
                 },
               },
             },
           },
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+        } satisfies Prisma.TransactionSelect;
 
-        // Buscar todas as transações de PIX (WITHDRAWAL_COMPLETED) desta campanha
-        const pixTransactions = await ctx.db.transaction.findMany({
-          where: {
-            campaignId: campaign.id,
-            type: "WITHDRAWAL_COMPLETED",
-            status: "COMPLETED",
-          },
-          include: {
-            wallet: {
-              include: {
-                clipperProfile: {
-                  include: {
-                    user: {
-                      select: {
-                        email: true,
-                      },
-                    },
-                  },
-                },
+        const [transactions, pixTransactions] = await Promise.all([
+          // Buscar todas as transações relacionadas a esta campanha
+          ctx.db.transaction.findMany({
+            where: {
+              campaignId: campaign.id,
+              type: {
+                in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"], // Incluir ajustes no financeiro
               },
+              status: "COMPLETED",
             },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+            select: {
+              id: true,
+              type: true,
+              amount: true,
+              description: true,
+              status: true,
+              rankingPosition: true,
+              createdAt: true,
+              ...clipperSelect,
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          }),
+          // Buscar todas as transações de PIX (WITHDRAWAL_COMPLETED) desta campanha
+          ctx.db.transaction.findMany({
+            where: {
+              campaignId: campaign.id,
+              type: "WITHDRAWAL_COMPLETED",
+              status: "COMPLETED",
+            },
+            select: {
+              id: true,
+              amount: true,
+              description: true,
+              status: true,
+              createdAt: true,
+              withdrawalDetails: true,
+              proofUrls: true,
+              ...clipperSelect,
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          }),
+        ]);
 
         // Agrupar transações por clipador
         const clipperFinancials = new Map<
@@ -10280,7 +9590,10 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
-            application: rankingApplicationWhere(endDate),
+            application: {
+              campaignId: input.campaignId,
+              ...rankingApplicationWhere(endDate),
+            },
             applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
@@ -10377,38 +9690,45 @@ export const adminRouter = createTRPCRouter({
           persistedEntries.map((entry) => [entry.applicationId, entry]),
         );
 
+        // Prêmios já creditados (e não estornados) de todas as posições de uma vez
+        const priorPrizes = await findUnreversedTopPostersPrizesByPosition(
+          ctx.db,
+          entriesBase.map((entry) => ({
+            position: entry.position,
+            where: {
+              campaignId: input.campaignId,
+              type: "PRIZE_CREDIT",
+              status: "COMPLETED",
+              rankingPosition: entry.position,
+              clipPostId: null,
+              wallet: { clipperProfileId: entry.clipperProfileId },
+              OR: [
+                {
+                  metadata: {
+                    equals: {
+                      source: "top_posters_daily_rank",
+                      campaignId: input.campaignId,
+                      date: input.date,
+                      rankingPosition: entry.position,
+                    },
+                  },
+                },
+                {
+                  description: {
+                    contains: `Top Postadores ${dateFormatted}`,
+                  },
+                },
+              ],
+            },
+          })),
+        );
+
         const entries = await Promise.all(
           entriesBase.map(async (entry) => {
             const persistedEntry = persistedEntryByApplication.get(
               entry.applicationId,
             )!;
-            const priorPrize = await findUnreversedTopPostersPrize(ctx.db, {
-              where: {
-                campaignId: input.campaignId,
-                type: "PRIZE_CREDIT",
-                status: "COMPLETED",
-                rankingPosition: entry.position,
-                clipPostId: null,
-                wallet: { clipperProfileId: entry.clipperProfileId },
-                OR: [
-                  {
-                    metadata: {
-                      equals: {
-                        source: "top_posters_daily_rank",
-                        campaignId: input.campaignId,
-                        date: input.date,
-                        rankingPosition: entry.position,
-                      },
-                    },
-                  },
-                  {
-                    description: {
-                      contains: `Top Postadores ${dateFormatted}`,
-                    },
-                  },
-                ],
-              },
-            });
+            const priorPrize = priorPrizes.get(entry.position) ?? null;
 
             if (priorPrize && persistedEntry.prizeStatus !== "PAID") {
               await ctx.db.topClippersDailyRankingEntry.update({
@@ -10452,25 +9772,19 @@ export const adminRouter = createTRPCRouter({
             orderBy: [{ disqualifiedAt: "asc" }, { position: "asc" }],
           });
 
-        const [totalPostsInWindow, totalViewsInWindow] = await Promise.all([
-          ctx.db.clipPost.count({
-            where: {
+        const windowTotals = await ctx.db.clipPost.aggregate({
+          where: {
+            campaignId: input.campaignId,
+            status: "ELIGIBLE",
+            postedAt: { gte: startDate, lt: endDate },
+            application: {
               campaignId: input.campaignId,
-              status: "ELIGIBLE",
-              postedAt: { gte: startDate, lt: endDate },
-              application: rankingApplicationWhere(endDate),
+              ...rankingApplicationWhere(endDate),
             },
-          }),
-          ctx.db.clipPost.aggregate({
-            where: {
-              campaignId: input.campaignId,
-              status: "ELIGIBLE",
-              postedAt: { gte: startDate, lt: endDate },
-              application: rankingApplicationWhere(endDate),
-            },
-            _sum: { views: true },
-          }),
-        ]);
+          },
+          _count: { _all: true },
+          _sum: { views: true },
+        });
 
         return {
           date: input.date,
@@ -10498,8 +9812,8 @@ export const adminRouter = createTRPCRouter({
             (entry) => entry.prize > 0 && entry.prizeStatus !== "PAID",
           ),
           stats: {
-            totalPostsInWindow,
-            totalViewsInWindow: Number(totalViewsInWindow._sum.views || 0),
+            totalPostsInWindow: windowTotals._count._all,
+            totalViewsInWindow: Number(windowTotals._sum.views || 0),
           },
         };
       } catch (error: unknown) {
@@ -10718,7 +10032,10 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
-            application: rankingApplicationWhere(endDate),
+            application: {
+              campaignId: input.campaignId,
+              ...rankingApplicationWhere(endDate),
+            },
             applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
@@ -10776,16 +10093,104 @@ export const adminRouter = createTRPCRouter({
 
         const plan: PlanRow[] = [];
 
-        for (let index = 0; index < grouped.length; index++) {
-          const row = grouped[index]!;
+        const rows = grouped.map((row, index) => {
           const position = index + 1;
-          const amount = getTopClippersPrize(prizeTable, position);
           const app = row.applicationId ? appMap.get(row.applicationId) : null;
-          const clipperName = app?.clipperProfile
-            ? getClipperRankingDisplayName(app.clipperProfile)
-            : "Clipador";
-          const fullName =
-            getFirstName(app?.clipperProfile?.fullName) || "Clipador";
+          return {
+            row,
+            position,
+            amount: getTopClippersPrize(prizeTable, position),
+            app,
+            clipperName: app?.clipperProfile
+              ? getClipperRankingDisplayName(app.clipperProfile)
+              : "Clipador",
+            fullName: getFirstName(app?.clipperProfile?.fullName) || "Clipador",
+          };
+        });
+        const hasApplication = (line: (typeof rows)[number]) =>
+          Boolean(line.row.applicationId && line.app?.clipperProfileId);
+
+        // Prêmios já creditados (e não estornados) de todas as posições de uma vez
+        const priorPrizes = await findUnreversedTopPostersPrizesByPosition(
+          ctx.db,
+          rows
+            .filter((line) => hasApplication(line) && line.amount > 0)
+            .map((line) => ({
+              position: line.position,
+              where: {
+                campaignId: input.campaignId,
+                type: "PRIZE_CREDIT",
+                status: "COMPLETED",
+                rankingPosition: line.position,
+                clipPostId: null,
+                OR: [
+                  {
+                    metadata: {
+                      equals: {
+                        source: "top_posters_daily_rank",
+                        campaignId: input.campaignId,
+                        date: input.date,
+                        rankingPosition: line.position,
+                      },
+                    },
+                  },
+                  {
+                    description: {
+                      contains: `Top Postadores ${dateFormatted}`,
+                    },
+                  },
+                ],
+              },
+            })),
+        );
+
+        // Grava as posições sem prêmio prévio e lê as entradas de uma vez
+        const rowsToPersist = rows.filter(
+          (line) =>
+            hasApplication(line) &&
+            line.amount > 0 &&
+            !priorPrizes.has(line.position),
+        );
+        let rankingEntries: Array<{
+          id: string;
+          applicationId: string;
+          isDisqualified: boolean;
+          prizeStatus: string;
+        }> = [];
+        if (rowsToPersist.length > 0) {
+          await persistTopClippersEntries(
+            ctx.db,
+            snapshot.rankingId,
+            rowsToPersist.map((line) => ({
+              applicationId: line.row.applicationId,
+              clipperProfileId: line.app!.clipperProfileId,
+              position: line.position,
+              totalPosts: Number(line.row._count?.applicationId ?? 0),
+              totalViews: Number(line.row._sum?.views ?? 0),
+              prizeAmount: line.amount,
+            })),
+          );
+          rankingEntries = await ctx.db.topClippersDailyRankingEntry.findMany({
+            where: {
+              topClippersDailyRankingId: snapshot.rankingId,
+              applicationId: {
+                in: rowsToPersist.map((line) => line.row.applicationId),
+              },
+            },
+            select: {
+              id: true,
+              applicationId: true,
+              isDisqualified: true,
+              prizeStatus: true,
+            },
+          });
+        }
+        const rankingEntryByApplication = new Map(
+          rankingEntries.map((entry) => [entry.applicationId, entry]),
+        );
+
+        for (const line of rows) {
+          const { row, position, amount, app, clipperName, fullName } = line;
 
           if (!row.applicationId || !app?.clipperProfileId) {
             plan.push({
@@ -10811,30 +10216,7 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          const topPostersMeta: Prisma.InputJsonValue = {
-            source: "top_posters_daily_rank",
-            campaignId: input.campaignId,
-            date: input.date,
-            rankingPosition: position,
-          };
-
-          const priorPrize = await findUnreversedTopPostersPrize(ctx.db, {
-            where: {
-              campaignId: input.campaignId,
-              type: "PRIZE_CREDIT",
-              status: "COMPLETED",
-              rankingPosition: position,
-              clipPostId: null,
-              OR: [
-                { metadata: { equals: topPostersMeta } },
-                {
-                  description: { contains: `Top Postadores ${dateFormatted}` },
-                },
-              ],
-            },
-          });
-
-          if (priorPrize) {
+          if (priorPrizes.has(position)) {
             plan.push({
               kind: "skip",
               position,
@@ -10846,26 +10228,12 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          await persistTopClippersEntries(ctx.db, snapshot.rankingId, [
-            {
-              applicationId: row.applicationId,
-              clipperProfileId: app.clipperProfileId,
-              position,
-              totalPosts: Number(row._count?.applicationId ?? 0),
-              totalViews: Number(row._sum?.views ?? 0),
-              prizeAmount: amount,
-            },
-          ]);
-          const rankingEntry =
-            await ctx.db.topClippersDailyRankingEntry.findUniqueOrThrow({
-              where: {
-                topClippersDailyRankingId_applicationId: {
-                  topClippersDailyRankingId: snapshot.rankingId,
-                  applicationId: row.applicationId,
-                },
-              },
-              select: { id: true, isDisqualified: true, prizeStatus: true },
-            });
+          const rankingEntry = rankingEntryByApplication.get(row.applicationId);
+          if (!rankingEntry) {
+            throw new Error(
+              "Entrada do Top Clipadores não encontrada após gravar o ranking",
+            );
+          }
           if (rankingEntry.isDisqualified) {
             plan.push({
               kind: "skip",
@@ -11195,6 +10563,7 @@ export const adminRouter = createTRPCRouter({
       const campaignConfig = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
         select: {
+          name: true,
           topClippersRankingEnabled: true,
           topClippersPrizeTable: true,
         },
@@ -11222,121 +10591,90 @@ export const adminRouter = createTRPCRouter({
         input.date,
       );
 
-      type CampaignBreakdown = {
-        campaignId: string;
-        campaignName: string;
-        posts: number;
-        views: number;
-      };
-
-      type TopClipperAccumulator = {
-        clipperProfileId: string;
-        clipperName: string;
-        fullName: string;
-        imageUrl: string | null;
-        totalPosts: number;
-        totalViews: number;
-        campaigns: Map<string, CampaignBreakdown>;
-      };
-
-      const clippersMap = new Map<string, TopClipperAccumulator>();
-      let totalPostsInWindow = 0;
-      let totalViewsInWindow = 0;
-
-      const addClipperPost = (post: {
-        clipperProfileId: string;
-        clipperName: string;
-        fullName: string;
-        imageUrl: string | null;
-        campaignId: string;
-        campaignName: string;
-        views: number;
-      }) => {
-        const current = clippersMap.get(post.clipperProfileId) ?? {
-          clipperProfileId: post.clipperProfileId,
-          clipperName: post.clipperName,
-          fullName: post.fullName,
-          imageUrl: post.imageUrl,
-          totalPosts: 0,
-          totalViews: 0,
-          campaigns: new Map<string, CampaignBreakdown>(),
-        };
-        const campaignBreakdown = current.campaigns.get(post.campaignId) ?? {
-          campaignId: post.campaignId,
-          campaignName: post.campaignName,
-          posts: 0,
-          views: 0,
-        };
-
-        current.totalPosts += 1;
-        current.totalViews += post.views;
-        campaignBreakdown.posts += 1;
-        campaignBreakdown.views += post.views;
-        current.campaigns.set(post.campaignId, campaignBreakdown);
-        clippersMap.set(post.clipperProfileId, current);
-        totalPostsInWindow += 1;
-        totalViewsInWindow += post.views;
-      };
-
-      const livePosts = await ctx.db.clipPost.findMany({
+      // Uma inscrição por clipador na competição: agrupar por inscrição é o
+      // mesmo que agrupar por clipador. Só os perfis do top são carregados.
+      const grouped = await ctx.db.clipPost.groupBy({
+        by: ["applicationId"],
         where: {
           campaignId: input.campaignId,
           status: ClipPostStatus.ELIGIBLE,
           postedAt: { gte: startDate, lt: endDate },
-          application: rankingApplicationWhere(endDate),
-        },
-        select: {
-          campaignId: true,
-          views: true,
-          campaign: { select: { name: true } },
           application: {
-            select: {
-              clipperProfileId: true,
-              clipperProfile: {
-                select: {
-                  fullName: true,
-                  artisticName: true,
-                  user: { select: { imageUrl: true } },
-                },
-              },
-            },
+            campaignId: input.campaignId,
+            ...rankingApplicationWhere(endDate),
           },
         },
+        _count: { applicationId: true },
+        _sum: { views: true },
       });
 
-      for (const post of livePosts) {
-        const profile = post.application.clipperProfile;
-        addClipperPost({
-          clipperProfileId: post.application.clipperProfileId,
-          clipperName: getClipperRankingDisplayName(profile),
-          fullName: getFirstName(profile.fullName) || "Clipador",
-          imageUrl: profile.user.imageUrl,
-          campaignId: post.campaignId,
-          campaignName: post.campaign.name,
-          views: Number(post.views || 0),
-        });
-      }
+      const groups = grouped.map((row) => ({
+        applicationId: row.applicationId,
+        totalPosts: row._count.applicationId,
+        totalViews: Number(row._sum.views || 0),
+      }));
+      const totalPostsInWindow = groups.reduce(
+        (sum, row) => sum + row.totalPosts,
+        0,
+      );
+      const totalViewsInWindow = groups.reduce(
+        (sum, row) => sum + row.totalViews,
+        0,
+      );
 
-      const entries = Array.from(clippersMap.values())
+      const topGroups = groups
         .sort((a, b) => {
           if (b.totalPosts !== a.totalPosts) return b.totalPosts - a.totalPosts;
           return b.totalViews - a.totalViews;
         })
-        .slice(0, input.limit)
-        .map((clipper, index) => ({
-          position: index + 1,
-          clipperProfileId: clipper.clipperProfileId,
-          clipperName: clipper.clipperName,
-          fullName: clipper.fullName,
-          imageUrl: clipper.imageUrl,
-          prize: getTopClippersPrize(prizeTable, index + 1),
-          totalPosts: clipper.totalPosts,
-          totalViews: clipper.totalViews,
-          campaigns: Array.from(clipper.campaigns.values()).sort((a, b) => {
-            if (b.posts !== a.posts) return b.posts - a.posts;
-            return b.views - a.views;
-          }),
-        }));
+        .slice(0, input.limit);
+
+      const applications =
+        topGroups.length > 0
+          ? await ctx.db.clipperApplication.findMany({
+              where: { id: { in: topGroups.map((row) => row.applicationId) } },
+              select: {
+                id: true,
+                clipperProfileId: true,
+                clipperProfile: {
+                  select: {
+                    fullName: true,
+                    artisticName: true,
+                    user: { select: { imageUrl: true } },
+                  },
+                },
+              },
+            })
+          : [];
+      const applicationById = new Map(
+        applications.map((application) => [application.id, application]),
+      );
+
+      const entries = topGroups.flatMap((row, index) => {
+        const application = applicationById.get(row.applicationId);
+        if (!application) return [];
+        const profile = application.clipperProfile;
+        return [
+          {
+            position: index + 1,
+            clipperProfileId: application.clipperProfileId,
+            clipperName: getClipperRankingDisplayName(profile),
+            fullName: getFirstName(profile.fullName) || "Clipador",
+            imageUrl: profile.user.imageUrl,
+            prize: getTopClippersPrize(prizeTable, index + 1),
+            totalPosts: row.totalPosts,
+            totalViews: row.totalViews,
+            campaigns: [
+              {
+                campaignId: input.campaignId,
+                campaignName: campaignConfig.name,
+                posts: row.totalPosts,
+                views: row.totalViews,
+              },
+            ],
+          },
+        ];
+      });
 
       return {
         date: input.date,
@@ -11348,7 +10686,7 @@ export const adminRouter = createTRPCRouter({
         stats: {
           totalPostsInWindow,
           totalViewsInWindow,
-          totalClippersWithPosts: clippersMap.size,
+          totalClippersWithPosts: groups.length,
           totalCampaigns: 1,
         },
       };
@@ -11427,16 +10765,22 @@ export const adminRouter = createTRPCRouter({
             isDisqualified: boolean;
           }
         >();
-        for (const row of core.rawRows) {
-          const dre = await ctx.db.dailyRankingEntry.findUnique({
-            where: { id: row.dailyRankingEntryId },
-            select: {
-              clipPostId: true,
-              dailyPrizeStatus: true,
-              isDisqualified: true,
-            },
-          });
-          if (dre) dreStatusMap.set(row.dailyRankingEntryId, dre);
+        const dres =
+          core.rawRows.length > 0
+            ? await ctx.db.dailyRankingEntry.findMany({
+                where: {
+                  id: { in: core.rawRows.map((row) => row.dailyRankingEntryId) },
+                },
+                select: {
+                  id: true,
+                  clipPostId: true,
+                  dailyPrizeStatus: true,
+                  isDisqualified: true,
+                },
+              })
+            : [];
+        for (const { id, ...dre } of dres) {
+          dreStatusMap.set(id, dre);
         }
 
         const activeRows = core.rawRows.filter((row) => {
@@ -11445,6 +10789,16 @@ export const adminRouter = createTRPCRouter({
         });
 
         const topRows = activeRows.slice(0, core.topCount);
+        const topClipPosts =
+          topRows.length > 0
+            ? await ctx.db.clipPost.findMany({
+                where: { id: { in: topRows.map((row) => row.clipPostId) } },
+                select: { id: true, status: true },
+              })
+            : [];
+        const clipPostStatusById = new Map(
+          topClipPosts.map((clipPost) => [clipPost.id, clipPost.status]),
+        );
 
         for (let index = 0; index < topRows.length; index++) {
           const row = topRows[index]!;
@@ -11466,12 +10820,10 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          const clipPost = await ctx.db.clipPost.findUnique({
-            where: { id: row.clipPostId },
-            select: { status: true },
-          });
-
-          if (clipPost?.status === ClipPostStatus.DISQUALIFIED) {
+          if (
+            clipPostStatusById.get(row.clipPostId) ===
+            ClipPostStatus.DISQUALIFIED
+          ) {
             plan.push({
               kind: "skip",
               position,
@@ -11983,6 +11335,38 @@ export const adminRouter = createTRPCRouter({
 
         const plan: PlanRow[] = [];
 
+        // Prêmios mensais já creditados, para todas as posições premiadas de
+        // uma vez (mesmo critério da consulta por posição e clipador)
+        const prizedRows = board.rows.filter(
+          (row) => getPrizeForPosition(prizeTable, row.position) > 0,
+        );
+        const priorPrizes =
+          prizedRows.length > 0
+            ? await ctx.db.transaction.findMany({
+                where: {
+                  campaignId: input.campaignId,
+                  type: "PRIZE_CREDIT",
+                  status: "COMPLETED",
+                  clipPostId: null,
+                  description: { contains: "Ranking Mensal" },
+                  OR: prizedRows.map((row) => ({
+                    rankingPosition: row.position,
+                    wallet: { clipperProfileId: row.clipperProfileId },
+                  })),
+                },
+                select: {
+                  rankingPosition: true,
+                  wallet: { select: { clipperProfileId: true } },
+                },
+              })
+            : [];
+        const priorPrizeKeys = new Set(
+          priorPrizes.map(
+            (prize) =>
+              `${prize.rankingPosition}:${prize.wallet.clipperProfileId}`,
+          ),
+        );
+
         for (const row of board.rows) {
           const position = row.position;
           const amount = getPrizeForPosition(prizeTable, position);
@@ -12001,19 +11385,7 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          const priorPrize = await ctx.db.transaction.findFirst({
-            where: {
-              campaignId: input.campaignId,
-              type: "PRIZE_CREDIT",
-              status: "COMPLETED",
-              rankingPosition: position,
-              clipPostId: null,
-              wallet: { clipperProfileId: row.clipperProfileId },
-              description: { contains: "Ranking Mensal" },
-            },
-          });
-
-          if (priorPrize) {
+          if (priorPrizeKeys.has(`${position}:${row.clipperProfileId}`)) {
             plan.push({
               kind: "skip",
               position,
@@ -13489,299 +12861,6 @@ export const adminRouter = createTRPCRouter({
       }
     }),
 
-  getDailyRanking: adminProcedure
-    .input(
-      z.object({
-        campaignId: z.string(),
-      }),
-    )
-    .query(async ({ ctx, input }) => {
-      try {
-        const now = new Date();
-        const brasiliaOffset = -3 * 60;
-        const brasiliaTime = new Date(
-          now.getTime() + (brasiliaOffset - now.getTimezoneOffset()) * 60000,
-        );
-        const rankingDateStr = brasiliaTime.toISOString().split("T")[0]!;
-
-        const startOfDay = new Date(`${rankingDateStr}T00:00:00.000Z`);
-        const endOfDay = new Date(`${rankingDateStr}T23:59:59.999Z`);
-
-        const dailyRanking = await ctx.db.dailyRanking.findFirst({
-          where: {
-            campaignId: input.campaignId,
-            rankingDate: {
-              gte: startOfDay,
-              lte: endOfDay,
-            },
-          },
-          include: {
-            campaign: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-              },
-            },
-            rankingRule: {
-              select: {
-                dailyTopCount: true,
-                dailyTotalPrize: true,
-                dailyPrizeTable: true,
-              },
-            },
-          },
-        });
-
-        if (!dailyRanking) {
-          return {
-            success: false,
-            message: `Ranking diário não encontrado para a data ${rankingDateStr}`,
-            ranking: null,
-            entries: [],
-            totalEntries: 0,
-            date: rankingDateStr,
-          };
-        }
-
-        const entries = await ctx.db.dailyRankingEntry.findMany({
-          where: {
-            dailyRankingId: dailyRanking.id,
-          },
-          orderBy: {
-            position: "asc",
-          },
-          include: {
-            clipPost: {
-              select: {
-                id: true,
-                submittedUrl: true,
-                thumbnailUrl: true,
-                platform: true,
-                username: true,
-              },
-            },
-            application: {
-              include: {
-                clipperProfile: {
-                  select: {
-                    id: true,
-                    artisticName: true,
-                    fullName: true,
-                  },
-                },
-              },
-            },
-          },
-        });
-
-        const formattedEntries = entries.map((entry) => {
-          const clipperName =
-            entry.application.clipperProfile.artisticName ||
-            entry.application.clipperProfile.fullName;
-
-          return {
-            id: entry.id,
-            clipPostId: entry.clipPostId,
-            position: entry.position,
-            dailyViews: Number(entry.dailyViews),
-            dailyLikes: entry.dailyLikes,
-            dailyComments: entry.dailyComments,
-            dailyShares: entry.dailyShares,
-            dailySaves: entry.dailySaves,
-            postUrl: entry.postUrl || entry.clipPost.submittedUrl,
-            thumbnailUrl: entry.postThumbnail || entry.clipPost.thumbnailUrl,
-            platform: entry.platform || entry.clipPost.platform,
-            username: entry.clipPost.username,
-            clipperProfileId: entry.application.clipperProfile.id,
-            clipperName,
-            clipperImageUrl: entry.clipperImageUrl,
-            dailyPrizeAmount: entry.dailyPrizeAmount,
-            dailyPrizeStatus: entry.dailyPrizeStatus,
-            postedAt: entry.postedAt?.toISOString(),
-          };
-        });
-
-        return {
-          success: true,
-          message: "Ranking diário encontrado",
-          ranking: {
-            id: dailyRanking.id,
-            campaignId: dailyRanking.campaignId,
-            campaignName: dailyRanking.campaign.name,
-            campaignSlug: dailyRanking.campaign.slug,
-            rankingDate: dailyRanking.rankingDate.toISOString(),
-            totalPosts: dailyRanking.totalPosts,
-            totalDailyViews: Number(dailyRanking.totalDailyViews),
-            totalClippers: dailyRanking.totalClippers,
-            bestDailyViews: dailyRanking.bestDailyViews
-              ? Number(dailyRanking.bestDailyViews)
-              : null,
-            averageViews: dailyRanking.averageViews,
-            dailyTopCount: dailyRanking.rankingRule.dailyTopCount,
-            dailyTotalPrize: dailyRanking.rankingRule.dailyTotalPrize,
-            dailyPrizeTable: dailyRanking.rankingRule.dailyPrizeTable,
-          },
-          entries: formattedEntries,
-          totalEntries: formattedEntries.length,
-          date: rankingDateStr,
-        };
-      } catch (error: any) {
-        console.error("Erro ao buscar ranking diário:", error);
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao buscar ranking diário",
-        });
-      }
-    }),
-
-  removeDailyRankingEntry: adminProcedure
-    .input(
-      z.object({
-        entryId: z.string(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      try {
-        const entryToRemove = await ctx.db.dailyRankingEntry.findUnique({
-          where: { id: input.entryId },
-          include: {
-            dailyRanking: {
-              include: {
-                campaign: {
-                  select: {
-                    name: true,
-                  },
-                },
-              },
-            },
-            clipPost: {
-              select: {
-                submittedUrl: true,
-              },
-            },
-            application: {
-              include: {
-                clipperProfile: {
-                  select: {
-                    fullName: true,
-                    artisticName: true,
-                  },
-                },
-              },
-            },
-          },
-        });
-
-        if (!entryToRemove) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Entrada do ranking não encontrada",
-          });
-        }
-
-        const positionRemoved = entryToRemove.position;
-        const dailyRankingId = entryToRemove.dailyRankingId;
-
-        await ctx.db.dailyRankingEntry.delete({
-          where: { id: input.entryId },
-        });
-
-        const entriesToUpdate = await ctx.db.dailyRankingEntry.findMany({
-          where: {
-            dailyRankingId: dailyRankingId,
-            position: {
-              gt: positionRemoved,
-            },
-          },
-          orderBy: {
-            position: "asc",
-          },
-        });
-
-        for (const entry of entriesToUpdate) {
-          await ctx.db.dailyRankingEntry.update({
-            where: { id: entry.id },
-            data: {
-              position: entry.position - 1,
-            },
-          });
-        }
-
-        const remainingEntries = await ctx.db.dailyRankingEntry.findMany({
-          where: { dailyRankingId: dailyRankingId },
-        });
-
-        const totalPosts = remainingEntries.length;
-        const totalDailyViews = remainingEntries.reduce(
-          (sum, e) => sum + Number(e.dailyViews),
-          0,
-        );
-        const bestDailyViews =
-          remainingEntries.length > 0
-            ? Math.max(...remainingEntries.map((e) => Number(e.dailyViews)))
-            : 0;
-        const averageViews = totalPosts > 0 ? totalDailyViews / totalPosts : 0;
-        const uniqueClippers = new Set(
-          remainingEntries.map((e) => e.clipperProfileId).filter(Boolean),
-        );
-
-        await ctx.db.dailyRanking.update({
-          where: { id: dailyRankingId },
-          data: {
-            totalPosts,
-            totalDailyViews: BigInt(totalDailyViews),
-            totalClippers: uniqueClippers.size,
-            bestDailyViews: bestDailyViews > 0 ? BigInt(bestDailyViews) : null,
-            averageViews,
-          },
-        });
-
-        await ctx.db.auditLog.create({
-          data: {
-            userId: ctx.userId,
-            action: "DELETE",
-            entityType: "DailyRankingEntry",
-            entityId: input.entryId,
-            campaignId: entryToRemove.dailyRanking.campaignId,
-            changes: {
-              action: "remove_from_daily_ranking",
-              entryId: input.entryId,
-              clipPostId: entryToRemove.clipPostId,
-              postUrl: entryToRemove.clipPost.submittedUrl,
-              clipperName:
-                entryToRemove.application.clipperProfile.artisticName ||
-                entryToRemove.application.clipperProfile.fullName,
-              position: positionRemoved,
-              dailyViews: Number(entryToRemove.dailyViews),
-              entriesRepositioned: entriesToUpdate.length,
-              campaignName: entryToRemove.dailyRanking.campaign.name,
-            },
-          },
-        });
-
-        return {
-          success: true,
-          message: `Vídeo removido do ranking. ${entriesToUpdate.length} vídeos foram reposicionados.`,
-          removedPosition: positionRemoved,
-          repositionedCount: entriesToUpdate.length,
-        };
-      } catch (error: any) {
-        console.error("Erro ao remover vídeo do ranking:", error);
-        if (error instanceof TRPCError) {
-          throw error;
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao remover vídeo do ranking",
-        });
-      }
-    }),
-
-  /**
-   * Desqualifica o clip (DISQUALIFIED) e remove a entrada do DailyRanking do dia,
-   * com reposicionamento e atualização de totais (transação atômica).
-   */
   disqualifyDailyRankingEntry: adminProcedure
     .input(
       z.object({
@@ -13986,200 +13065,6 @@ export const adminRouter = createTRPCRouter({
             ? error.message
             : "Erro ao reverter desclassificação";
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
-      }
-    }),
-
-  generateDailyRankingText: adminProcedure
-    .input(
-      z.object({
-        campaignId: z.string(),
-      }),
-    )
-    .query(async ({ ctx, input }) => {
-      try {
-        const now = new Date();
-        const brasiliaOffset = -3 * 60;
-        const brasiliaTime = new Date(
-          now.getTime() + (brasiliaOffset - now.getTimezoneOffset()) * 60000,
-        );
-        const rankingDateStr = brasiliaTime.toISOString().split("T")[0]!;
-
-        const campaign = await ctx.db.campaign.findUnique({
-          where: { id: input.campaignId },
-          include: {
-            activeRankingRule: {
-              select: {
-                dailyTopCount: true,
-                dailyTotalPrize: true,
-                dailyPrizeTable: true,
-              },
-            },
-          },
-        });
-
-        if (!campaign) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Campanha não encontrada",
-          });
-        }
-
-        const startOfDay = new Date(`${rankingDateStr}T00:00:00.000Z`);
-        const endOfDay = new Date(`${rankingDateStr}T23:59:59.999Z`);
-
-        const dailyRanking = await ctx.db.dailyRanking.findFirst({
-          where: {
-            campaignId: input.campaignId,
-            rankingDate: {
-              gte: startOfDay,
-              lte: endOfDay,
-            },
-          },
-        });
-
-        if (!dailyRanking) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: `Ranking diário não encontrado para a data ${rankingDateStr}`,
-          });
-        }
-
-        const entries = await ctx.db.dailyRankingEntry.findMany({
-          where: {
-            dailyRankingId: dailyRanking.id,
-          },
-          orderBy: {
-            position: "asc",
-          },
-          include: {
-            application: {
-              include: {
-                clipperProfile: {
-                  select: {
-                    artisticName: true,
-                    fullName: true,
-                  },
-                },
-              },
-            },
-          },
-        });
-
-        const prizeTable = campaign.activeRankingRule
-          ?.dailyPrizeTable as Record<string, number> | null;
-        const dailyTopCount = campaign.activeRankingRule?.dailyTopCount || 15;
-
-        const getPrizeForPosition = (position: number): number => {
-          if (!prizeTable) return 0;
-
-          if (prizeTable[String(position)]) {
-            return prizeTable[String(position)]!;
-          }
-
-          for (const key of Object.keys(prizeTable)) {
-            if (key.includes("-")) {
-              const [start, end] = key.split("-").map(Number);
-              if (start && end && position >= start && position <= end) {
-                return prizeTable[key]!;
-              }
-            }
-          }
-
-          return 0;
-        };
-
-        const getPositionEmoji = (position: number): string => {
-          const emojis: Record<number, string> = {
-            1: "🥇",
-            2: "🥈",
-            3: "🥉",
-            4: "4️⃣",
-            5: "5️⃣",
-            6: "6️⃣",
-            7: "7️⃣",
-            8: "8️⃣",
-            9: "9️⃣",
-            10: "🔟",
-            11: "1️⃣1️⃣",
-            12: "1️⃣2️⃣",
-            13: "1️⃣3️⃣",
-            14: "1️⃣4️⃣",
-            15: "1️⃣5️⃣",
-          };
-          return emojis[position] || `${position}️⃣`;
-        };
-
-        const formatNumber = (num: number): string => {
-          return new Intl.NumberFormat("pt-BR").format(num);
-        };
-
-        const formatCurrency = (value: number): string => {
-          return `R$ ${formatNumber(value)}`;
-        };
-
-        const dateObj = new Date(`${rankingDateStr}T12:00:00`);
-        const formattedDate = new Intl.DateTimeFormat("pt-BR", {
-          day: "numeric",
-          month: "long",
-          year: "numeric",
-        }).format(dateObj);
-
-        let text = `🏆 **RANKING DIÁRIO — ${campaign.name}**\n`;
-        text += `📅 **${formattedDate}**\n\n`;
-
-        let totalPrizeDistributed = 0;
-        let bestPerformance = 0;
-        const entriesToShow = entries.slice(0, dailyTopCount);
-
-        for (const entry of entriesToShow) {
-          const clipperName =
-            entry.application.clipperProfile.artisticName ||
-            entry.application.clipperProfile.fullName;
-          const prize = getPrizeForPosition(entry.position);
-          totalPrizeDistributed += prize;
-
-          const views = Number(entry.dailyViews);
-          if (views > bestPerformance) {
-            bestPerformance = views;
-          }
-
-          const emoji = getPositionEmoji(entry.position);
-
-          text += `${emoji} **${clipperName} — ${formatCurrency(prize)}**\n`;
-          text += `📱 ${formatNumber(views)} views • ❤️ ${formatNumber(entry.dailyLikes)} • 💬 ${formatNumber(entry.dailyComments)} • 🔄 ${formatNumber(entry.dailyShares)}`;
-
-          if (entry.dailySaves && entry.dailySaves > 0) {
-            text += ` • 💾 ${formatNumber(entry.dailySaves)}`;
-          }
-
-          text += `\n\n`;
-        }
-
-        text += `🎯 **Total de posts submetidos:** ${entries.length}\n`;
-        text += `⚡ **Maior desempenho:** ${formatNumber(bestPerformance)} views\n`;
-        text += `💵 **Premiação total distribuída:** ${formatCurrency(totalPrizeDistributed)}`;
-
-        return {
-          success: true,
-          text,
-          stats: {
-            totalPosts: entries.length,
-            bestPerformance,
-            totalPrizeDistributed,
-            entriesInRanking: entriesToShow.length,
-            date: rankingDateStr,
-            campaignName: campaign.name,
-          },
-        };
-      } catch (error: any) {
-        console.error("Erro ao gerar texto do ranking:", error);
-        if (error instanceof TRPCError) {
-          throw error;
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao gerar texto do ranking",
-        });
       }
     }),
 
@@ -14594,38 +13479,96 @@ export const adminRouter = createTRPCRouter({
           totalDailyViews: true,
           totalClippers: true,
           announced: true,
-          dailyPixPayoutCompleted: true,
-          entries: {
-            select: {
-              id: true,
-              clipperProfileId: true,
-              position: true,
-              dailyPrizeStatus: true,
-              dailyPrizeAmount: true,
-              dailyPrizePaid: true,
-              dailyPixStatus: true,
-              isDisqualified: true,
-              application: {
-                select: {
-                  clipperProfile: {
-                    select: { pixPayoutEligible: true },
-                  },
-                },
-              },
-            },
-            orderBy: { position: "asc" },
-          },
         },
         orderBy: { rankingDate: "asc" },
       });
-      const processingPixTransactions = await ctx.db.transaction.findMany({
-        where: {
-          campaignId: input.campaignId,
-          status: "PROCESSING",
-          metadata: { path: ["source"], equals: "daily_ranking_pix" },
-        },
-        select: { metadata: true },
-      });
+      const dailyRankingIds = dailyRankings.map((dr) => dr.id);
+
+      const topPostersPrizeTable = campaign.topClippersRankingEnabled
+        ? parseTopClippersPrizeTable(campaign.topClippersPrizeTable)
+        : [];
+      const topPostersCount = Math.max(
+        0,
+        ...topPostersPrizeTable.map((entry) => entry.position),
+      );
+      const rankingDates = dailyRankings.map(
+        (dr) => dr.rankingDate.toISOString().split("T")[0]!,
+      );
+
+      const [
+        activeEntryCounts,
+        prizeEntries,
+        processingPixTransactions,
+        topPostersClippersByDate,
+      ] = await Promise.all([
+        // Só a contagem das entradas ativas (podem ser milhares por dia)
+        dailyRankingIds.length > 0
+          ? ctx.db.dailyRankingEntry.groupBy({
+              by: ["dailyRankingId"],
+              where: {
+                dailyRankingId: { in: dailyRankingIds },
+                isDisqualified: false,
+              },
+              _count: { _all: true },
+            })
+          : [],
+        // Entradas premiadas (somas, status de pagamento e checagem do PIX)
+        dailyRankingIds.length > 0
+          ? ctx.db.dailyRankingEntry.findMany({
+              where: {
+                dailyRankingId: { in: dailyRankingIds },
+                isDisqualified: false,
+                dailyPrizeAmount: { gt: 0 },
+              },
+              select: {
+                id: true,
+                dailyRankingId: true,
+                dailyPrizeStatus: true,
+                dailyPrizeAmount: true,
+                dailyPrizePaid: true,
+                dailyPixStatus: true,
+                application: {
+                  select: {
+                    clipperProfile: {
+                      select: { pixPayoutEligible: true },
+                    },
+                  },
+                },
+              },
+              orderBy: { position: "asc" },
+            })
+          : [],
+        ctx.db.transaction.findMany({
+          where: {
+            campaignId: input.campaignId,
+            status: "PROCESSING",
+            metadata: { path: ["source"], equals: "daily_ranking_pix" },
+          },
+          select: { metadata: true },
+        }),
+        topPostersCount > 0 && rankingDates.length > 0
+          ? countTopPostersClippersByDate(
+              ctx.db,
+              input.campaignId,
+              rankingDates,
+            )
+          : new Map<string, number>(),
+      ]);
+
+      const activeEntriesByDailyRankingId = new Map(
+        activeEntryCounts.map((row) => [row.dailyRankingId, row._count._all]),
+      );
+      const prizeEntriesByDailyRankingId = new Map<
+        string,
+        typeof prizeEntries
+      >();
+      for (const entry of prizeEntries) {
+        const current =
+          prizeEntriesByDailyRankingId.get(entry.dailyRankingId) ?? [];
+        current.push(entry);
+        prizeEntriesByDailyRankingId.set(entry.dailyRankingId, current);
+      }
+
       const processingPixByDailyRankingId = new Map<
         string,
         typeof processingPixTransactions
@@ -14639,70 +13582,25 @@ export const adminRouter = createTRPCRouter({
         processingPixByDailyRankingId.set(dailyRankingId, current);
       }
 
+      // Prêmio dos Top Postadores: as posições pagas são as primeiras N do
+      // dia, então o total depende só de quantos clipadores entraram no top.
       const topPostersPrizeByDate = new Map<string, number>();
-      if (campaign.topClippersRankingEnabled) {
-        const topPostersPrizeTable = parseTopClippersPrizeTable(
-          campaign.topClippersPrizeTable,
-        );
-        const topPostersCount = Math.max(
-          0,
-          ...topPostersPrizeTable.map((entry) => entry.position),
-        );
-
-        if (topPostersCount > 0) {
-          await Promise.all(
-            dailyRankings.map(async (dailyRanking) => {
-              const dateStr = dailyRanking.rankingDate
-                .toISOString()
-                .split("T")[0]!;
-              const { startDate, endDate } =
-                getTopPostersDailyWindowBrt(dateStr);
-              const topClippersDisqualified =
-                await ctx.db.topClippersDailyRankingEntry.findMany({
-                  where: {
-                    isDisqualified: true,
-                    ranking: {
-                      campaignId: input.campaignId,
-                      rankingDate: topClippersRankingDate(dateStr),
-                    },
-                  },
-                  select: { applicationId: true },
-                });
-              const rankedClippers = await ctx.db.clipPost.groupBy({
-                by: ["applicationId"],
-                where: {
-                  campaignId: input.campaignId,
-                  status: "ELIGIBLE",
-                  postedAt: { gte: startDate, lt: endDate },
-                  application: rankingApplicationWhere(endDate),
-                  applicationId: {
-                    notIn: topClippersDisqualified.map(
-                      (entry) => entry.applicationId,
-                    ),
-                  },
-                },
-                _count: { applicationId: true },
-                orderBy: { _count: { applicationId: "desc" } },
-                take: topPostersCount,
-              });
-              const total = rankedClippers.reduce(
-                (sum, _row, index) =>
-                  sum + getTopClippersPrize(topPostersPrizeTable, index + 1),
-                0,
-              );
-              topPostersPrizeByDate.set(dateStr, total);
-            }),
-          );
+      for (const [dateStr, clippers] of topPostersClippersByDate) {
+        let total = 0;
+        for (
+          let position = 1;
+          position <= Math.min(clippers, topPostersCount);
+          position++
+        ) {
+          total += getTopClippersPrize(topPostersPrizeTable, position);
         }
+        topPostersPrizeByDate.set(dateStr, total);
       }
 
       const days = dailyRankings.map((dr) => {
         const dateStr = dr.rankingDate.toISOString().split("T")[0]!;
-        const activeEntries = dr.entries.filter((e) => !e.isDisqualified);
-        const prizeEntries = activeEntries.filter(
-          (e) => e.dailyPrizeAmount > 0,
-        );
-        const totalEntries = activeEntries.length;
+        const prizeEntries = prizeEntriesByDailyRankingId.get(dr.id) ?? [];
+        const totalEntries = activeEntriesByDailyRankingId.get(dr.id) ?? 0;
         const paidEntries = prizeEntries.filter(
           (e) => e.dailyPrizeStatus === "PAID",
         ).length;
@@ -14829,29 +13727,121 @@ export const adminRouter = createTRPCRouter({
         dateFilter.lt = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
       }
 
-      const posts = await ctx.db.clipPost.findMany({
-        where: {
-          campaignId: { in: input.campaignIds },
-          status: "ELIGIBLE",
-          ...(isAll ? {} : { postedAt: dateFilter }),
-        },
-        select: {
-          id: true,
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-          platform: true,
-          username: true,
-          thumbnailUrl: true,
-          submittedUrl: true,
-          postedAt: true,
-          campaign: { select: { name: true } },
-        },
-      });
-
       const thresholds = [10_000, 50_000, 100_000, 500_000, 1_000_000] as const;
+
+      // Tudo é agregado no banco (antes cada post elegível vinha para o Node).
+      // has_er replica calculateEngagementRate(...) > 1 em float8, com o mesmo
+      // truncamento em 2 casas e a mesma ordem de operações do JS.
+      const postedAtSqlFor = (alias: string) =>
+        isAll
+          ? Prisma.empty
+          : Prisma.sql`AND ${Prisma.raw(`${alias}."postedAt"`)} >= ${dateFilter.gte}::timestamp AND ${Prisma.raw(`${alias}."postedAt"`)} < ${dateFilter.lt}::timestamp`;
+      const hasErSql = (alias: string) => {
+        const col = (name: string) => Prisma.raw(`${alias}."${name}"`);
+        return Prisma.sql`(CASE WHEN ${col("views")} > 0
+          THEN trunc(((${col("likes")}::bigint + ${col("comments")} + ${col("shares")} + COALESCE(${col("saves")}, 0))::float8 / ${col("views")}::float8 * 100) * 100) / 100 > 1
+          ELSE false END)`;
+      };
+
+      type DataMetricsAggRow = {
+        threshold: number | null;
+        platform: Platform;
+        posts: number;
+        withER: number;
+        views: bigint;
+        likes: bigint;
+        comments: bigint;
+        shares: bigint;
+        saves: bigint;
+        erViews: bigint;
+        erLikes: bigint;
+        erComments: bigint;
+        erShares: bigint;
+        erSaves: bigint;
+      };
+      type TopVideoRow = {
+        id: string;
+        username: string | null;
+        views: bigint;
+        likes: number;
+        comments: number;
+        shares: number;
+        saves: number | null;
+        platform: Platform;
+        thumbnailUrl: string | null;
+        submittedUrl: string;
+        postedAt: Date | null;
+        campaignName: string;
+      };
+
+      const [aggRows, topVideoRows] = await Promise.all([
+        // threshold NULL = todos os posts (resumo); demais linhas = por faixa
+        ctx.db.$queryRaw<DataMetricsAggRow[]>`
+          WITH p AS MATERIALIZED (
+            SELECT
+              platform,
+              views,
+              likes,
+              comments,
+              shares,
+              COALESCE(saves, 0) AS saves,
+              ${hasErSql('"ClipPost"')} AS has_er
+            FROM "ClipPost"
+            WHERE "campaignId" = ANY(${input.campaignIds})
+              AND status = 'ELIGIBLE'
+              ${postedAtSqlFor('"ClipPost"')}
+          ),
+          tiers AS (
+            SELECT NULL::int AS threshold, p.* FROM p
+            UNION ALL
+            SELECT t.threshold, p.*
+            FROM p
+            JOIN unnest(ARRAY[${Prisma.raw(thresholds.join(", "))}]) AS t(threshold)
+              ON p.views >= t.threshold
+          )
+          SELECT
+            threshold,
+            platform,
+            COUNT(*)::int AS posts,
+            (COUNT(*) FILTER (WHERE has_er))::int AS "withER",
+            COALESCE(SUM(views), 0)::bigint AS views,
+            COALESCE(SUM(likes), 0)::bigint AS likes,
+            COALESCE(SUM(comments), 0)::bigint AS comments,
+            COALESCE(SUM(shares), 0)::bigint AS shares,
+            COALESCE(SUM(saves), 0)::bigint AS saves,
+            COALESCE(SUM(views) FILTER (WHERE has_er), 0)::bigint AS "erViews",
+            COALESCE(SUM(likes) FILTER (WHERE has_er), 0)::bigint AS "erLikes",
+            COALESCE(SUM(comments) FILTER (WHERE has_er), 0)::bigint AS "erComments",
+            COALESCE(SUM(shares) FILTER (WHERE has_er), 0)::bigint AS "erShares",
+            COALESCE(SUM(saves) FILTER (WHERE has_er), 0)::bigint AS "erSaves"
+          FROM tiers
+          GROUP BY threshold, platform
+        `,
+        ctx.db.$queryRaw<TopVideoRow[]>`
+          SELECT
+            cp.id,
+            cp.username,
+            cp.views,
+            cp.likes,
+            cp.comments,
+            cp.shares,
+            cp.saves,
+            cp.platform,
+            cp."thumbnailUrl",
+            cp."submittedUrl",
+            cp."postedAt",
+            c.name AS "campaignName"
+          FROM "ClipPost" cp
+          JOIN "Campaign" c ON c.id = cp."campaignId"
+          WHERE cp."campaignId" = ANY(${input.campaignIds})
+            AND cp.status = 'ELIGIBLE'
+            ${postedAtSqlFor("cp")}
+            AND cp.views >= 10000
+            AND ${hasErSql("cp")}
+          ORDER BY cp.views DESC, cp.id
+          LIMIT 20
+        `,
+      ]);
 
       type TierData = {
         threshold: number;
@@ -14871,110 +13861,81 @@ export const adminRouter = createTRPCRouter({
               ? `${t / 1_000}k`
               : String(t);
 
-        const matching = posts.filter((p) => Number(p.views) >= t);
-
-        const withER = matching.filter((p) => {
-          return (
-            calculateEngagementRate(
-              Number(p.views),
-              p.likes,
-              p.comments,
-              p.shares,
-              p.saves ?? 0,
-            ) > 1
-          );
-        });
-
-        const tierViews = withER.reduce((sum, p) => sum + Number(p.views), 0);
+        const rows = aggRows.filter((row) => row.threshold === t);
+        const total = rows.reduce((sum, row) => sum + row.posts, 0);
+        const withER = rows.reduce((sum, row) => sum + row.withER, 0);
+        const tierViews = rows.reduce((sum, row) => sum + Number(row.erViews), 0);
         const avgER = calculateEngagementRate(
           tierViews,
-          withER.reduce((sum, p) => sum + p.likes, 0),
-          withER.reduce((sum, p) => sum + p.comments, 0),
-          withER.reduce((sum, p) => sum + p.shares, 0),
-          withER.reduce((sum, p) => sum + (p.saves ?? 0), 0),
+          rows.reduce((sum, row) => sum + Number(row.erLikes), 0),
+          rows.reduce((sum, row) => sum + Number(row.erComments), 0),
+          rows.reduce((sum, row) => sum + Number(row.erShares), 0),
+          rows.reduce((sum, row) => sum + Number(row.erSaves), 0),
         );
-        const avgViews =
-          withER.length > 0
-            ? withER.reduce((a, p) => a + Number(p.views), 0) / withER.length
-            : 0;
+        const avgViews = withER > 0 ? tierViews / withER : 0;
 
         const platformBreakdown: Record<string, number> = {};
-        withER.forEach((p) => {
-          platformBreakdown[p.platform] =
-            (platformBreakdown[p.platform] || 0) + 1;
+        rows.forEach((row) => {
+          if (row.withER > 0) platformBreakdown[row.platform] = row.withER;
         });
 
         return {
           threshold: t,
           label,
-          total: matching.length,
-          withER: withER.length,
+          total,
+          withER,
           avgER,
           avgViews,
           platformBreakdown,
         };
       });
 
-      const totalPosts = posts.length;
-      const totalViews = posts.reduce((s, p) => s + Number(p.views), 0);
-      const totalEngagement = posts.reduce(
-        (sum, p) => sum + p.likes + p.comments + p.shares + (p.saves ?? 0),
-        0,
-      );
+      const summaryRows = aggRows.filter((row) => row.threshold === null);
+      const sumOf = (
+        field: "views" | "likes" | "comments" | "shares" | "saves",
+      ) => summaryRows.reduce((sum, row) => sum + Number(row[field]), 0);
+      const totalPosts = summaryRows.reduce((sum, row) => sum + row.posts, 0);
+      const totalViews = sumOf("views");
+      const totalEngagement =
+        sumOf("likes") + sumOf("comments") + sumOf("shares") + sumOf("saves");
       const avgER = calculateEngagementRate(
         totalViews,
-        posts.reduce((sum, p) => sum + p.likes, 0),
-        posts.reduce((sum, p) => sum + p.comments, 0),
-        posts.reduce((sum, p) => sum + p.shares, 0),
-        posts.reduce((sum, p) => sum + (p.saves ?? 0), 0),
+        sumOf("likes"),
+        sumOf("comments"),
+        sumOf("shares"),
+        sumOf("saves"),
       );
 
       const platformStats: Record<string, { count: number; views: number }> =
         {};
-      posts.forEach((p) => {
-        if (!platformStats[p.platform])
-          platformStats[p.platform] = { count: 0, views: 0 };
-        platformStats[p.platform]!.count++;
-        platformStats[p.platform]!.views += Number(p.views);
+      summaryRows.forEach((row) => {
+        platformStats[row.platform] = {
+          count: row.posts,
+          views: Number(row.views),
+        };
       });
 
-      const topVideos = posts
-        .filter((p) => {
-          const v = Number(p.views);
-          return (
-            v >= 10_000 &&
-            calculateEngagementRate(
-              v,
-              p.likes,
-              p.comments,
-              p.shares,
-              p.saves ?? 0,
-            ) > 1
-          );
-        })
-        .sort((a, b) => Number(b.views) - Number(a.views))
-        .slice(0, 20)
-        .map((p) => ({
-          id: p.id,
-          username: p.username,
-          views: Number(p.views),
-          likes: p.likes,
-          comments: p.comments,
-          shares: p.shares,
-          saves: p.saves ?? 0,
-          er: calculateEngagementRate(
-            Number(p.views),
-            p.likes,
-            p.comments,
-            p.shares,
-            p.saves ?? 0,
-          ),
-          platform: p.platform,
-          thumbnailUrl: p.thumbnailUrl,
-          submittedUrl: p.submittedUrl,
-          postedAt: p.postedAt?.toISOString() ?? null,
-          campaignName: p.campaign.name,
-        }));
+      const topVideos = topVideoRows.map((p) => ({
+        id: p.id,
+        username: p.username,
+        views: Number(p.views),
+        likes: p.likes,
+        comments: p.comments,
+        shares: p.shares,
+        saves: p.saves ?? 0,
+        er: calculateEngagementRate(
+          Number(p.views),
+          p.likes,
+          p.comments,
+          p.shares,
+          p.saves ?? 0,
+        ),
+        platform: p.platform,
+        thumbnailUrl: p.thumbnailUrl,
+        submittedUrl: p.submittedUrl,
+        postedAt: p.postedAt?.toISOString() ?? null,
+        campaignName: p.campaignName,
+      }));
 
       return {
         month: input.month,
