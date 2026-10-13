@@ -31,6 +31,7 @@ import {
   withCurrentUser,
 } from "@/server/competition-daily-ranking";
 import { cachedQuery } from "@/server/memory-cache";
+import { getVisibleActiveCampaigns } from "@/server/competition-active-campaigns";
 import { withdrawFromCompetition } from "@/server/competition-withdrawal";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
 import {
@@ -212,101 +213,6 @@ function getCachedMonthlyLeaderboard(
           : null,
       }),
   );
-}
-
-/** Campos das competições ativas usados no cronograma e em "Minhas Competições". */
-const activeCampaignSelect = {
-  id: true,
-  name: true,
-  slug: true,
-  description: true,
-  status: true,
-  startDate: true,
-  endDate: true,
-  platforms: true,
-  requiredHashtags: true,
-  coverImageUrl: true,
-  prizeInfo: true,
-  rankingMetricType: true,
-  isProOnly: true,
-  isPrivate: true,
-  organization: {
-    select: {
-      id: true,
-      name: true,
-      logoUrl: true,
-    },
-  },
-} satisfies Prisma.CampaignSelect;
-
-/**
- * Competições ATIVAS (públicas e privadas) com participantes aprovados e posts
- * elegíveis — iguais para todos; o filtro de privadas por inscrição é aplicado
- * por quem chama. Cache de 60 s.
- */
-function getCachedActiveCampaigns(db: PrismaClient) {
-  return cachedQuery("active-campaigns-with-counts", 60 * 1000, async () => {
-    const campaigns = await db.campaign.findMany({
-      where: { status: "ACTIVE" },
-      select: activeCampaignSelect,
-      orderBy: [{ startDate: "asc" }, { id: "asc" }],
-    });
-    const campaignIds = campaigns.map((campaign) => campaign.id);
-    const [participantCounts, postCounts] =
-      campaignIds.length > 0
-        ? await Promise.all([
-            db.clipperApplication.groupBy({
-              by: ["campaignId"],
-              where: { campaignId: { in: campaignIds }, status: "APPROVED" },
-              _count: { id: true },
-            }),
-            db.clipPost.groupBy({
-              by: ["campaignId"],
-              where: { campaignId: { in: campaignIds }, status: "ELIGIBLE" },
-              _count: { id: true },
-            }),
-          ])
-        : [[], []];
-    return {
-      campaigns,
-      participantsByCampaign: new Map(
-        participantCounts.map((row) => [row.campaignId, row._count.id]),
-      ),
-      eligiblePostsByCampaign: new Map(
-        postCounts.map((row) => [row.campaignId, row._count.id]),
-      ),
-    };
-  });
-}
-
-/** Competições ativas visíveis ao clipador: públicas + privadas em que participa. */
-async function getVisibleActiveCampaigns(
-  db: PrismaClient,
-  clipperProfileId: string | null,
-) {
-  const [active, privateEnrolled] = await Promise.all([
-    getCachedActiveCampaigns(db),
-    clipperProfileId
-      ? db.clipperApplication.findMany({
-          where: {
-            clipperProfileId,
-            status: { in: participatingApplicationStatuses },
-            campaign: { isPrivate: true, status: "ACTIVE" },
-          },
-          select: { campaignId: true },
-        })
-      : Promise.resolve([]),
-  ]);
-  const privateEnrolledIds = new Set(
-    privateEnrolled.map((application) => application.campaignId),
-  );
-  return {
-    ...active,
-    // Ordem: startDate asc
-    campaigns: active.campaigns.filter(
-      (campaign) => !campaign.isPrivate || privateEnrolledIds.has(campaign.id),
-    ),
-  };
 }
 
 /**
@@ -632,10 +538,9 @@ export const campaignRouter = createTRPCRouter({
   getScheduled: privateProcedure.query(async ({ ctx }) => {
     try {
       // Buscar perfil do clipper para verificar inscrições em competições privadas
-      const clipperProfile = await ctx.db.clipperProfile.findUnique({
-        where: { userId: ctx.userId },
-        select: { id: true },
-      });
+      // Perfil buscado uma vez por requisição (compartilhado no batch)
+      const clipperProfileId = await ctx.getClipperProfileId();
+      const clipperProfile = clipperProfileId ? { id: clipperProfileId } : null;
 
       // Competições ativas (cache compartilhado) visíveis ao clipador
       const { campaigns: scheduledCampaigns, participantsByCampaign } =
@@ -908,10 +813,9 @@ export const campaignRouter = createTRPCRouter({
   // Competições privadas são filtradas - só aparecem se o clipper estiver inscrito
   getAllActiveCompetitions: privateProcedure.query(async ({ ctx }) => {
     try {
-      const clipperProfile = await ctx.db.clipperProfile.findUnique({
-        where: { userId: ctx.userId },
-        select: { id: true },
-      });
+      // Perfil buscado uma vez por requisição (compartilhado no batch)
+      const clipperProfileId = await ctx.getClipperProfileId();
+      const clipperProfile = clipperProfileId ? { id: clipperProfileId } : null;
 
       if (!clipperProfile) {
         return [];
@@ -1142,10 +1046,9 @@ export const campaignRouter = createTRPCRouter({
   // Buscar competições concluídas do clipper
   getMyCompletedCompetitions: privateProcedure.query(async ({ ctx }) => {
     try {
-      const clipperProfile = await ctx.db.clipperProfile.findUnique({
-        where: { userId: ctx.userId },
-        select: { id: true },
-      });
+      // Perfil buscado uma vez por requisição (compartilhado no batch)
+      const clipperProfileId = await ctx.getClipperProfileId();
+      const clipperProfile = clipperProfileId ? { id: clipperProfileId } : null;
 
       if (!clipperProfile) {
         return [];
@@ -1718,11 +1621,8 @@ export const campaignRouter = createTRPCRouter({
     .input(z.object({ campaignId: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
-        const [clipperProfile, campaign] = await Promise.all([
-          ctx.db.clipperProfile.findUnique({
-            where: { userId: ctx.userId },
-            select: { id: true },
-          }),
+        const [clipperProfileId, campaign] = await Promise.all([
+          ctx.getClipperProfileId(),
           ctx.db.campaign.findUnique({
             where: { id: input.campaignId },
             select: {
@@ -1742,12 +1642,13 @@ export const campaignRouter = createTRPCRouter({
           }),
         ]);
 
-        if (!clipperProfile) {
+        if (!clipperProfileId) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Perfil de clipper não encontrado",
           });
         }
+        const clipperProfile = { id: clipperProfileId };
         if (!campaign) {
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -1866,10 +1767,9 @@ export const campaignRouter = createTRPCRouter({
     )
     .query(async ({ ctx, input }) => {
       try {
-        const clipperProfile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: ctx.userId },
-          select: { id: true },
-        });
+        // Perfil buscado uma vez por requisição (compartilhado no batch)
+        const clipperProfileId = await ctx.getClipperProfileId();
+        const clipperProfile = clipperProfileId ? { id: clipperProfileId } : null;
         if (!clipperProfile) {
           throw new TRPCError({
             code: "NOT_FOUND",

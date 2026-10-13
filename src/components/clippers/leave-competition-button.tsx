@@ -59,6 +59,7 @@ export function LeaveCompetitionButton({
     void utils.campaign.getScheduled.invalidate()
     void utils.clipper.getMyApplications.invalidate()
     void utils.clipper.getMyCompetitions.invalidate()
+    void utils.clipper.getMyCompetitionOptions.invalidate()
     void utils.clipper.getDashboardStats.invalidate()
     void utils.clipper.getNextAvailableCompetition.invalidate()
   }

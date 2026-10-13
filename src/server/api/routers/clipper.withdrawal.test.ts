@@ -144,22 +144,22 @@ afterEach(() => vi.restoreAllMocks());
 describe("ações após a saída", () => {
   it("informa todos os vídeos enviados em minhas inscrições para validar a saída", async () => {
     const { clipper, db, application } = fixture();
-    db.clipperApplication.findMany.mockResolvedValue([
-      { ...application, _count: { clipPosts: 2 } },
-    ]);
+    // Contagem de todos os status (inclusive não elegíveis), só das inscrições do clipador
+    const groupBy = vi
+      .fn()
+      .mockResolvedValue([{ applicationId: application.id, _count: { id: 2 } }]);
+    Object.assign(db.clipPost, { groupBy });
 
     const result = await clipper.getMyApplications();
 
     expect(result).toEqual([
       expect.objectContaining({ id: application.id, postedVideoCount: 2 }),
     ]);
-    expect(db.clipperApplication.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        select: expect.objectContaining({
-          _count: { select: { clipPosts: true } },
-        }),
-      }),
-    );
+    expect(groupBy).toHaveBeenCalledWith({
+      by: ["applicationId"],
+      where: { applicationId: { in: [application.id] } },
+      _count: { id: true },
+    });
   });
 
   it("não credita um prêmio mensal se o clipador sair depois da consulta do ranking", async () => {

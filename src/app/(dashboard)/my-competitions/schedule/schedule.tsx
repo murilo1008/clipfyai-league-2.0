@@ -202,6 +202,7 @@ export default function Schedule() {
     )
 
   // ===== Mutations =====
+  const utils = api.useUtils()
   const enrollMutation = api.campaign.enrollInCompetition.useMutation({
     onSuccess: (data) => {
       toast.success(data.message, {
@@ -211,6 +212,8 @@ export default function Schedule() {
       setSelectedAccounts([])
       void refetchCompetitions()
       void refetchApplications()
+      // Menu lateral (nome/slug das competições, staleTime de 5 min)
+      void utils.clipper.getMyCompetitionOptions.invalidate()
     },
     onError: (error) => {
       toast.error("Erro ao inscrever", {

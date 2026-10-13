@@ -3,6 +3,7 @@
 import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import { canRejoinCompetition, isParticipatingApplication } from "@/lib/competition-participation"
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import Link from "next/link"
 import { useUser } from "@clerk/nextjs"
@@ -43,10 +44,8 @@ import {
   Warning,
   X,
 } from "@phosphor-icons/react"
-import { motion } from "framer-motion"
 import { toast } from "sonner"
 
-import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { ClanTagBadge } from "@/components/clan-tag-badge"
 import { ClipperHeroViz, ClipperHeroVizSkeleton } from "@/components/home/clipper-hero-viz"
 import { HomeHero } from "@/components/home/home-hero"
@@ -102,6 +101,25 @@ import { api, type RouterInputs, type RouterOutputs } from "@/trpc/react"
 
 // Discord invite URL
 const DISCORD_INVITE_URL = "https://discord.gg/f2eNVbYnzn"
+
+const FILTER_PILL_CLASS =
+  "bg-gradient-custom shadow-brand-cyan/25 absolute inset-0 rounded-xl shadow-lg"
+
+// framer-motion só para a pílula do filtro: carregada sob demanda (a versão
+// estática aparece enquanto o chunk baixa).
+const FilterPill = dynamic(() => import("./filter-pill"), {
+  ssr: false,
+  loading: () => <span className={FILTER_PILL_CLASS} />,
+})
+
+// Diálogo de vendas sob demanda: só baixa e monta quando é aberto.
+const ClipfyProPricingDialog = dynamic(
+  () =>
+    import("@/components/clippers/clipfy-pro-pricing-dialog").then(
+      (m) => m.ClipfyProPricingDialog,
+    ),
+  { ssr: false },
+)
 
 type ScheduledCompetition = RouterOutputs["campaign"]["getScheduled"][number]
 type NextCompetition = NonNullable<
@@ -277,8 +295,14 @@ export default function HomeClipper() {
   const { data: myApplications = [], refetch: refetchApplications } =
     api.clipper.getMyApplications.useQuery()
 
-  const { data: socialAccounts = [], refetch: refetchSocialAccounts } =
-    api.clipper.getMySocialAccounts.useQuery()
+  // Contas do clipador: só para os dialogs de inscrição e de nova conta.
+  const {
+    data: socialAccounts = [],
+    isLoading: isLoadingSocialAccounts,
+    refetch: refetchSocialAccounts,
+  } = api.clipper.getMySocialAccounts.useQuery(undefined, {
+    enabled: isEnrollDialogOpen || isAddAccountDialogOpen,
+  })
 
   const { data: rankingData, isLoading: isLoadingRanking } =
     api.clipper.getTopClippersRanking.useQuery(undefined, {
@@ -296,6 +320,7 @@ export default function HomeClipper() {
   }, [])
 
   // ===== Mutations =====
+  const utils = api.useUtils()
   const enrollMutation = api.campaign.enrollInCompetition.useMutation({
     onSuccess: (data) => {
       toast.success(data.message, {
@@ -305,6 +330,8 @@ export default function HomeClipper() {
       setSelectedAccounts([])
       void refetchCompetitions()
       void refetchApplications()
+      // Menu lateral (nome/slug das competições, staleTime de 5 min)
+      void utils.clipper.getMyCompetitionOptions.invalidate()
     },
     onError: (error) => {
       toast.error("Erro ao inscrever", {
@@ -1083,17 +1110,7 @@ export default function HomeClipper() {
                         : "text-muted-foreground hover:text-foreground hover:bg-background/70",
                     )}
                   >
-                    {isActive && (
-                      <motion.span
-                        layoutId="competition-filter-pill"
-                        transition={{
-                          type: "spring",
-                          stiffness: 500,
-                          damping: 40,
-                        }}
-                        className="bg-gradient-custom shadow-brand-cyan/25 absolute inset-0 rounded-xl shadow-lg"
-                      />
-                    )}
+                    {isActive && <FilterPill className={FILTER_PILL_CLASS} />}
                     <TabIcon
                       className="relative z-10 size-3.5 shrink-0"
                       weight="fill"
@@ -1635,7 +1652,9 @@ export default function HomeClipper() {
                       })}
                       {compatibleAccounts.length === 0 && (
                         <SelectItem value="none" disabled>
-                          Nenhuma conta compatível disponível
+                          {isLoadingSocialAccounts
+                            ? "Carregando contas..."
+                            : "Nenhuma conta compatível disponível"}
                         </SelectItem>
                       )}
                     </SelectContent>
@@ -2540,11 +2559,13 @@ export default function HomeClipper() {
       </Dialog>
 
       {/* ===== Dialog: PRO Pricing ===== */}
-      <ClipfyProPricingDialog
-        open={isProDialogOpen}
-        onOpenChange={setIsProDialogOpen}
-        userEmail={user?.emailAddresses?.[0]?.emailAddress}
-      />
+      {isProDialogOpen && (
+        <ClipfyProPricingDialog
+          open={isProDialogOpen}
+          onOpenChange={setIsProDialogOpen}
+          userEmail={user?.emailAddresses?.[0]?.emailAddress}
+        />
+      )}
 
       {/* ===== Dialog: Ranking de Clipadores ===== */}
       <Dialog open={isRankingDialogOpen} onOpenChange={setIsRankingDialogOpen}>
