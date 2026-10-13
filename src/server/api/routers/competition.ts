@@ -3,142 +3,211 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   calculateEngagementRate,
-  calculateRankingScore,
   type RankingMetricType,
 } from "@/lib/ranking-helpers";
-import {
-  getPostedAtWindowUtc,
-  getPrizeForPosition,
-  loadDailyRankingDateContext,
-  parsePrizeTable,
-} from "@/lib/daily-ranking-preview";
+import { getPostedAtWindowUtc } from "@/lib/daily-ranking-preview";
 import {
   getClipperDailyReferenceDateYmd,
   getLiveDailyWindowByReferenceDate,
-  loadDailyRankingEntryMetricsMap,
-  pickMetricsForDailyRank,
-  rankLiveDailyPosts,
-  type DailyClipperRankingItem,
 } from "@/lib/daily-ranking-shared";
 import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
-import { ClipPostStatus, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
 import {
   firstOpenDailyRankingDate,
   canRejoinCompetition,
   isParticipatingApplication,
   participatingApplicationStatuses,
-  rankingApplicationWhere,
 } from "@/lib/competition-participation";
+import {
+  dailyRankingCacheTtlMs,
+  getCachedDailyEligiblePostsCount,
+  getCachedLiveDailyRanking,
+  getCachedSnapshotDailyRanking,
+  loadDailyTopClippersByPostedVideos,
+  withCurrentUser,
+} from "@/server/competition-daily-ranking";
+import { cachedQuery } from "@/server/memory-cache";
 import { withdrawFromCompetition } from "@/server/competition-withdrawal";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
 
-function getFirstName(name?: string | null) {
-  return name?.trim().split(/\s+/)[0] || "";
+const brlCurrencyFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  minimumFractionDigits: 0,
+});
+
+function formatBrlCurrency(amount: number) {
+  return brlCurrencyFormatter.format(amount);
 }
 
-// Nome exibido no ranking: nome artístico, senão só o primeiro nome (evita expor nome completo)
-function getClipperRankingDisplayName(profile: {
-  artisticName?: string | null;
-  fullName?: string | null;
-}) {
-  return (
-    profile.artisticName?.trim() || getFirstName(profile.fullName) || "Clipador"
-  );
-}
+/** Campos de um post exibidos em "Meus Posts" / post mais viral. */
+const myCompetitionPostSelect = {
+  id: true,
+  submittedUrl: true,
+  platform: true,
+  thumbnailUrl: true,
+  caption: true,
+  username: true, // Username da conta que postou
+  postedAt: true,
+  createdAt: true,
+  views: true,
+  likes: true,
+  comments: true,
+  shares: true,
+  saves: true,
+  hashtags: true,
+  status: true, // Incluir status para renderizar loading
+  ineligibilityReason: true,
+} satisfies Prisma.ClipPostSelect;
 
-async function buildSnapshotDailyRankingForClipper(params: {
-  db: any;
-  campaignId: string;
-  dateYmd: string;
-  userId: string;
-}): Promise<{
-  posts: DailyClipperRankingItem[];
-  totalPosts: number;
-  hasSnapshot: boolean;
-}> {
-  const core = await loadDailyRankingDateContext(
-    params.db,
-    params.campaignId,
-    params.dateYmd,
-  );
-  if (!core) {
-    return { posts: [], totalPosts: 0, hasSnapshot: false };
-  }
+type MyCompetitionPostRow = Prisma.ClipPostGetPayload<{
+  select: typeof myCompetitionPostSelect;
+}>;
 
-  const prizeTable = parsePrizeTable(core.dailyPrizeTable);
-  const entryIds = core.rawRows.map((row) => row.dailyRankingEntryId);
-  const dreRows = await params.db.dailyRankingEntry.findMany({
-    where: { id: { in: entryIds } },
-    select: { id: true, isDisqualified: true },
-  });
-  const disqualifiedMap = new Map(
-    dreRows.map((row: { id: string; isDisqualified: boolean }) => [
-      row.id,
-      row.isDisqualified,
-    ]),
+function formatMyCompetitionPost(
+  post: MyCompetitionPostRow,
+  options: {
+    rankingMap: Map<string, number>;
+    myCurrentEarnings: number;
+    myTotalPostsCount: number;
+  },
+) {
+  const engagementRate = calculateEngagementRate(
+    Number(post.views),
+    post.likes,
+    post.comments,
+    post.shares,
+    post.saves ?? 0,
   );
 
-  const appIds = Array.from(
-    new Set(core.rawRows.map((row) => row.applicationId)),
-  );
-  const appRows = await params.db.clipperApplication.findMany({
-    where: { id: { in: appIds } },
-    select: {
-      id: true,
-      clipperProfile: {
-        select: {
-          userId: true,
-          user: { select: { imageUrl: true } },
-          clan: { select: { tag: true, emoji: true, emojiColor: true } },
-        },
-      },
-    },
-  });
-  const appMap = new Map<string, any>(appRows.map((row: any) => [row.id, row]));
-
-  let effectiveRank = 0;
-  const posts = core.rawRows
-    .filter((row) => !disqualifiedMap.get(row.dailyRankingEntryId))
-    .map((row) => {
-      effectiveRank += 1;
-      const profile = appMap.get(row.applicationId)?.clipperProfile;
-      return {
-        position: effectiveRank,
-        postId: row.clipPostId,
-        clipperName: getClipperRankingDisplayName({
-          artisticName: row.artisticName,
-          fullName: row.fullName,
-        }),
-        clipperImageUrl: profile?.user?.imageUrl ?? null,
-        username: row.username || "",
-        platform: row.platform,
-        thumbnailUrl: row.thumbnailUrl || "",
-        views: Number(row.views),
-        likes: row.likes,
-        comments: row.comments,
-        shares: row.shares,
-        saves: row.saves ?? 0,
-        postedAt: row.postedAt?.toISOString() ?? new Date().toISOString(),
-        isCurrentUser: profile?.userId === params.userId,
-        engagementRate: Number(row.er),
-        rankingScore: Number(row.score),
-        prize: getPrizeForPosition(prizeTable, effectiveRank),
-        clanTag: profile?.clan?.tag ?? null,
-        clanEmoji: profile?.clan?.emoji ?? null,
-        clanEmojiColor: profile?.clan?.emojiColor ?? null,
-      } satisfies DailyClipperRankingItem;
-    })
-    .slice(0, core.topCount);
+  // Buscar earnings deste post (simplificado)
+  const earnings =
+    options.myCurrentEarnings > 0 && options.myTotalPostsCount > 0
+      ? options.myCurrentEarnings / options.myTotalPostsCount
+      : 0;
 
   return {
-    posts,
-    totalPosts: core.stats.totalPosts,
-    hasSnapshot: true,
+    id: post.id,
+    url: post.submittedUrl,
+    platform: post.platform,
+    thumbnailUrl: post.thumbnailUrl || "", // Deixar vazio para mostrar loading quando PENDING
+    caption: post.caption || "",
+    username: post.username || "", // Username da conta que postou
+    postedAt: post.postedAt?.toISOString() ?? null,
+    createdAt: post.createdAt.toISOString(),
+    views: Number(post.views),
+    likes: post.likes,
+    comments: post.comments,
+    shares: post.shares,
+    saves: post.saves ?? 0,
+    engagementRate,
+    rankInCompetition: options.rankingMap.get(post.id) || 0,
+    earnings: formatBrlCurrency(earnings),
+    status: post.status, // Usar o status real do post (PENDING, ELIGIBLE, etc.)
+    ineligibilityReason:
+      post.ineligibilityReason ||
+      (post.status === "DISQUALIFIED"
+        ? "Post desqualificado. Nenhum motivo detalhado foi registrado."
+        : null),
+    hashtags: post.hashtags,
   };
+}
+
+/** Posição dos posts no ranking diário mais recente da campanha. */
+async function loadLatestDailyRankPositions(
+  db: PrismaClient,
+  campaignId: string,
+  postIds: string[],
+) {
+  const rankingMap = new Map<string, number>();
+  if (postIds.length === 0) return rankingMap;
+
+  const latestDailyRanking = await db.dailyRanking.findFirst({
+    where: { campaignId },
+    orderBy: { rankingDate: "desc" },
+    select: { id: true },
+  });
+  if (!latestDailyRanking) return rankingMap;
+
+  const entries = await db.dailyRankingEntry.findMany({
+    where: {
+      dailyRankingId: latestDailyRanking.id,
+      clipPostId: { in: postIds },
+    },
+    select: { clipPostId: true, position: true },
+  });
+  entries.forEach((entry) => {
+    rankingMap.set(entry.clipPostId, entry.position);
+  });
+  return rankingMap;
+}
+
+/** Participantes aprovados, posts elegíveis e views da campanha (iguais para todos). */
+function getCachedCampaignTotals(db: PrismaClient, campaignId: string) {
+  return cachedQuery(`campaign-totals:${campaignId}`, 60 * 1000, async () => {
+    const [totalParticipants, eligiblePostsAgg] = await Promise.all([
+      db.clipperApplication.count({
+        where: { campaignId, status: "APPROVED" },
+      }),
+      db.clipPost.aggregate({
+        where: { campaignId, status: "ELIGIBLE" },
+        _count: { id: true },
+        _sum: { views: true },
+      }),
+    ]);
+    return {
+      totalParticipants,
+      totalPosts: eligiblePostsAgg._count.id,
+      competitionTotalViews: Number(eligiblePostsAgg._sum.views || 0),
+    };
+  });
+}
+
+/**
+ * Ranking mensal da campanha (igual para todos os clipadores): 60 s com a
+ * campanha em andamento; 6 h depois de concluída (usa só métricas até o corte).
+ */
+function getCachedMonthlyLeaderboard(
+  db: PrismaClient,
+  campaign: {
+    id: string;
+    status: string;
+    endDate: Date;
+    rankingMetricType: RankingMetricType | null;
+    activeRankingRule: {
+      monthlyTopCount: number | null;
+      monthlyPrizeTable: unknown;
+    } | null;
+  },
+) {
+  const rule = campaign.activeRankingRule;
+  return cachedQuery(
+    [
+      "monthly-board",
+      campaign.id,
+      campaign.status,
+      campaign.rankingMetricType ?? "-",
+      rule?.monthlyTopCount ?? "-",
+      campaign.endDate.getTime(),
+    ].join(":"),
+    campaign.status === "COMPLETED" ? 6 * 60 * 60 * 1000 : 60 * 1000,
+    () =>
+      computeMonthlyLeaderboard(db, campaign.id, {
+        endDate: campaign.endDate,
+        status: campaign.status,
+        rankingMetricType: campaign.rankingMetricType,
+        activeRankingRule: rule
+          ? {
+              monthlyTopCount: rule.monthlyTopCount,
+              monthlyPrizeTable: rule.monthlyPrizeTable,
+            }
+          : null,
+      }),
+  );
 }
 
 /**
@@ -1868,14 +1937,61 @@ export const campaignRouter = createTRPCRouter({
     }
   }),
 
-  // Buscar detalhes completos de uma competição específica (para página individual)
+  // Buscar detalhes de uma competição específica (página do clipador).
+  // O ranking (aba Ranking) e a lista paginada de posts têm procedures próprias:
+  // getCompetitionRanking e getMyCompetitionPosts.
   getCompetitionDetails: privateProcedure
     .input(z.object({ slug: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
-        const clipperProfile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: ctx.userId },
-        });
+        const [clipperProfile, campaign] = await Promise.all([
+          ctx.db.clipperProfile.findUnique({
+            where: { userId: ctx.userId },
+            select: { id: true, artisticName: true, fullName: true },
+          }),
+          // Buscar campanha (excluir ARCHIVED)
+          ctx.db.campaign.findUnique({
+            where: { slug: input.slug },
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              description: true,
+              status: true,
+              startDate: true,
+              endDate: true,
+              platforms: true,
+              requiredHashtags: true,
+              requiredMentions: true,
+              prizeInfo: true,
+              coverImageUrl: true,
+              rankingMetricType: true, // Tipo de métrica de ranking (VIEWS ou VIEWS_X_ENGAGEMENT)
+              dailyPix: true,
+              activeRankingRule: true,
+              isProOnly: true,
+              topClippersRankingEnabled: true,
+              topClippersPrizeTable: true,
+              // Links de afiliado
+              affiliateLinkInstagram: true,
+              affiliateLinkTiktok: true,
+              affiliateLinkYoutube: true,
+              affiliateLinkFacebook: true,
+              affiliateLinkKwai: true,
+              performanceVideos: {
+                where: { isActive: true },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+                select: {
+                  id: true,
+                  platform: true,
+                  originalUrl: true,
+                  title: true,
+                  description: true,
+                  thumbnailUrl: true,
+                },
+              },
+            },
+          }),
+        ]);
 
         if (!clipperProfile) {
           throw new TRPCError({
@@ -1883,49 +1999,6 @@ export const campaignRouter = createTRPCRouter({
             message: "Perfil de clipper não encontrado",
           });
         }
-
-        // Buscar campanha (excluir ARCHIVED)
-        const campaign = await ctx.db.campaign.findUnique({
-          where: { slug: input.slug },
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            description: true,
-            status: true,
-            startDate: true,
-            endDate: true,
-            platforms: true,
-            requiredHashtags: true,
-            requiredMentions: true,
-            prizeInfo: true,
-            coverImageUrl: true,
-            rankingMetricType: true, // Tipo de métrica de ranking (VIEWS ou VIEWS_X_ENGAGEMENT)
-            dailyPix: true,
-            activeRankingRule: true,
-            isProOnly: true,
-            topClippersRankingEnabled: true,
-            topClippersPrizeTable: true,
-            // Links de afiliado
-            affiliateLinkInstagram: true,
-            affiliateLinkTiktok: true,
-            affiliateLinkYoutube: true,
-            affiliateLinkFacebook: true,
-            affiliateLinkKwai: true,
-            performanceVideos: {
-              where: { isActive: true },
-              orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-              select: {
-                id: true,
-                platform: true,
-                originalUrl: true,
-                title: true,
-                description: true,
-                thumbnailUrl: true,
-              },
-            },
-          },
-        });
 
         if (!campaign) {
           throw new TRPCError({
@@ -1950,6 +2023,7 @@ export const campaignRouter = createTRPCRouter({
               clipperProfileId: clipperProfile.id,
             },
           },
+          select: { id: true, status: true },
         });
 
         if (!application || !participatingApplicationStatuses.some((status) => status === application.status)) {
@@ -1959,125 +2033,126 @@ export const campaignRouter = createTRPCRouter({
           });
         }
 
-        // Contar participantes, posts totais e views totais
-        const [totalParticipants, totalPosts, competitionViewsAgg] =
-          await Promise.all([
-            ctx.db.clipperApplication.count({
-              where: {
-                campaignId: campaign.id,
-                status: "APPROVED",
-              },
-            }),
-            ctx.db.clipPost.count({
-              where: {
-                campaignId: campaign.id,
-                status: "ELIGIBLE",
-              },
-            }),
-            ctx.db.clipPost.aggregate({
-              where: {
-                campaignId: campaign.id,
-                status: "ELIGIBLE",
-              },
-              _sum: {
-                views: true,
-              },
-            }),
-          ]);
+        // Dados de crescimento (últimos 7 dias)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-        const competitionTotalViews = Number(
-          competitionViewsAgg._sum.views || 0,
-        );
-
-        // Buscar posts do clipper nesta competição (TODOS os status, incluindo PENDING)
-        // Carregar o conjunto completo para os filtros e contadores de Meus Posts.
-        const myPosts = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: campaign.id,
-            applicationId: application.id,
-            // Removido filtro de status para mostrar TODOS os posts
-          },
-          select: {
-            id: true,
-            submittedUrl: true,
-            platform: true,
-            thumbnailUrl: true,
-            caption: true,
-            username: true, // Username da conta que postou
-            postedAt: true,
-            createdAt: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            hashtags: true,
-            status: true, // Incluir status para renderizar loading
-            ineligibilityReason: true,
-          },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        });
-
-        // Buscar rankings diários dos posts do clipper (última atualização)
-        // OTIMIZAÇÃO: Buscar todos os rankings em uma única query ao invés de N queries
-        const postIds = myPosts.map((p) => p.id);
-
-        const rankingMap = new Map<string, number>();
-
-        if (postIds.length > 0) {
-          // Buscar o ranking diário mais recente da campanha
-          const latestDailyRanking = await ctx.db.dailyRanking.findFirst({
+        const [
+          campaignStats,
+          monthlyBoard,
+          postsByPlatform,
+          myTotalMetrics,
+          prizeAgg,
+          topViralPostRow,
+          bestEngagementRows,
+          growthRows,
+          applicationAccountsCount,
+        ] = await Promise.all([
+          // Participantes, posts e views da campanha (iguais para todos)
+          getCachedCampaignTotals(ctx.db, campaign.id),
+          getCachedMonthlyLeaderboard(ctx.db, campaign),
+          // Contagem/views dos meus posts (TODOS os status) por plataforma
+          ctx.db.clipPost.groupBy({
+            by: ["platform"],
             where: {
               campaignId: campaign.id,
+              applicationId: application.id,
             },
-            orderBy: {
-              rankingDate: "desc",
+            _count: { id: true },
+            _sum: { views: true },
+            _max: { createdAt: true },
+          }),
+          // Métricas TOTAIS dos meus posts ELEGÍVEIS (agregação, não limitado)
+          ctx.db.clipPost.aggregate({
+            where: {
+              campaignId: campaign.id,
+              applicationId: application.id,
+              status: "ELIGIBLE",
             },
-            select: {
+            _sum: {
+              views: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+            },
+            _count: {
               id: true,
             },
-          });
-
-          if (latestDailyRanking) {
-            // Buscar todas as entries desse ranking para os posts do clipper em uma única query
-            const allRankingEntries = await ctx.db.dailyRankingEntry.findMany({
-              where: {
-                dailyRankingId: latestDailyRanking.id,
-                clipPostId: {
-                  in: postIds,
-                },
+          }),
+          // Soma de transações (ganhos) — aggregate evita carregar todas as linhas
+          ctx.db.transaction.aggregate({
+            where: {
+              wallet: {
+                clipperProfileId: clipperProfile.id,
               },
-              select: {
-                clipPostId: true,
-                position: true,
+              campaignId: campaign.id,
+              type: {
+                in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"],
               },
-            });
+            },
+            _sum: { amount: true },
+          }),
+          // Post mais viral: mais views; empate → mais recente (ordem da lista)
+          ctx.db.clipPost.findFirst({
+            where: {
+              campaignId: campaign.id,
+              applicationId: application.id,
+            },
+            select: myCompetitionPostSelect,
+            orderBy: [{ views: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+          }),
+          // Maior ER entre todos os meus posts (mesma conta de calculateEngagementRate)
+          ctx.db.$queryRaw<[{ bestEngagementRate: number | null }]>`
+            SELECT MAX(
+              CASE
+                WHEN cp."views" > 0 THEN
+                  TRUNC(
+                    ((cp."likes"::bigint + cp."comments" + cp."shares" + COALESCE(cp."saves", 0))::float8
+                      / cp."views"::float8) * 100 * 100
+                  ) / 100
+                ELSE 0
+              END
+            )::float8 AS "bestEngagementRate"
+            FROM "ClipPost" cp
+            WHERE cp."campaignId" = ${campaign.id}
+              AND cp."applicationId" = ${application.id}
+          `,
+          // Por dia (UTC): último snapshot de cada post elegível no dia, somado.
+          ctx.db.$queryRaw<
+            { day: Date; views: bigint | null; engagement: bigint | null }[]
+          >`
+            SELECT
+              last_per_day."day",
+              SUM(last_per_day."views")::bigint AS "views",
+              SUM(last_per_day."engagement")::bigint AS "engagement"
+            FROM (
+              SELECT DISTINCT ON (cpm."clipPostId", date_trunc('day', cpm."collectedAt"))
+                date_trunc('day', cpm."collectedAt") AS "day",
+                cpm."views",
+                (cpm."likes"::bigint + cpm."comments" + cpm."shares") AS "engagement"
+              FROM "ClipPost" cp
+              INNER JOIN "ClipPostMetrics" cpm ON cpm."clipPostId" = cp."id"
+              WHERE cp."campaignId" = ${campaign.id}
+                AND cp."applicationId" = ${application.id}
+                AND cp."status" = 'ELIGIBLE'
+                AND cpm."collectedAt" >= ${sevenDaysAgo}::timestamp
+              ORDER BY
+                cpm."clipPostId",
+                date_trunc('day', cpm."collectedAt"),
+                cpm."collectedAt" DESC
+            ) last_per_day
+            GROUP BY last_per_day."day"
+            ORDER BY last_per_day."day" ASC
+          `,
+          // Contador da aba "Minhas Contas" (a lista carrega ao abrir a aba)
+          ctx.db.applicationSocialAccount.count({
+            where: { applicationId: application.id },
+          }),
+        ]);
 
-            // Mapear os resultados
-            allRankingEntries.forEach((entry) => {
-              rankingMap.set(entry.clipPostId, entry.position);
-            });
-          }
-        }
-
-        // Calcular métricas TOTAIS dos meus posts ELEGÍVEIS usando agregação (não limitado)
-        const myTotalMetrics = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: campaign.id,
-            applicationId: application.id,
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        });
+        const { totalParticipants, totalPosts, competitionTotalViews } =
+          campaignStats;
 
         const myTotalViews = Number(myTotalMetrics._sum.views || 0);
         const myTotalLikes = myTotalMetrics._sum.likes || 0;
@@ -2093,262 +2168,57 @@ export const campaignRouter = createTRPCRouter({
           myTotalSaves,
         );
 
-        // Buscar soma de transações (ganhos) — aggregate evita carregar todas as linhas
-        const prizeAgg = await ctx.db.transaction.aggregate({
-          where: {
-            wallet: {
-              clipperProfileId: clipperProfile.id,
-            },
-            campaignId: campaign.id,
-            type: {
-              in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"],
-            },
-          },
-          _sum: { amount: true },
-        });
-
         const myCurrentEarnings = prizeAgg._sum.amount ?? 0;
 
-        // Mesma fonte do ADMIN para filtros, métricas históricas e desempates.
-        const monthlyBoard = await computeMonthlyLeaderboard(
-          ctx.db,
-          campaign.id,
-          campaign,
-        );
-        const topRanking = (monthlyBoard?.rows ?? []).map((row) => ({
-          position: row.position,
-          username: `@${row.clipperUsername}`,
-          imageUrl: row.clipperImageUrl,
-          totalViews: row.totalViews,
-          rankingScore: row.rankingScore,
-          engagementRate: row.engagementRate,
-          totalPosts: row.postsCount,
-          isCurrentUser: row.clipperProfileId === clipperProfile.id,
-          clanTag: row.clanTag,
-          clanEmoji: row.clanEmoji,
-          clanEmojiColor: row.clanEmojiColor,
-        }));
-        const myMonthlyRanking = monthlyBoard?.rows.find(
-          (row) => row.clipperProfileId === clipperProfile.id,
+        // Posição real no ranking mensal (mesma fonte do ADMIN), mesmo fora do top.
+        const myMonthlyPosition =
+          monthlyBoard?.positionByClipperProfileId.get(clipperProfile.id) ?? 0;
+
+        // Por plataforma, na ordem do post mais recente (ordem em que a lista
+        // completa de posts as apresentava).
+        const myPostsByPlatform = [...postsByPlatform]
+          .sort(
+            (a, b) =>
+              (b._max.createdAt?.getTime() ?? 0) -
+              (a._max.createdAt?.getTime() ?? 0),
+          )
+          .map((group) => ({
+            platform: group.platform,
+            posts: group._count.id,
+            views: Number(group._sum.views ?? 0),
+          }));
+        const postedVideoCount = myPostsByPlatform.reduce(
+          (sum, group) => sum + group.posts,
+          0,
         );
 
-        const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
+        // Rank diário (último DailyRanking) do post mais viral
+        const rankingMap = topViralPostRow
+          ? await loadLatestDailyRankPositions(ctx.db, campaign.id, [
+              topViralPostRow.id,
+            ])
+          : new Map<string, number>();
+        const topViralPost = topViralPostRow
+          ? formatMyCompetitionPost(topViralPostRow, {
+              rankingMap,
+              myCurrentEarnings,
+              myTotalPostsCount,
+            })
+          : null;
+
+        const growthData = growthRows.map((row) => ({
+          date: row.day.toLocaleDateString("pt-BR", {
+            day: "2-digit",
+            month: "2-digit",
+            timeZone: "UTC",
+          }),
+          views: Number(row.views ?? 0),
+          engagement: Number(row.engagement ?? 0),
+        }));
+
         const referenceDateYmd = getClipperDailyReferenceDateYmd();
         const { startDate: dailyWindowStart, endDate: dailyWindowEnd } =
           getLiveDailyWindowByReferenceDate(referenceDateYmd);
-
-        const [
-          todayPostsCount,
-          snapshotRankingForReference,
-          todayPosts,
-          dailyRankingDates,
-          dailyEntryMetricsMap,
-        ] = await Promise.all([
-          ctx.db.clipPost.count({
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              postedAt: { gte: dailyWindowStart, lt: dailyWindowEnd },
-              application: rankingApplicationWhere(dailyWindowEnd),
-            },
-          }),
-          buildSnapshotDailyRankingForClipper({
-            db: ctx.db,
-            campaignId: campaign.id,
-            dateYmd: referenceDateYmd,
-            userId: ctx.userId,
-          }),
-          ctx.db.clipPost.findMany({
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              postedAt: { gte: dailyWindowStart, lt: dailyWindowEnd },
-              application: rankingApplicationWhere(dailyWindowEnd),
-            },
-            include: {
-              application: {
-                include: {
-                  clipperProfile: {
-                    include: {
-                      user: { select: { imageUrl: true } },
-                      clan: {
-                        select: { tag: true, emoji: true, emojiColor: true },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          }),
-          ctx.db.dailyRanking.findMany({
-            where: { campaignId: campaign.id },
-            select: { rankingDate: true },
-            orderBy: [{ rankingDate: "desc" }],
-            take: 90,
-          }),
-          loadDailyRankingEntryMetricsMap(
-            ctx.db,
-            campaign.id,
-            referenceDateYmd,
-          ),
-        ]);
-
-        const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
-        const liveDailyPosts = rankLiveDailyPosts({
-          posts: todayPosts.flatMap((post) => {
-            const clipTotals = {
-              views: Number(post.views),
-              likes: post.likes,
-              comments: post.comments,
-              shares: post.shares,
-              saves: post.saves ?? 0,
-            };
-            const { metrics, source } = pickMetricsForDailyRank(
-              post.id,
-              clipTotals,
-              dailyEntryMetricsMap,
-            );
-            // Se houver snapshot do dia, não misturar métricas totais de ClipPost.
-            if (hasSnapshotMetrics && source !== "daily_entry") {
-              return [];
-            }
-            return {
-              postId: post.id,
-              clipperName: getClipperRankingDisplayName(
-                post.application.clipperProfile,
-              ),
-              clipperImageUrl:
-                post.application.clipperProfile.user?.imageUrl || null,
-              username: post.username || "",
-              platform: post.platform,
-              thumbnailUrl: post.thumbnailUrl || "",
-              views: metrics.views,
-              likes: metrics.likes,
-              comments: metrics.comments,
-              shares: metrics.shares,
-              saves: metrics.saves,
-              postedAtIso:
-                post.postedAt?.toISOString() || new Date().toISOString(),
-              isCurrentUser:
-                post.application.clipperProfile.userId === ctx.userId,
-              clanTag: post.application.clipperProfile.clan?.tag ?? null,
-              clanEmoji: post.application.clipperProfile.clan?.emoji ?? null,
-              clanEmojiColor:
-                post.application.clipperProfile.clan?.emojiColor ?? null,
-            };
-          }),
-          metricType: campaign.rankingMetricType,
-          topCount: dailyLimit,
-          dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
-        });
-
-        const topDailyPosts =
-          snapshotRankingForReference.hasSnapshot &&
-          snapshotRankingForReference.posts.length > 0
-            ? snapshotRankingForReference.posts
-            : liveDailyPosts;
-
-        // Dados de crescimento (últimos 7 dias)
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-        const metricsHistory = await ctx.db.clipPostMetrics.findMany({
-          where: {
-            clipPost: {
-              campaignId: campaign.id,
-              applicationId: application.id,
-              status: "ELIGIBLE",
-            },
-            collectedAt: {
-              gte: sevenDaysAgo,
-            },
-          },
-          select: {
-            collectedAt: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          orderBy: {
-            collectedAt: "asc",
-          },
-          take: 1000, // 7 dias × 2 coletas/dia × max 100 posts = ~1400, cap de segurança
-        });
-
-        // Agrupar por dia
-        const growthDataMap: Record<
-          string,
-          { views: number; engagement: number }
-        > = {};
-        metricsHistory.forEach((metric) => {
-          const date = metric.collectedAt.toLocaleDateString("pt-BR", {
-            day: "2-digit",
-            month: "2-digit",
-          });
-          if (!growthDataMap[date]) {
-            growthDataMap[date] = { views: 0, engagement: 0 };
-          }
-          growthDataMap[date].views += Number(metric.views);
-          growthDataMap[date].engagement +=
-            metric.likes + metric.comments + metric.shares;
-        });
-
-        const growthData = Object.entries(growthDataMap).map(
-          ([date, data]) => ({
-            date,
-            views: data.views,
-            engagement: data.engagement,
-          }),
-        );
-
-        // Formatar posts para retorno
-        const formattedPosts = myPosts.map((post) => {
-          const engagementRate = calculateEngagementRate(
-            Number(post.views),
-            post.likes,
-            post.comments,
-            post.shares,
-            post.saves ?? 0,
-          );
-
-          // Buscar earnings deste post (simplificado)
-          const earnings =
-            myCurrentEarnings > 0 && myTotalPostsCount > 0
-              ? myCurrentEarnings / myTotalPostsCount
-              : 0;
-
-          return {
-            id: post.id,
-            url: post.submittedUrl,
-            platform: post.platform,
-            thumbnailUrl: post.thumbnailUrl || "", // Deixar vazio para mostrar loading quando PENDING
-            caption: post.caption || "",
-            username: post.username || "", // Username da conta que postou
-            postedAt: post.postedAt?.toISOString() ?? null,
-            createdAt: post.createdAt.toISOString(),
-            views: Number(post.views),
-            likes: post.likes,
-            comments: post.comments,
-            shares: post.shares,
-            saves: post.saves ?? 0,
-            engagementRate,
-            rankInCompetition: rankingMap.get(post.id) || 0,
-            earnings: new Intl.NumberFormat("pt-BR", {
-              style: "currency",
-              currency: "BRL",
-              minimumFractionDigits: 0,
-            }).format(earnings),
-            status: post.status, // Usar o status real do post (PENDING, ELIGIBLE, etc.)
-            ineligibilityReason:
-              post.ineligibilityReason ||
-              (post.status === "DISQUALIFIED"
-                ? "Post desqualificado. Nenhum motivo detalhado foi registrado."
-                : null),
-            hashtags: post.hashtags,
-          };
-        });
 
         // Formatar prêmio total
         const totalPrize =
@@ -2364,7 +2234,8 @@ export const campaignRouter = createTRPCRouter({
           id: campaign.id,
           applicationId: application.id, // ID da aplicação para adicionar contas
           applicationStatus: application.status,
-          postedVideoCount: myPosts.length,
+          applicationAccountsCount,
+          postedVideoCount,
           name: campaign.name,
           slug: campaign.slug,
           status: campaign.status,
@@ -2400,10 +2271,9 @@ export const campaignRouter = createTRPCRouter({
             clipperProfile.artisticName || clipperProfile.fullName || "",
 
           // Ranking do usuário
-          myCurrentRanking: myMonthlyRanking?.position ?? 0,
-          myPreviousRanking:
-            myMonthlyRanking?.previousPosition ?? myMonthlyRanking?.position ?? 0,
-          myMonthlyRanking: myMonthlyRanking?.position ?? 0,
+          myCurrentRanking: myMonthlyPosition,
+          myPreviousRanking: myMonthlyPosition,
+          myMonthlyRanking: myMonthlyPosition,
           myTotalPosts: myTotalPostsCount, // Usando contagem agregada (não limitada)
           myTotalViews,
           myTotalLikes,
@@ -2411,34 +2281,18 @@ export const campaignRouter = createTRPCRouter({
           myTotalShares,
           myTotalSaves,
           myEngagementRate,
-          myCurrentEarnings: new Intl.NumberFormat("pt-BR", {
-            style: "currency",
-            currency: "BRL",
-            minimumFractionDigits: 0,
-          }).format(myCurrentEarnings),
-          myProjectedEarnings: new Intl.NumberFormat("pt-BR", {
-            style: "currency",
-            currency: "BRL",
-            minimumFractionDigits: 0,
-          }).format(myCurrentEarnings * 1.5), // Projeção simplificada
+          myCurrentEarnings: formatBrlCurrency(myCurrentEarnings),
+          myProjectedEarnings: formatBrlCurrency(myCurrentEarnings * 1.5), // Projeção simplificada
 
-          // Posts e rankings
-          myPosts: formattedPosts,
-          topRanking, // Já ordenado pela query
-          topDailyPosts,
-          todayPostsCount, // Total de posts submetidos hoje
+          // Resumo dos meus posts (a lista paginada vem de getMyCompetitionPosts)
+          topViralPost,
+          bestEngagementRate: Number(bestEngagementRows[0]?.bestEngagementRate ?? 0),
+          myPostsByPlatform,
+
           dailyRankingMode: "TOP_POSTS",
           dailyRankingReferenceDate: referenceDateYmd,
-          dailyRankingSource:
-            snapshotRankingForReference.hasSnapshot &&
-            snapshotRankingForReference.posts.length > 0
-              ? "SNAPSHOT"
-              : "LIVE",
           dailyWindowStart: dailyWindowStart.toISOString(),
           dailyWindowEnd: dailyWindowEnd.toISOString(),
-          dailyRankingDates: dailyRankingDates.map(
-            (item) => item.rankingDate.toISOString().split("T")[0]!,
-          ),
           growthData,
 
           // Regras de ranking e premiação
@@ -2467,6 +2321,312 @@ export const campaignRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao buscar detalhes da competição",
+        });
+      }
+    }),
+
+  // Rankings mensal e diário (dia de referência atual) da página do clipador.
+  // Carregado só quando a aba Ranking está aberta.
+  getCompetitionRanking: privateProcedure
+    .input(z.object({ campaignId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      try {
+        const [clipperProfile, campaign] = await Promise.all([
+          ctx.db.clipperProfile.findUnique({
+            where: { userId: ctx.userId },
+            select: { id: true },
+          }),
+          ctx.db.campaign.findUnique({
+            where: { id: input.campaignId },
+            select: {
+              id: true,
+              status: true,
+              endDate: true,
+              rankingMetricType: true,
+              activeRankingRule: {
+                select: {
+                  dailyTopCount: true,
+                  dailyPrizeTable: true,
+                  monthlyTopCount: true,
+                  monthlyPrizeTable: true,
+                },
+              },
+            },
+          }),
+        ]);
+
+        if (!clipperProfile) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Perfil de clipper não encontrado",
+          });
+        }
+        if (!campaign) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Competição não encontrada",
+          });
+        }
+        if (campaign.status === "ARCHIVED") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Esta competição não está mais disponível",
+          });
+        }
+
+        const application = await ctx.db.clipperApplication.findUnique({
+          where: {
+            campaignId_clipperProfileId: {
+              campaignId: campaign.id,
+              clipperProfileId: clipperProfile.id,
+            },
+          },
+          select: { status: true },
+        });
+        if (!application || !isParticipatingApplication(application.status)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Você não está participando desta competição",
+          });
+        }
+
+        const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
+        const referenceDateYmd = getClipperDailyReferenceDateYmd();
+        const { startDate: dailyWindowStart, endDate: dailyWindowEnd } =
+          getLiveDailyWindowByReferenceDate(referenceDateYmd);
+
+        const [monthlyBoard, snapshot, todayPostsCount] = await Promise.all([
+          getCachedMonthlyLeaderboard(ctx.db, campaign),
+          getCachedSnapshotDailyRanking(ctx.db, campaign.id, referenceDateYmd),
+          getCachedDailyEligiblePostsCount(
+            ctx.db,
+            campaign.id,
+            referenceDateYmd,
+          ),
+        ]);
+
+        // O ranking ao vivo só é calculado quando não há snapshot do dia.
+        const fromSnapshot = snapshot.hasSnapshot && snapshot.posts.length > 0;
+        const dailyPosts = fromSnapshot
+          ? snapshot.posts
+          : await getCachedLiveDailyRanking(ctx.db, {
+              campaignId: campaign.id,
+              dateYmd: referenceDateYmd,
+              metricType: campaign.rankingMetricType,
+              topCount: dailyLimit,
+              dailyPrizeTable:
+                campaign.activeRankingRule?.dailyPrizeTable ?? null,
+              entriesDailyRankingId: snapshot.entriesDailyRankingId,
+            });
+
+        // Mesma fonte do ADMIN para filtros, métricas históricas e desempates.
+        const topRanking = (monthlyBoard?.rows ?? []).map((row) => ({
+          position: row.position,
+          username: `@${row.clipperUsername}`,
+          imageUrl: row.clipperImageUrl,
+          totalViews: row.totalViews,
+          rankingScore: row.rankingScore,
+          engagementRate: row.engagementRate,
+          totalPosts: row.postsCount,
+          isCurrentUser: row.clipperProfileId === clipperProfile.id,
+          clanTag: row.clanTag,
+          clanEmoji: row.clanEmoji,
+          clanEmojiColor: row.clanEmojiColor,
+        }));
+
+        return {
+          topRanking, // Já ordenado pela query
+          topDailyPosts: withCurrentUser(dailyPosts, ctx.userId),
+          todayPostsCount, // Total de posts submetidos hoje
+          dailyRankingMode: "TOP_POSTS",
+          dailyRankingReferenceDate: referenceDateYmd,
+          dailyRankingSource: fromSnapshot ? "SNAPSHOT" : "LIVE",
+          dailyWindowStart: dailyWindowStart.toISOString(),
+          dailyWindowEnd: dailyWindowEnd.toISOString(),
+        };
+      } catch (error: any) {
+        console.error("Erro ao buscar ranking da competição:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message || "Erro ao buscar ranking da competição",
+        });
+      }
+    }),
+
+  // Meus posts na competição (TODOS os status), paginados no servidor com os
+  // mesmos filtros/ordenações da aba "Meus Posts".
+  getMyCompetitionPosts: privateProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        platform: z.string().optional(),
+        search: z.string().max(200).optional(),
+        status: z
+          .enum(["PENDING", "ELIGIBLE", "INELIGIBLE", "DISQUALIFIED"])
+          .optional(),
+        // Período sobre a data exibida do post (postedAt ou createdAt − 3h)
+        timelineFrom: z.date().optional(),
+        timelineTo: z.date().optional(),
+        sortBy: z
+          .enum(["recent", "views", "engagement", "earnings"])
+          .default("recent"),
+        page: z.number().int().min(1).default(1),
+        pageSize: z.number().int().min(1).max(60).default(24),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      try {
+        const clipperProfile = await ctx.db.clipperProfile.findUnique({
+          where: { userId: ctx.userId },
+          select: { id: true },
+        });
+        if (!clipperProfile) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Perfil de clipper não encontrado",
+          });
+        }
+
+        const application = await ctx.db.clipperApplication.findUnique({
+          where: {
+            campaignId_clipperProfileId: {
+              campaignId: input.campaignId,
+              clipperProfileId: clipperProfile.id,
+            },
+          },
+          select: { id: true, status: true, campaign: { select: { status: true } } },
+        });
+        if (
+          !application ||
+          application.campaign.status === "ARCHIVED" ||
+          !isParticipatingApplication(application.status)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Você não está participando desta competição",
+          });
+        }
+
+        const filters: Prisma.Sql[] = [
+          Prisma.sql`cp."campaignId" = ${input.campaignId}`,
+          Prisma.sql`cp."applicationId" = ${application.id}`,
+        ];
+        if (input.platform) {
+          filters.push(Prisma.sql`cp."platform"::text = ${input.platform}`);
+        }
+        if (input.status) {
+          filters.push(Prisma.sql`cp."status"::text = ${input.status}`);
+        }
+        if (input.search) {
+          // Igual ao filtro antigo: legenda (vazia se nula) contém o termo.
+          filters.push(
+            Prisma.sql`strpos(lower(COALESCE(cp."caption", '')), ${input.search.toLowerCase()}) > 0`,
+          );
+        }
+        const timeline = Prisma.sql`COALESCE(cp."postedAt", cp."createdAt" - interval '3 hours')`;
+        if (input.timelineFrom) {
+          filters.push(
+            Prisma.sql`${timeline} >= ${input.timelineFrom}::timestamp`,
+          );
+        }
+        if (input.timelineTo) {
+          filters.push(Prisma.sql`${timeline} < ${input.timelineTo}::timestamp`);
+        }
+        const where = Prisma.join(filters, " AND ");
+
+        // Base: createdAt desc, id desc; a ordenação escolhida vem antes
+        // (mesmo resultado do sort estável que era feito no cliente).
+        const orderBy =
+          input.sortBy === "recent"
+            ? Prisma.sql`${timeline} DESC, cp."createdAt" DESC, cp."id" DESC`
+            : input.sortBy === "views"
+              ? Prisma.sql`cp."views" DESC, cp."createdAt" DESC, cp."id" DESC`
+              : input.sortBy === "engagement"
+                ? Prisma.sql`
+                    CASE
+                      WHEN cp."views" > 0 THEN
+                        TRUNC(
+                          ((cp."likes"::bigint + cp."comments" + cp."shares" + COALESCE(cp."saves", 0))::float8
+                            / cp."views"::float8) * 100 * 100
+                        ) / 100
+                      ELSE 0
+                    END DESC,
+                    cp."createdAt" DESC,
+                    cp."id" DESC
+                  `
+                : // Ganhos são iguais em todos os posts: mantém a ordem base.
+                  Prisma.sql`cp."createdAt" DESC, cp."id" DESC`;
+
+        const offset = (input.page - 1) * input.pageSize;
+        const [pageRows, countRows, myTotals, prizeAgg] = await Promise.all([
+          ctx.db.$queryRaw<{ id: string }[]>`
+            SELECT cp."id"
+            FROM "ClipPost" cp
+            WHERE ${where}
+            ORDER BY ${orderBy}
+            LIMIT ${input.pageSize}
+            OFFSET ${offset}
+          `,
+          ctx.db.$queryRaw<[{ total: bigint }]>`
+            SELECT COUNT(*)::bigint AS "total"
+            FROM "ClipPost" cp
+            WHERE ${where}
+          `,
+          ctx.db.clipPost.count({
+            where: {
+              campaignId: input.campaignId,
+              applicationId: application.id,
+              status: "ELIGIBLE",
+            },
+          }),
+          ctx.db.transaction.aggregate({
+            where: {
+              wallet: { clipperProfileId: clipperProfile.id },
+              campaignId: input.campaignId,
+              type: { in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT"] },
+            },
+            _sum: { amount: true },
+          }),
+        ]);
+
+        const ids = pageRows.map((row) => row.id);
+        const [posts, rankingMap] =
+          ids.length > 0
+            ? await Promise.all([
+                ctx.db.clipPost.findMany({
+                  where: { id: { in: ids } },
+                  select: myCompetitionPostSelect,
+                }),
+                loadLatestDailyRankPositions(ctx.db, input.campaignId, ids),
+              ])
+            : [[], new Map<string, number>()];
+        const postById = new Map(posts.map((post) => [post.id, post]));
+        const formatOptions = {
+          rankingMap,
+          myCurrentEarnings: prizeAgg._sum.amount ?? 0,
+          myTotalPostsCount: myTotals,
+        };
+
+        return {
+          posts: ids.flatMap((id) => {
+            const post = postById.get(id);
+            return post ? [formatMyCompetitionPost(post, formatOptions)] : [];
+          }),
+          total: Number(countRows[0]?.total ?? 0),
+          page: input.page,
+          pageSize: input.pageSize,
+        };
+      } catch (error: any) {
+        console.error("Erro ao buscar posts da competição:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error.message || "Erro ao buscar posts da competição",
         });
       }
     }),
@@ -2538,110 +2698,45 @@ export const campaignRouter = createTRPCRouter({
         });
       }
 
-      const fromSnapshot = await buildSnapshotDailyRankingForClipper({
-        db: ctx.db,
-        campaignId: campaign.id,
-        dateYmd: input.date,
-        userId: ctx.userId,
-      });
+      // Dados iguais para todos (cache por campanha/dia); isCurrentUser aplicado depois.
+      const fromSnapshot = await getCachedSnapshotDailyRanking(
+        ctx.db,
+        campaign.id,
+        input.date,
+      );
+      const { startDate, endDate } = getPostedAtWindowUtc(input.date);
 
       if (fromSnapshot.hasSnapshot) {
-        const { startDate, endDate } = getPostedAtWindowUtc(input.date);
         return {
           date: input.date,
           source: "SNAPSHOT" as const,
           rankingMode: "TOP_POSTS" as const,
-          posts: fromSnapshot.posts,
+          posts: withCurrentUser(fromSnapshot.posts, ctx.userId),
           totalPosts: fromSnapshot.totalPosts,
           windowStart: startDate.toISOString(),
           windowEnd: endDate.toISOString(),
         };
       }
 
-      const { startDate, endDate } = getPostedAtWindowUtc(input.date);
-      const [posts, dailyEntryMetricsMap] = await Promise.all([
-        ctx.db.clipPost.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-            postedAt: {
-              gte: startDate,
-              lt: endDate,
-            },
-            application: rankingApplicationWhere(endDate),
-          },
-          include: {
-            application: {
-              include: {
-                clipperProfile: {
-                  include: {
-                    user: { select: { imageUrl: true } },
-                    clan: {
-                      select: { tag: true, emoji: true, emojiColor: true },
-                    },
-                  },
-                },
-              },
-            },
-          },
+      // Sem DailyRanking no dia: ranking ao vivo pelas métricas de ClipPost.
+      const [ranked, totalPosts] = await Promise.all([
+        getCachedLiveDailyRanking(ctx.db, {
+          campaignId: campaign.id,
+          dateYmd: input.date,
+          metricType: campaign.rankingMetricType,
+          topCount: campaign.activeRankingRule?.dailyTopCount ?? 15,
+          dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
+          entriesDailyRankingId: null,
         }),
-        loadDailyRankingEntryMetricsMap(ctx.db, input.campaignId, input.date),
+        getCachedDailyEligiblePostsCount(ctx.db, campaign.id, input.date),
       ]);
-
-      const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
-      const ranked = rankLiveDailyPosts({
-        posts: posts.flatMap((post) => {
-          const clipTotals = {
-            views: Number(post.views),
-            likes: post.likes,
-            comments: post.comments,
-            shares: post.shares,
-            saves: post.saves ?? 0,
-          };
-          const { metrics, source } = pickMetricsForDailyRank(
-            post.id,
-            clipTotals,
-            dailyEntryMetricsMap,
-          );
-          if (hasSnapshotMetrics && source !== "daily_entry") {
-            return [];
-          }
-          return {
-            postId: post.id,
-            clipperName: getClipperRankingDisplayName(
-              post.application.clipperProfile,
-            ),
-            clipperImageUrl:
-              post.application.clipperProfile.user?.imageUrl || null,
-            username: post.username || "",
-            platform: post.platform,
-            thumbnailUrl: post.thumbnailUrl || "",
-            views: metrics.views,
-            likes: metrics.likes,
-            comments: metrics.comments,
-            shares: metrics.shares,
-            saves: metrics.saves,
-            postedAtIso:
-              post.postedAt?.toISOString() || new Date().toISOString(),
-            isCurrentUser:
-              post.application.clipperProfile.userId === ctx.userId,
-            clanTag: post.application.clipperProfile.clan?.tag ?? null,
-            clanEmoji: post.application.clipperProfile.clan?.emoji ?? null,
-            clanEmojiColor:
-              post.application.clipperProfile.clan?.emojiColor ?? null,
-          };
-        }),
-        metricType: campaign.rankingMetricType,
-        topCount: campaign.activeRankingRule?.dailyTopCount ?? 15,
-        dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
-      });
 
       return {
         date: input.date,
         source: "LIVE" as const,
         rankingMode: "TOP_POSTS" as const,
-        posts: ranked,
-        totalPosts: posts.length,
+        posts: withCurrentUser(ranked, ctx.userId),
+        totalPosts,
         windowStart: startDate.toISOString(),
         windowEnd: endDate.toISOString(),
       };
@@ -2686,146 +2781,30 @@ export const campaignRouter = createTRPCRouter({
 
       const { startDate, endDate } = getLiveDailyWindowByReferenceDate(input.date);
       await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, endDate);
-      const persistedDisqualifications =
-        await ctx.db.topClippersDailyRankingEntry.findMany({
-          where: {
-            isDisqualified: true,
-            ranking: {
-              campaignId: input.campaignId,
-              rankingDate: new Date(`${input.date}T00:00:00.000Z`),
-            },
-          },
-          select: { applicationId: true },
-        });
-      const disqualifiedApplicationIds = persistedDisqualifications.map(
-        (entry) => entry.applicationId,
+      // Igual para todos (cache por campanha/dia); isCurrentUser e prêmio depois.
+      const board = await cachedQuery(
+        `top-clippers-day:${input.campaignId}:${input.date}:${input.limit}`,
+        dailyRankingCacheTtlMs(input.date),
+        () =>
+          loadDailyTopClippersByPostedVideos(ctx.db, {
+            campaignId: input.campaignId,
+            date: input.date,
+            limit: input.limit,
+          }),
       );
 
-      type CampaignBreakdown = {
-        campaignId: string;
-        campaignName: string;
-        posts: number;
-        views: number;
-      };
-
-      type TopClipperAccumulator = {
-        clipperProfileId: string;
-        clipperName: string;
-        fullName: string;
-        imageUrl: string | null;
-        isCurrentUser: boolean;
-        totalPosts: number;
-        totalViews: number;
-        campaigns: Map<string, CampaignBreakdown>;
-      };
-
-      const clippersMap = new Map<string, TopClipperAccumulator>();
-      let totalPostsInWindow = 0;
-      let totalViewsInWindow = 0;
-
-      const addClipperPost = (post: {
-        clipperProfileId: string;
-        clipperName: string;
-        fullName: string;
-        imageUrl: string | null;
-        userId: string;
-        campaignId: string;
-        campaignName: string;
-        views: number;
-      }) => {
-        const current = clippersMap.get(post.clipperProfileId) ?? {
-          clipperProfileId: post.clipperProfileId,
-          clipperName: post.clipperName,
-          fullName: post.fullName,
-          imageUrl: post.imageUrl,
-          isCurrentUser: post.userId === ctx.userId,
-          totalPosts: 0,
-          totalViews: 0,
-          campaigns: new Map<string, CampaignBreakdown>(),
-        };
-        const campaignBreakdown = current.campaigns.get(post.campaignId) ?? {
-          campaignId: post.campaignId,
-          campaignName: post.campaignName,
-          posts: 0,
-          views: 0,
-        };
-
-        current.isCurrentUser =
-          current.isCurrentUser || post.userId === ctx.userId;
-        current.totalPosts += 1;
-        current.totalViews += post.views;
-        campaignBreakdown.posts += 1;
-        campaignBreakdown.views += post.views;
-        current.campaigns.set(post.campaignId, campaignBreakdown);
-        clippersMap.set(post.clipperProfileId, current);
-        totalPostsInWindow += 1;
-        totalViewsInWindow += post.views;
-      };
-
-      const livePosts = await ctx.db.clipPost.findMany({
-        where: {
-          campaignId: input.campaignId,
-          status: ClipPostStatus.ELIGIBLE,
-          postedAt: { gte: startDate, lt: endDate },
-          applicationId: { notIn: disqualifiedApplicationIds },
-          application: rankingApplicationWhere(endDate),
-        },
-        select: {
-          campaignId: true,
-          views: true,
-          campaign: { select: { name: true } },
-          application: {
-            select: {
-              clipperProfileId: true,
-              clipperProfile: {
-                select: {
-                  fullName: true,
-                  artisticName: true,
-                  userId: true,
-                  user: { select: { imageUrl: true } },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      for (const post of livePosts) {
-        const profile = post.application.clipperProfile;
-        addClipperPost({
-          clipperProfileId: post.application.clipperProfileId,
-          clipperName: getClipperRankingDisplayName(profile),
-          fullName: getFirstName(profile.fullName) || "Clipador",
-          imageUrl: profile.user.imageUrl,
-          userId: profile.userId,
-          campaignId: post.campaignId,
-          campaignName: post.campaign.name,
-          views: Number(post.views || 0),
-        });
-      }
-
-      const entries = Array.from(clippersMap.values())
-        .sort((a, b) => {
-          if (b.totalPosts !== a.totalPosts) return b.totalPosts - a.totalPosts;
-          if (b.totalViews !== a.totalViews) return b.totalViews - a.totalViews;
-          return a.clipperProfileId.localeCompare(b.clipperProfileId);
-        })
-        .slice(0, input.limit)
-        .map((clipper, index) => ({
-          position: index + 1,
-          clipperProfileId: clipper.clipperProfileId,
-          clipperName: clipper.clipperName,
-          fullName: clipper.fullName,
-          imageUrl: clipper.imageUrl,
-          isCurrentUser: clipper.isCurrentUser,
-          prize: getTopClippersPrize(prizeTable, index + 1),
-          totalPosts: clipper.totalPosts,
-          totalViews: clipper.totalViews,
-          campaigns: Array.from(clipper.campaigns.values()).sort((a, b) => {
-            if (b.posts !== a.posts) return b.posts - a.posts;
-            return b.views - a.views;
-          }),
-        }));
+      const entries = board.entries.map((clipper, index) => ({
+        position: index + 1,
+        clipperProfileId: clipper.clipperProfileId,
+        clipperName: clipper.clipperName,
+        fullName: clipper.fullName,
+        imageUrl: clipper.imageUrl,
+        isCurrentUser: clipper.ownerUserId === ctx.userId,
+        prize: getTopClippersPrize(prizeTable, index + 1),
+        totalPosts: clipper.totalPosts,
+        totalViews: clipper.totalViews,
+        campaigns: clipper.campaigns,
+      }));
 
       return {
         date: input.date,
@@ -2833,12 +2812,7 @@ export const campaignRouter = createTRPCRouter({
         windowEnd: endDate.toISOString(),
         prizeTable,
         entries,
-        stats: {
-          totalPostsInWindow,
-          totalViewsInWindow,
-          totalClippersWithPosts: clippersMap.size,
-          totalCampaigns: 1,
-        },
+        stats: board.stats,
       };
     }),
 

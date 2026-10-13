@@ -546,6 +546,14 @@ export function RankingTab({
   /** Ranking "Top Clipadores" só existe quando a competição o habilita. */
   const topClippersEnabled = competition.topClippersRankingEnabled === true
 
+  /* ===== Rankings mensal e diário atual (carregados só com a aba aberta) ===== */
+  const { data: ranking, isLoading: isLoadingRanking } =
+    api.campaign.getCompetitionRanking.useQuery(
+      { campaignId: competition.id },
+      { enabled: !!competition.id },
+    )
+  const topRanking = ranking?.topRanking ?? []
+
   /* ===== Histórico de dias + ranking por data ===== */
   const { data: dailyRankingHistory } =
     api.campaign.getDailyRankingHistory.useQuery(
@@ -590,21 +598,24 @@ export function RankingTab({
       },
     )
 
-  const historyDates = React.useMemo(() => {
-    if (dailyRankingHistory && dailyRankingHistory.length > 0) {
-      return dailyRankingHistory.map((item) => item.date)
-    }
-    return competition.dailyRankingDates ?? []
-  }, [dailyRankingHistory, competition.dailyRankingDates])
+  // Dias com ranking (sem duplicatas; respeita a saída da competição).
+  const historyDates = React.useMemo(
+    () => (dailyRankingHistory ?? []).map((item) => item.date),
+    [dailyRankingHistory],
+  )
 
   const rankingDailyPosts: DailyRankingItem[] =
     selectedDailyRankingDate === "current"
-      ? (competition.topDailyPosts ?? [])
+      ? (ranking?.topDailyPosts ?? [])
       : (dailyRankingByDate?.posts ?? [])
+  const isLoadingDailyPosts =
+    selectedDailyRankingDate === "current"
+      ? isLoadingRanking
+      : isFetchingDailyRankingByDate
 
   const dailyRankingMode: string =
     selectedDailyRankingDate === "current"
-      ? (competition.dailyRankingMode ?? "TOP_POSTS")
+      ? (ranking?.dailyRankingMode ?? competition.dailyRankingMode ?? "TOP_POSTS")
       : (dailyRankingByDate?.rankingMode ?? "TOP_POSTS")
   const isTopPosters = dailyRankingMode === "TOP_POSTERS"
 
@@ -702,7 +713,7 @@ export function RankingTab({
           </div>
 
           <div className="flex flex-col gap-3">
-            {isFetchingDailyRankingByDate ? (
+            {isLoadingDailyPosts ? (
               <div className="text-muted-foreground py-10 text-center">
                 <Spinner className="mx-auto mb-2 size-6 animate-spin" />
                 <p className="text-sm">Carregando ranking...</p>
@@ -892,14 +903,19 @@ export function RankingTab({
           </div>
 
           <div className="flex flex-col gap-3">
-            {!competition.topRanking || competition.topRanking.length === 0 ? (
+            {isLoadingRanking ? (
+              <div className="text-muted-foreground py-10 text-center">
+                <Spinner className="mx-auto mb-2 size-6 animate-spin" />
+                <p className="text-sm">Carregando ranking...</p>
+              </div>
+            ) : topRanking.length === 0 ? (
               <EmptyState
                 icon={<Trophy className="size-6" weight="fill" />}
                 title="Nenhum clipador no ranking ainda"
                 subtitle="O ranking mensal aparece assim que os primeiros posts forem contabilizados"
               />
             ) : (
-              competition.topRanking.map((entry) => {
+              topRanking.map((entry) => {
                 const prize = getPrizeForPosition(
                   monthlyPrizeTable,
                   entry.position,

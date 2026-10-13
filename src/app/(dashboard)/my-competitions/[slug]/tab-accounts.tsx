@@ -22,9 +22,11 @@ import { type ApplicationAccount } from "./shared"
 
 export function AccountsTab({
   accounts,
+  isLoading = false,
   onAddAccounts,
 }: {
   accounts: ApplicationAccount[] | undefined
+  isLoading?: boolean
   onAddAccounts: () => void
 }) {
   const hasAccounts = !!accounts && accounts.length > 0
@@ -56,7 +58,16 @@ export function AccountsTab({
       </div>
 
       {/* Lista de contas */}
-      {!hasAccounts ? (
+      {isLoading && !accounts ? (
+        <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
+          {[0, 1].map((index) => (
+            <div
+              key={index}
+              className="glass-card bg-muted/30 h-24 animate-pulse rounded-2xl"
+            />
+          ))}
+        </div>
+      ) : !hasAccounts ? (
         <EmptyState
           icon={<UsersThree className="size-6" weight="fill" />}
           title="Nenhuma conta cadastrada"

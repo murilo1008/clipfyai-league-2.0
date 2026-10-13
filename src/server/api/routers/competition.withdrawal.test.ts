@@ -9,6 +9,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 vi.mock("@/server/db", () => ({ db: {} }));
 
 import { campaignRouter } from "./competition";
+import { invalidateCachedQueries } from "@/server/memory-cache";
 
 const now = new Date("2026-10-09T18:00:00.000Z");
 
@@ -29,6 +30,7 @@ function fixture() {
   const db = {
     $transaction: vi.fn(),
     $executeRaw: vi.fn().mockResolvedValue(1),
+    $queryRaw: vi.fn().mockResolvedValue([]),
     user: {
       findUnique: vi.fn().mockResolvedValue({
         role: "CLIPPER",
@@ -92,6 +94,7 @@ function fixture() {
 }
 
 beforeEach(() => {
+  invalidateCachedQueries("");
   // Só congela Date; os timers do middleware tRPC continuam funcionando.
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(now);
@@ -259,7 +262,10 @@ describe("saída voluntária da competição", () => {
         }),
       },
       dailyRanking: { findFirst: vi.fn().mockResolvedValue(null) },
-      clipPost: { findMany: vi.fn().mockResolvedValue([]) },
+      clipPost: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+      },
     });
     expect(
       await api.getDailyRankingByDate({
@@ -286,7 +292,10 @@ describe("saída voluntária da competição", () => {
           activeRankingRule: null,
         }),
       },
-      clipPost: { findMany: vi.fn().mockResolvedValue([]) },
+      clipPost: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+      },
     });
 
     expect(

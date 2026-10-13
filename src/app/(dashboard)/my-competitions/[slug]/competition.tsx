@@ -32,14 +32,7 @@ import {
   VideoCamera,
   Wallet,
 } from "@phosphor-icons/react"
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-} from "recharts"
+import dynamic from "next/dynamic"
 
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
 import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
@@ -81,6 +74,14 @@ import { AnnouncementsTab } from "./tab-announcements"
 import { MyPostsTab } from "./tab-my-posts"
 import { RankingTab } from "./tab-ranking"
 import { StatsTab } from "./tab-stats"
+
+/* Gráfico (recharts) carregado sob demanda, só no cliente */
+const GrowthChart = dynamic(() => import("./growth-chart"), {
+  ssr: false,
+  loading: () => (
+    <div className="bg-muted/30 h-full w-full animate-pulse rounded-2xl" />
+  ),
+})
 
 /* ============================================================
    Backdrop animado do hero (mesmo padrão do competition-admin)
@@ -176,50 +177,6 @@ function HeroBackdrop() {
 }
 
 /* ============================================================
-   Tooltip glass do gráfico de crescimento
-   ============================================================ */
-
-function GrowthTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean
-  payload?: Array<{ name?: string; value?: number | string; color?: string }>
-  label?: string
-}) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="border-border bg-popover/95 min-w-44 rounded-xl border p-3 shadow-xl backdrop-blur-md">
-      <p className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wide uppercase">
-        {label}
-      </p>
-      <div className="flex flex-col gap-1">
-        {payload.map((entry, index) => (
-          <div
-            key={index}
-            className="flex items-center justify-between gap-6 text-xs"
-          >
-            <span className="text-muted-foreground inline-flex items-center gap-1.5">
-              <span
-                className="size-2 rounded-full"
-                style={{ background: entry.color }}
-              />
-              {entry.name}
-            </span>
-            <span className="font-semibold tabular-nums">
-              {typeof entry.value === "number"
-                ? entry.value.toLocaleString("pt-BR")
-                : entry.value}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/* ============================================================
    Página da competição do clipador
    ============================================================ */
 
@@ -233,7 +190,6 @@ export default function Competition({
   initialAnnouncementId?: string
 }) {
   const { maskText } = useMaskedCurrency()
-  const utils = api.useUtils()
   const router = useRouter()
   const [isAnnouncementsDialogOpen, setIsAnnouncementsDialogOpen] =
     React.useState(initialTab === "announcements" || !!initialAnnouncementId)
@@ -245,9 +201,10 @@ export default function Competition({
 
   /* ===== Queries ===== */
   const { data: userData } = api.user.getCurrentUser.useQuery()
+  // Mesma query do sino (que já faz o polling); aqui só lê o cache.
   const { data: unreadNotifications } = api.notifications.unreadSummary.useQuery(
     { slug },
-    { enabled: userData?.role === "CLIPPER", refetchInterval: 30000 },
+    { enabled: userData?.role === "CLIPPER" },
   )
   const isProSubscriber = userData?.subscriptionStatus === "ACTIVE"
 
@@ -257,16 +214,7 @@ export default function Competition({
     error,
   } = api.campaign.getCompetitionDetails.useQuery({ slug }, { retry: 1 })
 
-  const { data: allSocialAccounts, refetch: refetchAllAccounts } =
-    api.clipper.getMySocialAccounts.useQuery()
-
-  const { data: applicationAccounts, refetch: refetchApplicationAccounts } =
-    api.campaign.getApplicationAccounts.useQuery(
-      { applicationId: competition?.applicationId || "" },
-      { enabled: !!competition?.applicationId },
-    )
-
-  /* ===== Dialogs ===== */
+  /* ===== Dialogs / tabs ===== */
   const [isCreatePostOpen, setIsCreatePostOpen] = React.useState(false)
   const [isRulesDialogOpen, setIsRulesDialogOpen] = React.useState(false)
   const [isAffiliateLinksDialogOpen, setIsAffiliateLinksDialogOpen] =
@@ -275,6 +223,28 @@ export default function Competition({
     React.useState(false)
   const [isCreateAccountDialogOpen, setIsCreateAccountDialogOpen] =
     React.useState(false)
+  const [activeTab, setActiveTab] = React.useState("posts")
+
+  // Todas as contas do clipador: só para o dialog "Adicionar Contas".
+  const { data: allSocialAccounts, refetch: refetchAllAccounts } =
+    api.clipper.getMySocialAccounts.useQuery(undefined, {
+      enabled: isAddAccountsDialogOpen,
+    })
+
+  // Contas da inscrição: só quando a aba "Minhas Contas" ou o dialog abre
+  // (o contador da aba vem de getCompetitionDetails).
+  const {
+    data: applicationAccounts,
+    isLoading: isLoadingApplicationAccounts,
+    refetch: refetchApplicationAccounts,
+  } = api.campaign.getApplicationAccounts.useQuery(
+    { applicationId: competition?.applicationId || "" },
+    {
+      enabled:
+        !!competition?.applicationId &&
+        (activeTab === "accounts" || isAddAccountsDialogOpen),
+    },
+  )
 
   /* ===== Loading ===== */
   if (isLoading) {
@@ -358,11 +328,8 @@ export default function Competition({
     competition.myTotalViews * myEngagementRateTotal,
   )
 
-  /* Post mais viral (maior número de views) */
-  const topViralPost =
-    competition.myPosts.length > 0
-      ? [...competition.myPosts].sort((a, b) => b.views - a.views)[0]
-      : undefined
+  /* Post mais viral (maior número de views) — calculado no servidor */
+  const topViralPost = competition.topViralPost ?? undefined
   const topViralConfig = topViralPost
     ? platformConfig[topViralPost.platform as PlatformKey]
     : undefined
@@ -375,14 +342,8 @@ export default function Competition({
     ),
   )
 
-  const bestViews =
-    competition.myPosts.length > 0
-      ? Math.max(...competition.myPosts.map((post) => post.views))
-      : 0
-  const bestEngagementRate =
-    competition.myPosts.length > 0
-      ? Math.max(...competition.myPosts.map((post) => post.engagementRate))
-      : 0
+  const bestViews = topViralPost?.views ?? 0
+  const bestEngagementRate = competition.bestEngagementRate
 
   const growthData = competition.growthData ?? []
 
@@ -1167,62 +1128,7 @@ export default function Competition({
             {growthData.length > 0 ? (
               <>
                 <div className="h-56 w-full flex-1 sm:h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={growthData}
-                      margin={{ left: 12, right: 12, top: 8, bottom: 0 }}
-                    >
-                      <CartesianGrid
-                        vertical={false}
-                        stroke="color-mix(in oklab, var(--foreground) 7%, transparent)"
-                      />
-                      <XAxis
-                        dataKey="date"
-                        tickLine={false}
-                        axisLine={false}
-                        tickMargin={8}
-                        tick={{ fill: "var(--muted-foreground)", fontSize: 10 }}
-                      />
-                      <Tooltip
-                        content={<GrowthTooltip />}
-                        cursor={{
-                          stroke:
-                            "color-mix(in oklab, var(--foreground) 22%, transparent)",
-                          strokeDasharray: "4 4",
-                        }}
-                      />
-                      <Line
-                        dataKey="views"
-                        name="Views"
-                        type="monotone"
-                        stroke="var(--brand-cyan)"
-                        strokeWidth={2.5}
-                        strokeLinecap="round"
-                        dot={false}
-                        activeDot={{
-                          r: 5,
-                          strokeWidth: 2,
-                          fill: "var(--brand-mint)",
-                          stroke: "var(--card)",
-                        }}
-                      />
-                      <Line
-                        dataKey="engagement"
-                        name="Engajamento"
-                        type="monotone"
-                        stroke="#ec4899"
-                        strokeWidth={2}
-                        strokeLinecap="round"
-                        dot={false}
-                        activeDot={{
-                          r: 4,
-                          strokeWidth: 2,
-                          fill: "#ec4899",
-                          stroke: "var(--card)",
-                        }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <GrowthChart data={growthData} />
                 </div>
                 <div className="text-muted-foreground flex items-center justify-center gap-5 text-xs">
                   <span className="inline-flex items-center gap-1.5">
@@ -1476,7 +1382,11 @@ export default function Competition({
           contas) e não pode depender de scroll para aparecer — mesmo
           padrão das demais telas do dashboard. */}
       <Reveal immediate delayMs={60}>
-        <Tabs defaultValue="posts" className="gap-4 sm:gap-5">
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          className="gap-4 sm:gap-5"
+        >
           <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
             <TabsList className="bg-muted/40 flex h-auto w-max gap-1 rounded-2xl p-1 sm:w-full">
               <TabsTrigger
@@ -1518,7 +1428,8 @@ export default function Competition({
                 <span className="hidden sm:inline">Minhas Contas</span>
                 <span className="sm:hidden">Contas</span>
                 <Badge className="bg-gradient-custom border-0 px-1.5 py-0 text-[10px] font-bold text-[#04222A] shadow-sm">
-                  {applicationAccounts?.length || 0}
+                  {applicationAccounts?.length ??
+                    competition.applicationAccountsCount}
                 </Badge>
               </TabsTrigger>
             </TabsList>
@@ -1545,6 +1456,7 @@ export default function Competition({
           <TabsContent value="accounts">
             <AccountsTab
               accounts={applicationAccounts}
+              isLoading={isLoadingApplicationAccounts}
               onAddAccounts={() => setIsAddAccountsDialogOpen(true)}
             />
           </TabsContent>
@@ -1621,9 +1533,6 @@ export default function Competition({
         open={isCreatePostOpen}
         onOpenChange={setIsCreatePostOpen}
         preSelectedCampaignId={competition.id}
-        onSuccess={() => {
-          void utils.campaign.getCompetitionDetails.invalidate({ slug })
-        }}
       />
     </div>
   )
