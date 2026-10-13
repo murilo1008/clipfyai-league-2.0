@@ -5,7 +5,6 @@ import { clerkClient } from "@clerk/nextjs/server"
 import {
   type KiwifyWebhookPayload,
   KIWIFY_WEBHOOK_EVENTS,
-  validateKiwifyWebhook,
   mapKiwifyStatus,
   mapKiwifySubscriptionStatus,
   isSubscriptionWebhook,
@@ -18,6 +17,7 @@ import {
   isClipfyProLegacySubscriptionProduct,
   isClipfyProLifetimeProduct,
 } from "@/lib/kiwify"
+import { validateKiwifyWebhook } from "@/lib/kiwify.server"
 import {
   sendWelcomeProEmail,
   sendPaymentConfirmationEmail,

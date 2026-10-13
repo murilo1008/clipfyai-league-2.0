@@ -10,6 +10,15 @@ const config = {
     // Desabilitar ESLint durante builds
     ignoreDuringBuilds: true,
   },
+  experimental: {
+    // Reescreve imports de barrel para o módulo exato (tree-shaking real).
+    // lucide-react, date-fns e recharts já estão na lista padrão do Next.
+    optimizePackageImports: [
+      "radix-ui",
+      "@phosphor-icons/react",
+      "framer-motion",
+    ],
+  },
   images: {
     remotePatterns: [
       {

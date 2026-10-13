@@ -11,6 +11,7 @@
 
 import { PrismaClient } from "@prisma/client";
 import { Resend } from "resend";
+import { rankingApplicationWhere } from "../src/lib/competition-participation";
 
 const prisma = new PrismaClient();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -275,6 +276,7 @@ async function payDailyRanking(
         where: {
           campaignId: campaign.id,
           submittedUrl: item.url,
+          application: rankingApplicationWhere(today22hBrasilia),
         },
         include: {
           application: {

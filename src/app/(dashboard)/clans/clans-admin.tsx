@@ -59,6 +59,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/trpc/react"
 
 import { CreateClanDialog } from "./create-clan-dialog"
@@ -385,11 +386,15 @@ export default function ClansAdmin() {
     },
   })
 
-  const { data: clans, isLoading } = api.clan.list.useQuery({
-    search: search || undefined,
-    status: statusFilter as "all" | "active" | "inactive",
-    sortBy: sortBy as "members" | "views" | "name" | "recent",
-  })
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
+  const { data: clans, isLoading } = api.clan.list.useQuery(
+    {
+      search: debouncedSearch || undefined,
+      status: statusFilter as "all" | "active" | "inactive",
+      sortBy: sortBy as "members" | "views" | "name" | "recent",
+    },
+    { placeholderData: (prev) => prev },
+  )
 
   const { data: stats, isLoading: statsLoading } = api.clan.getStats.useQuery()
 

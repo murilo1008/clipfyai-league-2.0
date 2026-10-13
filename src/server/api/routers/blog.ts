@@ -1873,8 +1873,10 @@ Aplique a edição e retorne o texto completo editado em markdown.`,
     .input(z.object({ postId: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
-        const { currentUser } = await import("@clerk/nextjs/server");
-        const user = await currentUser();
+        // auth() valida a sessão localmente; só o id é necessário aqui
+        const { auth } = await import("@clerk/nextjs/server");
+        const { userId } = await auth();
+        const user = userId ? { id: userId } : null;
         if (!user) return { liked: false, userId: null };
 
         const like = await ctx.db.blogPostLike.findUnique({
@@ -1949,8 +1951,10 @@ Aplique a edição e retorne o texto completo editado em markdown.`,
     )
     .query(async ({ ctx, input }) => {
       try {
-        const { currentUser } = await import("@clerk/nextjs/server");
-        const user = await currentUser();
+        // auth() valida a sessão localmente; só o id é necessário aqui
+        const { auth } = await import("@clerk/nextjs/server");
+        const { userId } = await auth();
+        const user = userId ? { id: userId } : null;
 
         const comments = await ctx.db.blogComment.findMany({
           where: {

@@ -24,8 +24,17 @@ import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
-import { ClipPostStatus } from "@prisma/client";
+import { ClipPostStatus, type PrismaClient } from "@prisma/client";
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
+import {
+  firstOpenDailyRankingDate,
+  canRejoinCompetition,
+  isParticipatingApplication,
+  participatingApplicationStatuses,
+  rankingApplicationWhere,
+} from "@/lib/competition-participation";
+import { withdrawFromCompetition } from "@/server/competition-withdrawal";
+import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -130,6 +139,51 @@ async function buildSnapshotDailyRankingForClipper(params: {
     totalPosts: core.stats.totalPosts,
     hasSnapshot: true,
   };
+}
+
+/**
+ * O admin vê o ranking de qualquer competição (aba Diário). O clipador só vê
+ * o da própria inscrição e, se saiu, apenas os períodos encerrados antes.
+ * Retorna null para o admin.
+ */
+async function requireRankingMembership(
+  db: PrismaClient,
+  userId: string,
+  campaignId: string,
+  cutoff?: Date,
+) {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { role: true, clipperProfile: { select: { id: true } } },
+  });
+  if (user?.role === "ADMIN") return null;
+
+  const profile = user?.clipperProfile;
+  const application = profile
+    ? await db.clipperApplication.findUnique({
+        where: {
+          campaignId_clipperProfileId: {
+            campaignId,
+            clipperProfileId: profile.id,
+          },
+        },
+        select: { id: true, status: true, withdrawnAt: true },
+      })
+    : null;
+  const withdrawn = application?.status === "WITHDRAWN";
+  if (
+    !application ||
+    (!isParticipatingApplication(application.status) && !withdrawn) ||
+    (withdrawn &&
+      (!application.withdrawnAt ||
+        (cutoff && application.withdrawnAt < cutoff)))
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Sua inscrição não permite acessar o ranking deste período.",
+    });
+  }
+  return application;
 }
 
 export const campaignRouter = createTRPCRouter({
@@ -789,7 +843,7 @@ export const campaignRouter = createTRPCRouter({
             await ctx.db.clipperApplication.findMany({
               where: {
                 clipperProfileId: clipperProfile.id,
-                status: { not: "REJECTED" },
+                status: { in: participatingApplicationStatuses },
                 campaign: { isPrivate: true, status: "ACTIVE" },
               },
               select: { campaignId: true },
@@ -884,7 +938,14 @@ export const campaignRouter = createTRPCRouter({
     }
   }),
 
-  // Inscrever-se em uma competição
+  // Sair voluntariamente de uma competição, preservando o histórico.
+  leaveCompetition: privateProcedure
+    .input(z.object({ campaignId: z.string().min(1) }))
+    .mutation(({ ctx, input }) =>
+      withdrawFromCompetition(ctx.db, ctx.userId, input.campaignId),
+    ),
+
+  // Inscrever-se em uma competição.
   enrollInCompetition: privateProcedure
     .input(
       z.object({
@@ -965,10 +1026,12 @@ export const campaignRouter = createTRPCRouter({
           },
         });
 
-        if (existingApplication) {
+        if (existingApplication && !canRejoinCompetition(existingApplication.status, campaign.status, campaign.startDate, campaign.endDate)) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Você já se inscreveu nesta competição",
+            message: existingApplication.status === "WITHDRAWN"
+              ? "A reinscrição após a saída só é permitida antes do início da competição."
+              : "Você já se inscreveu nesta competição",
           });
         }
 
@@ -987,6 +1050,22 @@ export const campaignRouter = createTRPCRouter({
             code: "BAD_REQUEST",
             message: "Uma ou mais contas sociais não foram encontradas",
           });
+        }
+
+        if (existingApplication?.status === "WITHDRAWN") {
+          const application = await reenrollWithdrawnApplication(ctx.db, {
+            campaignId: input.campaignId,
+            clipperProfileId: clipperProfile.id,
+            actorUserId: ctx.userId,
+            socialAccountIds: input.socialAccountIds,
+          });
+          return {
+            success: true,
+            application,
+            message: application.status === "PENDING"
+              ? "Reinscrição enviada! Aguarde aprovação."
+              : "Reinscrição realizada com sucesso!",
+          };
         }
 
         // Criar aplicação com contas sociais
@@ -1100,7 +1179,7 @@ export const campaignRouter = createTRPCRouter({
         await ctx.db.clipperApplication.findMany({
           where: {
             clipperProfileId: clipperProfile.id,
-            status: { not: "REJECTED" },
+            status: { in: participatingApplicationStatuses },
             campaign: { isPrivate: true, status: "ACTIVE" },
           },
           select: { campaignId: true },
@@ -1131,6 +1210,7 @@ export const campaignRouter = createTRPCRouter({
           status: true,
           rankingMetricType: true,
           isProOnly: true,
+          isPrivate: true,
         },
         orderBy: {
           startDate: "desc",
@@ -1154,6 +1234,7 @@ export const campaignRouter = createTRPCRouter({
               id: true,
               campaignId: true,
               status: true,
+              _count: { select: { clipPosts: true } },
               clipPosts: {
                 where: { status: "ELIGIBLE" },
                 select: {
@@ -1277,9 +1358,11 @@ export const campaignRouter = createTRPCRouter({
             totalParticipants,
             rankingMetricType: campaign.rankingMetricType,
             isProOnly: campaign.isProOnly,
+            isPrivate: campaign.isPrivate,
             myRanking: 0,
             myPreviousRanking: 0,
             myPosts: 0,
+            postedVideoCount: 0,
             myTotalViews: 0,
             myEngagementRate: 0,
             myPotentialPrize: "R$ 0",
@@ -1341,6 +1424,7 @@ export const campaignRouter = createTRPCRouter({
           myPreviousRanking: bestRanking?.previousPosition || 0,
           totalParticipants,
           myPosts: application.clipPosts.length,
+          postedVideoCount: application._count.clipPosts,
           myTotalViews,
           myEngagementRate,
           myPotentialPrize:
@@ -1352,6 +1436,7 @@ export const campaignRouter = createTRPCRouter({
           applicationStatus: application.status,
           lastPostDate: lastPost?.postedAt?.toISOString(),
           isProOnly: campaign.isProOnly,
+            isPrivate: campaign.isPrivate,
         };
       });
 
@@ -1827,6 +1912,18 @@ export const campaignRouter = createTRPCRouter({
             affiliateLinkYoutube: true,
             affiliateLinkFacebook: true,
             affiliateLinkKwai: true,
+            performanceVideos: {
+              where: { isActive: true },
+              orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+              select: {
+                id: true,
+                platform: true,
+                originalUrl: true,
+                title: true,
+                description: true,
+                thumbnailUrl: true,
+              },
+            },
           },
         });
 
@@ -1855,7 +1952,7 @@ export const campaignRouter = createTRPCRouter({
           },
         });
 
-        if (!application) {
+        if (!application || !participatingApplicationStatuses.some((status) => status === application.status)) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Você não está participando desta competição",
@@ -2052,6 +2149,7 @@ export const campaignRouter = createTRPCRouter({
               campaignId: campaign.id,
               status: "ELIGIBLE",
               postedAt: { gte: dailyWindowStart, lt: dailyWindowEnd },
+              application: rankingApplicationWhere(dailyWindowEnd),
             },
           }),
           buildSnapshotDailyRankingForClipper({
@@ -2065,6 +2163,7 @@ export const campaignRouter = createTRPCRouter({
               campaignId: campaign.id,
               status: "ELIGIBLE",
               postedAt: { gte: dailyWindowStart, lt: dailyWindowEnd },
+              application: rankingApplicationWhere(dailyWindowEnd),
             },
             include: {
               application: {
@@ -2264,6 +2363,8 @@ export const campaignRouter = createTRPCRouter({
         const result = {
           id: campaign.id,
           applicationId: application.id, // ID da aplicação para adicionar contas
+          applicationStatus: application.status,
+          postedVideoCount: myPosts.length,
           name: campaign.name,
           slug: campaign.slug,
           status: campaign.status,
@@ -2273,6 +2374,7 @@ export const campaignRouter = createTRPCRouter({
           platforms: campaign.platforms,
           requiredHashtags: campaign.requiredHashtags,
           requiredMentions: campaign.requiredMentions,
+          requiredVideos: campaign.performanceVideos,
           totalPrize,
           coverImageUrl:
             campaign.coverImageUrl ||
@@ -2376,8 +2478,14 @@ export const campaignRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      const application = await requireRankingMembership(ctx.db, ctx.userId, input.campaignId);
       const rankings = await ctx.db.dailyRanking.findMany({
-        where: { campaignId: input.campaignId },
+        where: {
+          campaignId: input.campaignId,
+          ...(application?.status === "WITHDRAWN" && application.withdrawnAt
+            ? { rankingDate: { lt: firstOpenDailyRankingDate(application.withdrawnAt) } }
+            : {}),
+        },
         select: {
           rankingDate: true,
           calculatedAt: true,
@@ -2408,6 +2516,7 @@ export const campaignRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, getPostedAtWindowUtc(input.date).endDate);
       const campaign = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
         select: {
@@ -2459,6 +2568,7 @@ export const campaignRouter = createTRPCRouter({
               gte: startDate,
               lt: endDate,
             },
+            application: rankingApplicationWhere(endDate),
           },
           include: {
             application: {
@@ -2574,34 +2684,8 @@ export const campaignRouter = createTRPCRouter({
         campaignConfig.topClippersPrizeTable,
       );
 
-      const clipperProfile = await ctx.db.clipperProfile.findUnique({
-        where: { userId: ctx.userId },
-        select: { id: true },
-      });
-
-      const application = clipperProfile
-        ? await ctx.db.clipperApplication.findUnique({
-            where: {
-              campaignId_clipperProfileId: {
-                campaignId: input.campaignId,
-                clipperProfileId: clipperProfile.id,
-              },
-            },
-            select: { id: true },
-          })
-        : null;
-
-      if (!application) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "Você precisa participar desta competição para ver o Top Clipadores.",
-        });
-      }
-
-      const { startDate, endDate } = getLiveDailyWindowByReferenceDate(
-        input.date,
-      );
+      const { startDate, endDate } = getLiveDailyWindowByReferenceDate(input.date);
+      await requireRankingMembership(ctx.db, ctx.userId, input.campaignId, endDate);
       const persistedDisqualifications =
         await ctx.db.topClippersDailyRankingEntry.findMany({
           where: {
@@ -2684,6 +2768,7 @@ export const campaignRouter = createTRPCRouter({
           status: ClipPostStatus.ELIGIBLE,
           postedAt: { gte: startDate, lt: endDate },
           applicationId: { notIn: disqualifiedApplicationIds },
+          application: rankingApplicationWhere(endDate),
         },
         select: {
           campaignId: true,

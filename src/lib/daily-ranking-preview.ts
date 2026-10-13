@@ -249,6 +249,7 @@ export async function fetchDailyRankPreviewByViews(
         ON ca."id" = e."applicationId"
       JOIN "ClipperProfile" cp2
         ON cp2."id" = ca."clipperProfileId"
+      WHERE ca."status" = 'APPROVED' OR (ca."status" = 'WITHDRAWN' AND ca."withdrawnAt" >= ${endDate})
       ORDER BY e."views" DESC
       LIMIT ${limit}
     )
@@ -350,6 +351,7 @@ export async function fetchDailyRankPreviewByEngagement(
         ON ca."id" = e."applicationId"
       JOIN "ClipperProfile" cp2
         ON cp2."id" = ca."clipperProfileId"
+      WHERE ca."status" = 'APPROVED' OR (ca."status" = 'WITHDRAWN' AND ca."withdrawnAt" >= ${endDate})
       ORDER BY "score" DESC, e."views" DESC
       LIMIT ${limit}
     )

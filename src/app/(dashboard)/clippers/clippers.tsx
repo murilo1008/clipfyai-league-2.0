@@ -73,6 +73,7 @@ import {
 } from "@/components/ui/table";
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { api } from "@/trpc/react";
 import type { RouterOutputs } from "@/trpc/react";
 
@@ -550,8 +551,13 @@ export default function Clippers() {
     SubscriptionKey | "ALL"
   >("ALL");
 
+  // Busca no servidor só depois que o usuário para de digitar
+  const debouncedSearch = useDebouncedValue(search.trim(), 300);
   const { data: clippers, isLoading: loadingClippers } =
-    api.clipper.getAll.useQuery({ status: statusFilter, search });
+    api.clipper.getAll.useQuery(
+      { status: statusFilter, search: debouncedSearch },
+      { placeholderData: (prev) => prev },
+    );
   const { data: stats, isLoading: loadingStats } =
     api.clipper.getStats.useQuery();
 

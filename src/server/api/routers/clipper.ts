@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
+import { createTRPCRouter, privateProcedure, adminProcedure, privateProcedureWithUser } from "../trpc";
 import { TRPCError } from "@trpc/server";
 import type { PrismaClient } from "@prisma/client";
 import { Resend } from "resend";
@@ -194,7 +194,7 @@ function getVerificationEmailTemplate(
 </head>
 <body style="margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);">
   <div style="max-width: 600px; margin: 0 auto; background: #000000;">
-    
+
     <!-- Header -->
     <div style="background: linear-gradient(135deg, #14F7FF 0%, #37FF9F 50%, #14F7FF 100%); padding: 32px 24px; text-align: center; position: relative; overflow: hidden;">
       <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"rgba(255,255,255,0.05)\"/></svg>') repeat; opacity: 0.1;"></div>
@@ -210,7 +210,7 @@ function getVerificationEmailTemplate(
 
     <!-- Main Content -->
     <div style="padding: 32px 24px; background: #0a0a0a;">
-      
+
       <!-- Greeting -->
       <div style="margin-bottom: 24px;">
         <p style="margin: 0 0 16px 0; font-size: 18px; color: #ffffff; font-weight: 600;">
@@ -280,8 +280,8 @@ function getVerificationEmailTemplate(
 
       <!-- CTA Button -->
       <div style="text-align: center; margin: 32px 0;">
-        <a href="https://league.clipfyai.com/my-competitions/schedule" 
-           target="_blank" 
+        <a href="https://league.clipfyai.com/my-competitions/schedule"
+           target="_blank"
            style="display: inline-block; padding: 18px 40px; background: linear-gradient(135deg, #14F7FF 0%, #37FF9F 100%); color: #000000; text-decoration: none; border-radius: 12px; font-weight: 800; font-size: 18px; box-shadow: 0 4px 20px rgba(20, 247, 255, 0.4);">
           🚀 VER COMPETIÇÕES DISPONÍVEIS
         </a>
@@ -329,7 +329,7 @@ function getVerificationEmailTemplate(
       </div>
       <p style="margin: 0; font-size: 12px; color: #666666; line-height: 1.6;">
         © ${new Date().getFullYear()} Clipfy League - Todos os direitos reservados<br/>
-        <a href="https://league.clipfyai.com/terms-of-use" target="_blank" style="color: #14F7FF; text-decoration: none;">Termos de Uso</a> | 
+        <a href="https://league.clipfyai.com/terms-of-use" target="_blank" style="color: #14F7FF; text-decoration: none;">Termos de Uso</a> |
         <a href="https://league.clipfyai.com/rules" target="_blank" style="color: #14F7FF; text-decoration: none;">Regras</a>
       </p>
     </div>
@@ -341,7 +341,7 @@ function getVerificationEmailTemplate(
 }
 
 export const clipperRouter = createTRPCRouter({
-  canUseSocialIntegrations: privateProcedure.query(({ ctx }) => {
+  canUseSocialIntegrations: privateProcedureWithUser.query(({ ctx }) => {
     return canUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });
   }),
 
@@ -2816,6 +2816,7 @@ export const clipperRouter = createTRPCRouter({
             campaign: {
               select: {
                 status: true,
+                endDate: true,
                 platforms: true,
                 requiredHashtags: true,
               },
@@ -2833,7 +2834,9 @@ export const clipperRouter = createTRPCRouter({
         if (application.status !== "APPROVED") {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "Sua inscrição ainda não foi aprovada",
+            message: application.status === "WITHDRAWN"
+              ? "Você saiu desta competição e não pode enviar novos posts."
+              : "Sua inscrição ainda não foi aprovada",
           });
         }
 
@@ -3050,56 +3053,78 @@ export const clipperRouter = createTRPCRouter({
         }
 
         // Criar os posts
-        const createdPosts = await Promise.all(
-          postsWithResolvedUrls.map(async (post) => {
-            const account = socialAccounts.find(
-              (acc) => acc.id === post.accountId,
-            );
-            if (!account) return null;
-
-            // Verificar se a plataforma da conta é compatível com a campanha
-            if (!application.campaign.platforms.includes(account.platform)) {
-              throw new TRPCError({
-                code: "BAD_REQUEST",
-                message: `A plataforma ${account.platform} não é aceita nesta competição`,
-              });
-            }
-
-            // Extrair platformVideoId da URL
-            const platformVideoId = extractPlatformVideoId(
-              post.url,
-              account.platform,
-            );
-
-            if (platformVideoId) {
-              console.log(
-                `✅ PlatformVideoId extraído: ${platformVideoId} (${account.platform}) da URL: ${post.url}`,
-              );
-            } else {
-              console.warn(
-                `⚠️ Não foi possível extrair platformVideoId de ${account.platform}: ${post.url}`,
-              );
-            }
-
-            return await ctx.db.clipPost.create({
-              data: {
-                campaignId: input.campaignId,
-                applicationId: application.id,
-                platform: account.platform,
-                submittedUrl: post.url,
-                normalizedUrl:
-                  account.platform === "TIKTOK" ? post.url : undefined,
-                platformVideoId: platformVideoId, // Salvar shortcode extraído da URL
-                username: account.username, // Salvar username da conta social
-                status: "PENDING", // Posts começam pendentes de validação
-                views: 0,
-                likes: 0,
-                comments: 0,
-                shares: 0,
-              },
+        const createdPosts = await ctx.db.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "ClipperApplication" WHERE id = ${application.id} FOR UPDATE`;
+          const current = await tx.clipperApplication.findUnique({
+            where: { id: application.id },
+            select: {
+              status: true,
+              campaign: { select: { status: true, endDate: true } },
+            },
+          });
+          if (!current || current.status !== "APPROVED") {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Sua inscrição não permite enviar novos posts.",
             });
-          }),
-        );
+          }
+          if (
+            current.campaign.status !== "ACTIVE" ||
+            current.campaign.endDate <= new Date()
+          ) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Esta competição não está aberta para novos posts.",
+            });
+          }
+          return Promise.all(
+            postsWithResolvedUrls.map(async (post) => {
+              const account = socialAccounts.find((acc) => acc.id === post.accountId);
+              if (!account) return null;
+
+              // Verificar se a plataforma da conta é compatível com a campanha
+              if (!application.campaign.platforms.includes(account.platform)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: `A plataforma ${account.platform} não é aceita nesta competição`,
+                });
+              }
+
+              // Extrair platformVideoId da URL
+              const platformVideoId = extractPlatformVideoId(
+                post.url,
+                account.platform,
+              );
+
+              if (platformVideoId) {
+                console.log(
+                  `✅ PlatformVideoId extraído: ${platformVideoId} (${account.platform}) da URL: ${post.url}`,
+                );
+              } else {
+                console.warn(
+                  `⚠️ Não foi possível extrair platformVideoId de ${account.platform}: ${post.url}`,
+                );
+              }
+
+              return await tx.clipPost.create({
+                data: {
+                  campaignId: input.campaignId,
+                  applicationId: application.id,
+                  platform: account.platform,
+                  submittedUrl: post.url,
+                  normalizedUrl: account.platform === "TIKTOK" ? post.url : undefined,
+                  platformVideoId: platformVideoId, // Salvar shortcode extraído da URL
+                  username: account.username, // Salvar username da conta social
+                  status: "PENDING", // Posts começam pendentes de validação
+                  views: 0,
+                  likes: 0,
+                  comments: 0,
+                  shares: 0,
+                },
+              });
+            }),
+          );
+        });
 
         const validPosts = createdPosts.filter((p) => p !== null);
 
@@ -3388,10 +3413,14 @@ export const clipperRouter = createTRPCRouter({
           status: true,
           createdAt: true,
           approvedAt: true,
+          _count: { select: { clipPosts: true } },
         },
       });
 
-      return applications;
+      return applications.map(({ _count, ...application }) => ({
+        ...application,
+        postedVideoCount: _count.clipPosts,
+      }));
     } catch (error) {
       console.error("Erro ao buscar minhas aplicações:", error);
       return [];
@@ -3952,6 +3981,7 @@ export const clipperRouter = createTRPCRouter({
           select: {
             id: true,
             clipperProfileId: true,
+            status: true,
           },
         });
 
@@ -3968,6 +3998,10 @@ export const clipperRouter = createTRPCRouter({
             code: "FORBIDDEN",
             message: "Você não tem permissão para modificar esta aplicação",
           });
+        }
+
+        if (application.status === "WITHDRAWN") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Você saiu desta competição e não pode vincular contas." });
         }
 
         // Verificar se todas as contas pertencem ao clipper
@@ -3989,16 +4023,25 @@ export const clipperRouter = createTRPCRouter({
         }
 
         // Adicionar as contas à aplicação
-        await Promise.all(
-          socialAccounts.map((account) =>
-            ctx.db.applicationSocialAccount.create({
-              data: {
-                applicationId: application.id,
-                accountId: account.id,
-              },
-            }),
-          ),
-        );
+        await ctx.db.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "ClipperApplication" WHERE id = ${application.id} FOR UPDATE`;
+          const current = await tx.clipperApplication.findUnique({
+            where: { id: application.id }, select: { status: true },
+          });
+          if (!current || current.status === "WITHDRAWN") {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Você saiu desta competição e não pode vincular contas." });
+          }
+          await Promise.all(
+            socialAccounts.map((account) =>
+              tx.applicationSocialAccount.create({
+                data: {
+                  applicationId: application.id,
+                  accountId: account.id,
+                },
+              }),
+            ),
+          );
+        });
 
         const youtubeSyncResults = [];
         for (const account of socialAccounts.filter(

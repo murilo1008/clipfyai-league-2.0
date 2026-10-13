@@ -1237,6 +1237,7 @@ enum ApplicationStatus {
   APPROVED
   REJECTED
   REVOKED // Aprovação revogada (fraude posterior)
+  WITHDRAWN // Saída voluntária do clipador
 }
 
 model ClipperApplication {
@@ -1259,6 +1260,7 @@ model ClipperApplication {
   reviewNotes     String?
   rejectionReason String?
 
+  withdrawnAt DateTime? // Preserva a elegibilidade dos rankings encerrados antes da saída
   approvedAt DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -1445,6 +1447,9 @@ model ClipPost {
   @@index([campaignId, status, lastMetricsUpdate, id]) // Descoberta de posts para atualização de métricas
   @@index([campaignId, createdAt, id]) // Jobs diários por campanha e data de criação
   @@index([applicationId, status]) // Queries por application+ELIGIBLE
+  @@index([submittedUrl]) // Checagem de URL duplicada no envio (global, sem campaignId)
+  @@index([platformVideoId, platform]) // Checagem de vídeo duplicado entre competições
+  @@index([campaignId, status, postedAt]) // Janelas do ranking diário (ELIGIBLE + intervalo de postedAt)
 }
 
 model ClipPostComment {
@@ -2109,6 +2114,7 @@ model DailyRankingEntry {
   @@index([dailyRankingId, dailyViews]) // Ordenação por views do dia
   @@index([dailyRankingId, dailyRankingScore]) // Ordenação por score (VIEWS_X_ENGAGEMENT)
   @@index([clipPostId])
+  @@index([applicationId]) // FK com cascade; saída/reinscrição filtram por inscrição
   @@index([lastUpdated])
   @@index([dailyPrizeStatus])
   @@index([dailyPixStatus])

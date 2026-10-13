@@ -66,10 +66,6 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const { data: user, isLoading: isLoadingUser } =
     api.user.getCurrentUser.useQuery()
 
-  const { data: aiClipsAccess } = api.leagueClips.access.useQuery(undefined, {
-    enabled: !!user,
-  })
-
   const isAdminLike = user?.role === "ADMIN" || user?.role === "ORGANIZER_ADMIN"
 
   // "Em andamento" — competições ativas conforme o role (dados reais)
@@ -80,18 +76,21 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     undefined,
     { enabled: user?.role === "CLIPPER" },
   )
-  const { data: clientDashboard } = api.customers.getDashboard.useQuery(
-    undefined,
-    { enabled: user?.role === "CLIENT" },
-  )
+  // Só nomes e ids para o menu — o getDashboard completo roda ~13 queries
+  // de métricas por campanha e era refeito em toda navegação.
+  const { data: clientCampaigns } =
+    api.customers.getMyCampaignOptions.useQuery(undefined, {
+      enabled: user?.role === "CLIENT",
+    })
 
+  // Só muda quando o admin informa o investimento: sem polling.
   const { data: hasPerformance } = api.customers.hasPerformance.useQuery(
     undefined,
-    { enabled: user?.role === "CLIENT", refetchInterval: 60_000 },
+    { enabled: user?.role === "CLIENT", staleTime: 5 * 60_000 },
   )
 
   const navMain = user
-    ? getMenuByRole(user.role, { aiClipsEnabled: aiClipsAccess?.enabled }).filter(
+    ? getMenuByRole(user.role).filter(
         (item) =>
           user.role !== "CLIENT" ||
           item.url !== "/performance" ||
@@ -108,7 +107,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           }),
         ) ?? [])
       : user?.role === "CLIENT"
-        ? (clientDashboard?.campaigns?.map(
+        ? (clientCampaigns?.map(
             (campaign: { name: string; id: string }) => ({
               name: campaign.name,
               url: `/posts?campaignId=${campaign.id}`,

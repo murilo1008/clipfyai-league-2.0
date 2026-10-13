@@ -1,5 +1,7 @@
 "use client"
 
+import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
+import { canRejoinCompetition, isParticipatingApplication } from "@/lib/competition-participation"
 import * as React from "react"
 import Image from "next/image"
 import Link from "next/link"
@@ -455,7 +457,7 @@ export default function HomeClipper() {
 
     if (competitionFilter === "participating") {
       filtered = filtered.filter((c) =>
-        myApplications.some((app) => app.campaignId === c.id),
+        myApplications.some((app) => app.campaignId === c.id && isParticipatingApplication(app.status)),
       )
     } else if (competitionFilter === "started") {
       filtered = filtered.filter((c) => getDaysUntilStart(c.startDate) <= 0)
@@ -493,7 +495,7 @@ export default function HomeClipper() {
     () => ({
       all: scheduledCompetitions.length,
       participating: scheduledCompetitions.filter((c) =>
-        myApplications.some((app) => app.campaignId === c.id),
+        myApplications.some((app) => app.campaignId === c.id && isParticipatingApplication(app.status)),
       ).length,
       started: scheduledCompetitions.filter(
         (c) => getDaysUntilStart(c.startDate) <= 0,
@@ -1231,7 +1233,11 @@ export default function HomeClipper() {
                                 : application.status === "PENDING" ||
                                     application.status === "UNDER_REVIEW"
                                   ? "Aguardando"
-                                  : "Rejeitado"}
+                                  : application.status === "WITHDRAWN"
+                                    ? "Desistiu"
+                                    : application.status === "REVOKED"
+                                      ? "Revogado"
+                                      : "Rejeitado"}
                             </Badge>
                           )}
 
@@ -1374,6 +1380,19 @@ export default function HomeClipper() {
                             <Clock className="size-4 animate-pulse" weight="fill" />
                             Aguardando Aprovação
                           </Button>
+                        ) : application?.status === "WITHDRAWN" && !competition.isPrivate && canRejoinCompetition(application.status, competition.status, competition.startDate, competition.endDate) ? (
+                          <Button
+                            className="btn-gradient-auth h-9 w-full cursor-pointer rounded-xl text-xs font-semibold sm:h-10 sm:text-sm"
+                            onClick={() => openEnrollDialog(competition)}
+                          >
+                            <Lightning className="size-4" weight="fill" />
+                            Reinscrever-se
+                          </Button>
+                        ) : application?.status === "WITHDRAWN" || application?.status === "REVOKED" ? (
+                          <Button variant="outline" disabled className="h-9 w-full rounded-xl text-xs font-semibold sm:h-10 sm:text-sm">
+                            <X className="size-4" weight="bold" />
+                            {application.status === "WITHDRAWN" ? "Você saiu desta competição" : "Inscrição revogada"}
+                          </Button>
                         ) : application?.status === "REJECTED" ? (
                           <Button
                             variant="outline"
@@ -1392,6 +1411,13 @@ export default function HomeClipper() {
                             Inscrever-se Agora
                           </Button>
                         )}
+
+                        <LeaveCompetitionButton
+                          competition={competition}
+                          applicationStatus={application?.status}
+                          postedVideoCount={application?.postedVideoCount ?? 0}
+                          className="w-full"
+                        />
 
                         <Button
                           variant="outline"

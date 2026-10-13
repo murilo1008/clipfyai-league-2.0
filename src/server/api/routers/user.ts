@@ -1,4 +1,4 @@
-import { currentUser, clerkClient } from "@clerk/nextjs/server";
+import { auth, currentUser, clerkClient } from "@clerk/nextjs/server";
 import { createTRPCRouter, privateProcedure, publicProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
@@ -6,15 +6,18 @@ import { normalizePixKeyForType } from "@/lib/pix-key";
 
 export const userRouter = createTRPCRouter({
   getCurrentUser: publicProcedure.query(async ({ ctx }) => {
-    const user = await currentUser()
+    // auth() valida a sessão localmente; currentUser() faria uma chamada ao Clerk
+    const { userId } = await auth()
     
     // Se não houver usuário logado, retornar null
-    if (!user) {
+    if (!userId) {
       return null
     }
     
     return ctx.db.user.findUnique({
-      where: { id: user.id },
+      where: { id: userId },
+      // Segredo da integração Kiwify não deve ir para o navegador
+      omit: { kiwifySecretKey: true },
       include: {
         clipperProfile: true,
       },
@@ -600,18 +603,9 @@ export const userRouter = createTRPCRouter({
   // Buscar status de verificação
   getVerificationStatus: privateProcedure
     .query(async ({ ctx }) => {
-      const user = await currentUser()
-      
-      if (!user) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Você precisa estar logado.',
-        })
-      }
-
       try {
         const profile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
           select: {
             verificationStatus: true,
             verifiedAt: true,

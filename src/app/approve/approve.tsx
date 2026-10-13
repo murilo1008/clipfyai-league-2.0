@@ -54,7 +54,16 @@ export default function Approve() {
     isLoading,
     refetch,
   } = api.user.getVerificationStatus.useQuery(undefined, {
-    refetchInterval: 10000,
+    // Só aguarda enquanto a análise está em aberto; status finais não mudam
+    // sozinhos (o botão de atualizar continua disponível).
+    refetchInterval: (query) => {
+      const status = query.state.data?.verificationStatus
+      return status === "VERIFIED" ||
+        status === "REJECTED" ||
+        status === "BANNED"
+        ? false
+        : 15_000
+    },
   })
 
   // Redirecionar se não está logado
