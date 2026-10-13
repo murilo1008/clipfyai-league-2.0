@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   createTRPCRouter,
   adminProcedure,
@@ -6,6 +7,7 @@ import {
 } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
 import { calculateEngagementRate } from "@/lib/ranking-helpers";
+import { cachedQuery } from "@/server/memory-cache";
 
 function isClanManager(
   clipper: { id: string } | null | undefined,
@@ -14,6 +16,167 @@ function isClanManager(
   return (
     !!clipper && (clan.ownerId === clipper.id || clan.adminId === clipper.id)
   );
+}
+
+// Os totais dos clãs somam os posts elegíveis dos membros (ClipPost tem
+// centenas de milhares de linhas): são agregados no banco, em vez de carregar
+// cada post, e o ranking/lista reaproveitam o resultado por 5 minutos em cada
+// instância.
+const CLAN_TOTALS_TTL_MS = 5 * 60_000;
+
+type PostTotals = {
+  posts: number;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  saves: number;
+};
+
+type PostTotalsRow = {
+  posts: number;
+  views: bigint;
+  likes: bigint;
+  comments: bigint;
+  shares: bigint;
+  saves: bigint;
+};
+
+function toPostTotals(row: PostTotalsRow): PostTotals {
+  return {
+    posts: Number(row.posts),
+    views: Number(row.views),
+    likes: Number(row.likes),
+    comments: Number(row.comments),
+    shares: Number(row.shares),
+    saves: Number(row.saves),
+  };
+}
+
+/**
+ * Totais dos posts elegíveis de cada membro de clã (chave: id do
+ * ClipperProfile), somando as inscrições de qualquer status, como a lista e o
+ * ranking de clãs sempre contaram.
+ */
+function getClanMemberPostTotals(db: PrismaClient) {
+  return cachedQuery(
+    "clan:member-post-totals",
+    CLAN_TOTALS_TTL_MS,
+    async (): Promise<Map<string, PostTotals>> => {
+      const rows = await db.$queryRaw<
+        Array<PostTotalsRow & { clipperProfileId: string }>
+      >`
+        SELECT
+          a."clipperProfileId",
+          COUNT(*)::int AS posts,
+          COALESCE(SUM(p.views), 0)::bigint AS views,
+          COALESCE(SUM(p.likes), 0)::bigint AS likes,
+          COALESCE(SUM(p.comments), 0)::bigint AS comments,
+          COALESCE(SUM(p.shares), 0)::bigint AS shares,
+          COALESCE(SUM(p.saves), 0)::bigint AS saves
+        FROM "ClipPost" p
+        INNER JOIN "ClipperApplication" a ON a.id = p."applicationId"
+        INNER JOIN "ClipperProfile" cp ON cp.id = a."clipperProfileId"
+        WHERE p.status = 'ELIGIBLE' AND cp."clanId" IS NOT NULL
+        GROUP BY a."clipperProfileId"
+      `;
+      return new Map(
+        rows.map((row) => [row.clipperProfileId, toPostTotals(row)]),
+      );
+    },
+  );
+}
+
+type ApplicationPostTotals = PostTotals & {
+  todayViews: number;
+  todayPosts: number;
+};
+
+/**
+ * Totais dos posts elegíveis de cada inscrição APROVADA dos membros do clã
+ * (chave: id da inscrição). Posts de hoje: `postedAt >= todayStart`.
+ */
+async function getApprovedApplicationPostTotals(
+  db: PrismaClient,
+  clanTag: string,
+  todayStart: Date,
+) {
+  const rows = await db.$queryRaw<
+    Array<
+      PostTotalsRow & {
+        applicationId: string;
+        todayViews: bigint;
+        todayPosts: number;
+      }
+    >
+  >`
+    SELECT
+      p."applicationId",
+      COUNT(*)::int AS posts,
+      COALESCE(SUM(p.views), 0)::bigint AS views,
+      COALESCE(SUM(p.likes), 0)::bigint AS likes,
+      COALESCE(SUM(p.comments), 0)::bigint AS comments,
+      COALESCE(SUM(p.shares), 0)::bigint AS shares,
+      COALESCE(SUM(p.saves), 0)::bigint AS saves,
+      COALESCE(SUM(p.views) FILTER (WHERE p."postedAt" >= ${todayStart}::timestamp), 0)::bigint AS "todayViews",
+      (COUNT(*) FILTER (WHERE p."postedAt" >= ${todayStart}::timestamp))::int AS "todayPosts"
+    FROM "ClipPost" p
+    INNER JOIN "ClipperApplication" a ON a.id = p."applicationId"
+    INNER JOIN "ClipperProfile" cp ON cp.id = a."clipperProfileId"
+    INNER JOIN "Clan" c ON c.id = cp."clanId"
+    WHERE c.tag = ${clanTag} AND a.status = 'APPROVED' AND p.status = 'ELIGIBLE'
+    GROUP BY p."applicationId"
+  `;
+  return new Map<string, ApplicationPostTotals>(
+    rows.map((row) => [
+      row.applicationId,
+      {
+        ...toPostTotals(row),
+        todayViews: Number(row.todayViews),
+        todayPosts: Number(row.todayPosts),
+      },
+    ]),
+  );
+}
+
+type FirstClanMember = {
+  id: string;
+  fullName: string;
+  artisticName: string | null;
+  imageUrl: string | null;
+};
+
+/**
+ * Os 5 primeiros membros de cada clã, na ordem do id (a mesma do `take`
+ * aninhado do Prisma), limitados no banco em vez de carregar todos os membros.
+ */
+async function getFirstFiveClanMembers(db: PrismaClient, clanIds: string[]) {
+  const byClan = new Map<string, FirstClanMember[]>();
+  if (clanIds.length === 0) return byClan;
+
+  const rows = await db.$queryRaw<Array<FirstClanMember & { clanId: string }>>`
+    SELECT m.id, m."clanId", m."fullName", m."artisticName", u."imageUrl"
+    FROM (
+      SELECT
+        id,
+        "clanId",
+        "fullName",
+        "artisticName",
+        "userId",
+        ROW_NUMBER() OVER (PARTITION BY "clanId" ORDER BY id) AS position
+      FROM "ClipperProfile"
+      WHERE "clanId" IN (${Prisma.join(clanIds)})
+    ) m
+    LEFT JOIN "User" u ON u.id = m."userId"
+    WHERE m.position <= 5
+    ORDER BY m."clanId", m.id
+  `;
+  for (const { clanId, ...member } of rows) {
+    const members = byClan.get(clanId);
+    if (members) members.push(member);
+    else byClan.set(clanId, [member]);
+  }
+  return byClan;
 }
 
 export const clanRouter = createTRPCRouter({
@@ -52,53 +215,33 @@ export const clanRouter = createTRPCRouter({
         }
       })();
 
-      const clans = await ctx.db.clan.findMany({
-        where,
-        orderBy,
-        include: {
-          members: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: {
-                select: {
-                  imageUrl: true,
-                },
-              },
-              applications: {
-                select: {
-                  clipPosts: {
-                    where: { status: "ELIGIBLE" },
-                    select: {
-                      views: true,
-                    },
+      // Views somadas no banco por membro (cache de 5 min); os membros são
+      // lidos na hora, então entradas/saídas aparecem imediatamente.
+      const [clans, memberTotals] = await Promise.all([
+        ctx.db.clan.findMany({
+          where,
+          orderBy,
+          include: {
+            members: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                user: {
+                  select: {
+                    imageUrl: true,
                   },
                 },
               },
             },
           },
-          _count: {
-            select: {
-              members: true,
-            },
-          },
-        },
-      });
+        }),
+        getClanMemberPostTotals(ctx.db),
+      ]);
 
       const enriched = clans.map((clan) => {
         const totalViews = clan.members.reduce(
-          (acc, m) =>
-            acc +
-            m.applications.reduce(
-              (appAcc, app) =>
-                appAcc +
-                app.clipPosts.reduce(
-                  (postAcc, p) => postAcc + Number(p.views ?? 0),
-                  0,
-                ),
-              0,
-            ),
+          (acc, m) => acc + (memberTotals.get(m.id)?.views ?? 0),
           0,
         );
 
@@ -118,7 +261,8 @@ export const clanRouter = createTRPCRouter({
           description: clan.description,
           isActive: clan.isActive,
           createdAt: clan.createdAt,
-          memberCount: clan._count.members,
+          // Todos os membros do clã são carregados: o total é o mesmo do _count.
+          memberCount: clan.members.length,
           totalViews,
           topMembers,
         };
@@ -427,67 +571,60 @@ export const clanRouter = createTRPCRouter({
   getByTag: adminProcedure
     .input(z.object({ tag: z.string() }))
     .query(async ({ ctx, input }) => {
-      const clan = await ctx.db.clan.findUnique({
-        where: { tag: input.tag.toUpperCase() },
-        include: {
-          _count: { select: { members: true } },
-          owner: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: { select: { imageUrl: true } },
-            },
-          },
-          admin: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: { select: { imageUrl: true } },
-            },
-          },
-          members: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              discordUsername: true,
-              createdAt: true,
-              user: {
-                select: {
-                  id: true,
-                  imageUrl: true,
-                  email: true,
-                  createdAt: true,
-                },
+      const tag = input.tag.toUpperCase();
+
+      // Posts elegíveis somados no banco por inscrição aprovada, em paralelo
+      // com o clã (os totais de hoje não são usados aqui).
+      const [clan, applicationTotals] = await Promise.all([
+        ctx.db.clan.findUnique({
+          where: { tag },
+          include: {
+            owner: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                user: { select: { imageUrl: true } },
               },
-              applications: {
-                where: { status: "APPROVED" },
-                select: {
-                  id: true,
-                  campaign: {
-                    select: { id: true, name: true },
+            },
+            admin: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                user: { select: { imageUrl: true } },
+              },
+            },
+            members: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                discordUsername: true,
+                createdAt: true,
+                user: {
+                  select: {
+                    id: true,
+                    imageUrl: true,
+                    email: true,
+                    createdAt: true,
                   },
-                  clipPosts: {
-                    where: { status: "ELIGIBLE" },
-                    select: {
-                      id: true,
-                      views: true,
-                      likes: true,
-                      comments: true,
-                      shares: true,
-                      saves: true,
-                      platform: true,
-                      postedAt: true,
+                },
+                applications: {
+                  where: { status: "APPROVED" },
+                  select: {
+                    id: true,
+                    campaign: {
+                      select: { id: true, name: true },
                     },
                   },
                 },
               },
             },
           },
-        },
-      });
+        }),
+        getApprovedApplicationPostTotals(ctx.db, tag, new Date()),
+      ]);
 
       if (!clan) {
         throw new TRPCError({
@@ -507,14 +644,14 @@ export const clanRouter = createTRPCRouter({
 
         for (const app of m.applications) {
           if (app.campaign) campaigns.add(app.campaign.name);
-          for (const post of app.clipPosts) {
-            totalPosts++;
-            totalViews += Number(post.views ?? 0);
-            totalLikes += post.likes ?? 0;
-            totalComments += post.comments ?? 0;
-            totalShares += post.shares ?? 0;
-            totalSaves += post.saves ?? 0;
-          }
+          const totals = applicationTotals.get(app.id);
+          if (!totals) continue;
+          totalPosts += totals.posts;
+          totalViews += totals.views;
+          totalLikes += totals.likes;
+          totalComments += totals.comments;
+          totalShares += totals.shares;
+          totalSaves += totals.saves;
         }
 
         const engagement = calculateEngagementRate(
@@ -581,6 +718,9 @@ export const clanRouter = createTRPCRouter({
         where: { clanId: clan.id, status: "PENDING" },
       });
 
+      // Todos os membros do clã são carregados: o total é o mesmo do _count.
+      const memberCount = clan.members.length;
+
       return {
         id: clan.id,
         name: clan.name,
@@ -608,7 +748,7 @@ export const clanRouter = createTRPCRouter({
               imageUrl: clan.admin.user?.imageUrl ?? null,
             }
           : null,
-        memberCount: clan._count.members,
+        memberCount,
         pendingApplications,
         stats: {
           totalViews: clanTotalViews,
@@ -618,12 +758,10 @@ export const clanRouter = createTRPCRouter({
           totalShares: clanTotalShares,
           engagement: clanEngagement,
           avgViewsPerMember:
-            clan._count.members > 0
-              ? Math.round(clanTotalViews / clan._count.members)
-              : 0,
+            memberCount > 0 ? Math.round(clanTotalViews / memberCount) : 0,
           avgPostsPerMember:
-            clan._count.members > 0
-              ? Math.round((clanTotalPosts / clan._count.members) * 10) / 10
+            memberCount > 0
+              ? Math.round((clanTotalPosts / memberCount) * 10) / 10
               : 0,
         },
         members: membersEnriched,
@@ -633,70 +771,69 @@ export const clanRouter = createTRPCRouter({
   getByTagPublic: privateProcedure
     .input(z.object({ tag: z.string() }))
     .query(async ({ ctx, input }) => {
-      const clan = await ctx.db.clan.findUnique({
-        where: { tag: input.tag.toUpperCase() },
-        include: {
-          _count: { select: { members: true } },
-          owner: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: { select: { imageUrl: true } },
-            },
-          },
-          admin: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: { select: { imageUrl: true } },
-            },
-          },
-          members: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              discordUsername: true,
-              createdAt: true,
-              user: {
-                select: {
-                  id: true,
-                  imageUrl: true,
-                },
+      const tag = input.tag.toUpperCase();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Posts elegíveis somados no banco por inscrição aprovada, em paralelo
+      // com o clã e o perfil de quem consulta.
+      const [clan, applicationTotals, clipperProfile] = await Promise.all([
+        ctx.db.clan.findUnique({
+          where: { tag },
+          include: {
+            owner: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                user: { select: { imageUrl: true } },
               },
-              applications: {
-                where: { status: "APPROVED" },
-                select: {
-                  id: true,
-                  campaign: {
-                    select: {
-                      id: true,
-                      name: true,
-                      coverImageUrl: true,
-                      status: true,
-                    },
+            },
+            admin: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                user: { select: { imageUrl: true } },
+              },
+            },
+            members: {
+              select: {
+                id: true,
+                fullName: true,
+                artisticName: true,
+                discordUsername: true,
+                createdAt: true,
+                user: {
+                  select: {
+                    id: true,
+                    imageUrl: true,
                   },
-                  clipPosts: {
-                    where: { status: "ELIGIBLE" },
-                    select: {
-                      id: true,
-                      views: true,
-                      likes: true,
-                      comments: true,
-                      shares: true,
-                      saves: true,
-                      platform: true,
-                      postedAt: true,
+                },
+                applications: {
+                  where: { status: "APPROVED" },
+                  select: {
+                    id: true,
+                    campaign: {
+                      select: {
+                        id: true,
+                        name: true,
+                        coverImageUrl: true,
+                        status: true,
+                      },
                     },
                   },
                 },
               },
             },
           },
-        },
-      });
+        }),
+        getApprovedApplicationPostTotals(ctx.db, tag, today),
+        ctx.db.clipperProfile.findUnique({
+          where: { userId: ctx.userId },
+          select: { id: true },
+        }),
+      ]);
 
       if (!clan) {
         throw new TRPCError({
@@ -712,11 +849,6 @@ export const clanRouter = createTRPCRouter({
         });
       }
 
-      const clipperProfile = await ctx.db.clipperProfile.findUnique({
-        where: { userId: ctx.userId },
-        select: { id: true },
-      });
-
       const isOwner = isClanManager(clipperProfile, clan);
 
       let pendingApplications = 0;
@@ -725,9 +857,6 @@ export const clanRouter = createTRPCRouter({
           where: { clanId: clan.id, status: "PENDING" },
         });
       }
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
 
       const campaignMap = new Map<
         string,
@@ -751,12 +880,11 @@ export const clanRouter = createTRPCRouter({
         let todayPosts = 0;
 
         for (const app of m.applications) {
+          const totals = applicationTotals.get(app.id);
+
           if (app.campaign && app.campaign.status !== "ARCHIVED") {
-            const campViews = app.clipPosts.reduce(
-              (acc, p) => acc + Number(p.views ?? 0),
-              0,
-            );
-            const campPosts = app.clipPosts.length;
+            const campViews = totals?.views ?? 0;
+            const campPosts = totals?.posts ?? 0;
             const existing = campaignMap.get(app.campaign.id);
             if (existing) {
               existing.totalViews += campViews;
@@ -772,20 +900,15 @@ export const clanRouter = createTRPCRouter({
             }
           }
 
-          for (const post of app.clipPosts) {
-            totalPosts++;
-            const views = Number(post.views ?? 0);
-            totalViews += views;
-            totalLikes += post.likes ?? 0;
-            totalComments += post.comments ?? 0;
-            totalShares += post.shares ?? 0;
-            totalSaves += post.saves ?? 0;
-
-            if (post.postedAt && new Date(post.postedAt) >= today) {
-              todayViews += views;
-              todayPosts++;
-            }
-          }
+          if (!totals) continue;
+          totalPosts += totals.posts;
+          totalViews += totals.views;
+          totalLikes += totals.likes;
+          totalComments += totals.comments;
+          totalShares += totals.shares;
+          totalSaves += totals.saves;
+          todayViews += totals.todayViews;
+          todayPosts += totals.todayPosts;
         }
 
         const engagement = calculateEngagementRate(
@@ -851,6 +974,9 @@ export const clanRouter = createTRPCRouter({
         .sort((a, b) => b.totalViews - a.totalViews)
         .slice(0, 5);
 
+      // Todos os membros do clã são carregados: o total é o mesmo do _count.
+      const memberCount = clan.members.length;
+
       return {
         id: clan.id,
         name: clan.name,
@@ -874,7 +1000,7 @@ export const clanRouter = createTRPCRouter({
               imageUrl: clan.admin.user?.imageUrl ?? null,
             }
           : null,
-        memberCount: clan._count.members,
+        memberCount,
         isOwner,
         pendingApplications,
         stats: {
@@ -885,9 +1011,7 @@ export const clanRouter = createTRPCRouter({
           totalShares: clanTotalShares,
           engagement: clanEngagement,
           avgViewsPerMember:
-            clan._count.members > 0
-              ? Math.round(clanTotalViews / clan._count.members)
-              : 0,
+            memberCount > 0 ? Math.round(clanTotalViews / memberCount) : 0,
         },
         members: membersEnriched,
         topCampaigns,
@@ -913,19 +1037,10 @@ export const clanRouter = createTRPCRouter({
 
       const clans = await ctx.db.clan.findMany({
         where,
-        orderBy: { members: { _count: "desc" } },
+        // Desempate entre clãs com o mesmo número de membros: mais antigo antes.
+        orderBy: { createdAt: "asc" },
         include: {
-          _count: { select: { members: true } },
           owner: {
-            select: {
-              id: true,
-              fullName: true,
-              artisticName: true,
-              user: { select: { imageUrl: true } },
-            },
-          },
-          members: {
-            take: 5,
             select: {
               id: true,
               fullName: true,
@@ -936,28 +1051,48 @@ export const clanRouter = createTRPCRouter({
         },
       });
 
-      return clans.map((clan) => ({
-        id: clan.id,
-        name: clan.name,
-        tag: clan.tag,
-        emoji: clan.emoji,
-        emojiColor: clan.emojiColor,
-        imageUrl: clan.imageUrl,
-        description: clan.description,
-        memberCount: clan._count.members,
-        owner: clan.owner
-          ? {
-              id: clan.owner.id,
-              name: clan.owner.artisticName ?? clan.owner.fullName,
-              imageUrl: clan.owner.user?.imageUrl ?? null,
-            }
-          : null,
-        topMembers: clan.members.map((m) => ({
-          id: m.id,
-          name: m.artisticName || m.fullName,
-          imageUrl: m.user?.imageUrl ?? null,
-        })),
-      }));
+      // Contagem e primeiros membros só dos clãs listados (o _count do Prisma
+      // agrupava a tabela inteira de clipadores e o `take` aninhado carregava
+      // todos os membros).
+      const clanIds = clans.map((clan) => clan.id);
+      const [memberCounts, firstMembers] = await Promise.all([
+        clanIds.length > 0
+          ? ctx.db.clipperProfile.groupBy({
+              by: ["clanId"],
+              where: { clanId: { in: clanIds } },
+              _count: { _all: true },
+            })
+          : [],
+        getFirstFiveClanMembers(ctx.db, clanIds),
+      ]);
+      const memberCountByClan = new Map(
+        memberCounts.map((row) => [row.clanId, row._count._all]),
+      );
+
+      return clans
+        .map((clan) => ({
+          id: clan.id,
+          name: clan.name,
+          tag: clan.tag,
+          emoji: clan.emoji,
+          emojiColor: clan.emojiColor,
+          imageUrl: clan.imageUrl,
+          description: clan.description,
+          memberCount: memberCountByClan.get(clan.id) ?? 0,
+          owner: clan.owner
+            ? {
+                id: clan.owner.id,
+                name: clan.owner.artisticName ?? clan.owner.fullName,
+                imageUrl: clan.owner.user?.imageUrl ?? null,
+              }
+            : null,
+          topMembers: (firstMembers.get(clan.id) ?? []).map((m) => ({
+            id: m.id,
+            name: m.artisticName || m.fullName,
+            imageUrl: m.imageUrl ?? null,
+          })),
+        }))
+        .sort((a, b) => b.memberCount - a.memberCount);
     }),
 
   myClan: privateProcedure.query(async ({ ctx }) => {
@@ -966,20 +1101,7 @@ export const clanRouter = createTRPCRouter({
       select: {
         id: true,
         clanId: true,
-        clan: {
-          include: {
-            _count: { select: { members: true } },
-            members: {
-              take: 10,
-              select: {
-                id: true,
-                fullName: true,
-                artisticName: true,
-                user: { select: { imageUrl: true } },
-              },
-            },
-          },
-        },
+        clan: true,
       },
     });
 
@@ -988,6 +1110,23 @@ export const clanRouter = createTRPCRouter({
     if (!clipper.clan) return { clipperId: clipper.id, clan: null };
 
     const clan = clipper.clan;
+    // Contagem e 10 primeiros membros (ordem do id) limitados no banco, em vez
+    // do _count e do `take` aninhado que carregava todos os membros.
+    const [memberCount, members] = await Promise.all([
+      ctx.db.clipperProfile.count({ where: { clanId: clan.id } }),
+      ctx.db.clipperProfile.findMany({
+        where: { clanId: clan.id },
+        orderBy: { id: "asc" },
+        take: 10,
+        select: {
+          id: true,
+          fullName: true,
+          artisticName: true,
+          user: { select: { imageUrl: true } },
+        },
+      }),
+    ]);
+
     return {
       clipperId: clipper.id,
       clan: {
@@ -998,8 +1137,8 @@ export const clanRouter = createTRPCRouter({
         emojiColor: clan.emojiColor,
         imageUrl: clan.imageUrl,
         description: clan.description,
-        memberCount: clan._count.members,
-        members: clan.members.map((m) => ({
+        memberCount,
+        members: members.map((m) => ({
           id: m.id,
           name: m.artisticName || m.fullName,
           imageUrl: m.user?.imageUrl ?? null,
@@ -1009,120 +1148,100 @@ export const clanRouter = createTRPCRouter({
   }),
 
   // ── Ranking público dos clãs ──
-  getClanRanking: privateProcedure.query(async ({ ctx }) => {
-    const clans = await ctx.db.clan.findMany({
-      where: { isActive: true },
-      include: {
-        _count: { select: { members: true } },
-        owner: {
-          select: {
-            id: true,
-            artisticName: true,
-            fullName: true,
-            user: { select: { imageUrl: true } },
-          },
-        },
-        members: {
-          select: {
-            id: true,
-            artisticName: true,
-            fullName: true,
-            user: { select: { imageUrl: true } },
-            applications: {
+  // Igual para todos os clipadores: reaproveitado por 5 minutos em cada
+  // instância, com os posts somados no banco por membro.
+  getClanRanking: privateProcedure.query(({ ctx }) =>
+    cachedQuery("clan:ranking", CLAN_TOTALS_TTL_MS, async () => {
+      const [clans, memberTotals] = await Promise.all([
+        ctx.db.clan.findMany({
+          where: { isActive: true },
+          include: {
+            owner: {
               select: {
-                clipPosts: {
-                  where: { status: "ELIGIBLE" },
-                  select: {
-                    views: true,
-                    likes: true,
-                    comments: true,
-                    shares: true,
-                    saves: true,
-                  },
-                },
+                id: true,
+                artisticName: true,
+                fullName: true,
+                user: { select: { imageUrl: true } },
+              },
+            },
+            members: {
+              select: {
+                id: true,
+                artisticName: true,
+                fullName: true,
+                user: { select: { imageUrl: true } },
               },
             },
           },
-        },
-      },
-    });
+        }),
+        getClanMemberPostTotals(ctx.db),
+      ]);
 
-    const ranked = clans
-      .map((clan) => {
-        let totalViews = 0;
-        let totalLikes = 0;
-        let totalComments = 0;
-        let totalShares = 0;
-        let totalSaves = 0;
-        let totalPosts = 0;
+      const ranked = clans
+        .map((clan) => {
+          let totalViews = 0;
+          let totalLikes = 0;
+          let totalComments = 0;
+          let totalShares = 0;
+          let totalSaves = 0;
+          let totalPosts = 0;
 
-        for (const member of clan.members) {
-          for (const app of member.applications) {
-            for (const post of app.clipPosts) {
-              totalPosts++;
-              totalViews += Number(post.views ?? 0);
-              totalLikes += post.likes ?? 0;
-              totalComments += post.comments ?? 0;
-              totalShares += post.shares ?? 0;
-              totalSaves += post.saves ?? 0;
-            }
+          for (const member of clan.members) {
+            const totals = memberTotals.get(member.id);
+            if (!totals) continue;
+            totalPosts += totals.posts;
+            totalViews += totals.views;
+            totalLikes += totals.likes;
+            totalComments += totals.comments;
+            totalShares += totals.shares;
+            totalSaves += totals.saves;
           }
-        }
 
-        const engagement = calculateEngagementRate(
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalSaves,
-        );
+          const engagement = calculateEngagementRate(
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalShares,
+            totalSaves,
+          );
 
-        return {
-          id: clan.id,
-          name: clan.name,
-          tag: clan.tag,
-          emoji: clan.emoji,
-          emojiColor: clan.emojiColor,
-          imageUrl: clan.imageUrl,
-          memberCount: clan._count.members,
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalPosts,
-          engagement,
-          owner: clan.owner
-            ? {
-                name: clan.owner.artisticName ?? clan.owner.fullName,
-                imageUrl: clan.owner.user?.imageUrl ?? null,
-              }
-            : null,
-          topMembers: clan.members
-            .map((m) => {
-              const mViews = m.applications.reduce(
-                (acc, app) =>
-                  acc +
-                  app.clipPosts.reduce(
-                    (pAcc, p) => pAcc + Number(p.views ?? 0),
-                    0,
-                  ),
-                0,
-              );
-              return {
+          return {
+            id: clan.id,
+            name: clan.name,
+            tag: clan.tag,
+            emoji: clan.emoji,
+            emojiColor: clan.emojiColor,
+            imageUrl: clan.imageUrl,
+            // Todos os membros são carregados: o total é o mesmo do _count.
+            memberCount: clan.members.length,
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalShares,
+            totalPosts,
+            engagement,
+            owner: clan.owner
+              ? {
+                  name: clan.owner.artisticName ?? clan.owner.fullName,
+                  imageUrl: clan.owner.user?.imageUrl ?? null,
+                }
+              : null,
+            topMembers: clan.members
+              .map((m) => ({
                 id: m.id,
                 name: m.artisticName ?? m.fullName,
                 imageUrl: m.user?.imageUrl ?? null,
-                views: mViews,
-              };
-            })
-            .sort((a, b) => b.views - a.views)
-            .slice(0, 5),
-        };
-      })
-      .sort((a, b) => b.totalViews - a.totalViews);
+                views: memberTotals.get(m.id)?.views ?? 0,
+              }))
+              .sort((a, b) => b.views - a.views)
+              .slice(0, 5),
+          };
+        })
+        .sort((a, b) => b.totalViews - a.totalViews);
 
-    return { clans: ranked };
-  }),
+      return { clans: ranked };
+    }),
+  ),
 
   // ── Clipper: se inscrever em um clã ──
   applyClan: privateProcedure
