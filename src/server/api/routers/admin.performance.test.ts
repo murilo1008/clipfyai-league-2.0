@@ -8,6 +8,19 @@ vi.mock("@clerk/nextjs/server", () => ({
 }));
 vi.mock("@/server/db", () => ({ db: {} }));
 
+const loadDailyRankingDateContext = vi.hoisted(() => vi.fn());
+const computeMonthlyLeaderboard = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/daily-ranking-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/daily-ranking-preview")>()),
+  loadDailyRankingDateContext,
+}));
+vi.mock("@/lib/monthly-ranking-leaderboard", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/monthly-ranking-leaderboard")
+  >()),
+  computeMonthlyLeaderboard,
+}));
+
 import { invalidateCachedQueries } from "@/server/memory-cache";
 import { adminRouter } from "./admin";
 
@@ -491,6 +504,427 @@ describe("estatísticas da lista de competições", () => {
       scheduledCampaigns: 1,
       completedCampaigns: 1,
       totalViews: 1007,
+    });
+  });
+});
+
+describe("getDailyRankingCalendar", () => {
+  it("conta entradas no banco e soma só as premiadas", async () => {
+    const dailyRanking = (id: string, date: string) => ({
+      id,
+      rankingDate: new Date(`${date}T00:00:00.000Z`),
+      totalPosts: 10,
+      totalDailyViews: 1_000n,
+      totalClippers: 4,
+      announced: false,
+    });
+    const entryGroupBy = vi.fn().mockResolvedValue([
+      { dailyRankingId: "r1", _count: { _all: 120 } },
+      { dailyRankingId: "r2", _count: { _all: 3 } },
+    ]);
+    const prizeEntry = (
+      id: string,
+      dailyRankingId: string,
+      amount: number,
+      status: string,
+      pix: { eligible: boolean; status: string; paid: boolean },
+    ) => ({
+      id,
+      dailyRankingId,
+      dailyPrizeStatus: status,
+      dailyPrizeAmount: amount,
+      dailyPrizePaid: pix.paid,
+      dailyPixStatus: pix.status,
+      application: {
+        clipperProfile: { pixPayoutEligible: pix.eligible },
+      },
+    });
+    const entryFindMany = vi.fn().mockResolvedValue([
+      prizeEntry("e1", "r1", 50, "PAID", {
+        eligible: true,
+        status: "PAID",
+        paid: true,
+      }),
+      prizeEntry("e2", "r1", 30.5, "PENDING", {
+        eligible: false,
+        status: "PENDING",
+        paid: false,
+      }),
+      prizeEntry("e3", "r2", 20, "PAID", {
+        eligible: true,
+        status: "PENDING",
+        paid: false,
+      }),
+    ]);
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValue([{ day: "2026-10-01", clippers: 5 }]);
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "c1",
+          startDate: new Date("2026-10-01T00:00:00.000Z"),
+          endDate: new Date("2026-10-30T00:00:00.000Z"),
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: [
+            { position: 1, prize: 100 },
+            { position: 2, prize: 50 },
+            { position: 3, prize: 25 },
+          ],
+        }),
+      },
+      dailyRanking: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            dailyRanking("r1", "2026-10-01"),
+            dailyRanking("r2", "2026-10-02"),
+          ]),
+      },
+      dailyRankingEntry: { groupBy: entryGroupBy, findMany: entryFindMany },
+      transaction: { findMany: vi.fn().mockResolvedValue([]) },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await api.getDailyRankingCalendar({ campaignId: "c1" });
+
+    expect(entryFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          dailyRankingId: { in: ["r1", "r2"] },
+          isDisqualified: false,
+          dailyPrizeAmount: { gt: 0 },
+        },
+        orderBy: { position: "asc" },
+      }),
+    );
+    const topPostersQuery = sqlOf(queryRaw.mock.calls[0]!);
+    expect(topPostersQuery.sql).toContain("interval '4 hours'");
+    expect(topPostersQuery.sql).toContain("interval '20 hours'");
+    expect(topPostersQuery.sql).toContain('e."isDisqualified" = true');
+    expect(topPostersQuery.values).toEqual(
+      expect.arrayContaining([
+        new Date("2026-09-30T20:00:00.000Z"),
+        new Date("2026-10-02T20:00:00.000Z"),
+      ]),
+    );
+    expect(result.days).toEqual([
+      expect.objectContaining({
+        dateStr: "2026-10-01",
+        totalEntries: 120,
+        paidEntries: 1,
+        pendingEntries: 1,
+        dailyRankingPrizeAmount: 80.5,
+        // 5 clipadores, top 3 premiado
+        topPostersPrizeAmount: 175,
+        totalPrizeAmount: 255.5,
+        paidPrizeAmount: 50,
+        paymentStatus: "partial",
+        dailyPixPayoutCompleted: true,
+      }),
+      expect.objectContaining({
+        dateStr: "2026-10-02",
+        totalEntries: 3,
+        paidEntries: 1,
+        pendingEntries: 0,
+        dailyRankingPrizeAmount: 20,
+        topPostersPrizeAmount: 0,
+        paymentStatus: "all_paid",
+        dailyPixPayoutCompleted: false,
+      }),
+    ]);
+  });
+});
+
+describe("getDailyTopClippersByPostedVideos", () => {
+  it("agrupa por inscrição no banco e carrega só os perfis do top", async () => {
+    const groupBy = vi.fn().mockResolvedValue([
+      { applicationId: "a1", _count: { applicationId: 2 }, _sum: { views: 10n } },
+      { applicationId: "a2", _count: { applicationId: 3 }, _sum: { views: 5n } },
+      { applicationId: "a3", _count: { applicationId: 2 }, _sum: { views: 40n } },
+    ]);
+    const applicationFindMany = vi.fn().mockImplementation(async ({ where }) =>
+      (where.id.in as string[]).map((id) => ({
+        id,
+        clipperProfileId: `cp-${id}`,
+        clipperProfile: {
+          fullName: `Nome ${id}`,
+          artisticName: null,
+          user: { imageUrl: null },
+        },
+      })),
+    );
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          name: "Liga",
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: [{ position: 1, prize: 10 }],
+        }),
+      },
+      clipPost: { groupBy },
+      clipperApplication: { findMany: applicationFindMany },
+    });
+
+    const result = await api.getDailyTopClippersByPostedVideos({
+      campaignId: "c1",
+      date: "2026-10-02",
+      limit: 2,
+    });
+
+    expect(groupBy.mock.calls[0]![0].where.application).toMatchObject({
+      campaignId: "c1",
+      OR: expect.any(Array),
+    });
+    expect(applicationFindMany.mock.calls[0]![0].where.id.in).toEqual([
+      "a2",
+      "a3",
+    ]);
+    expect(
+      result.entries.map((e) => [
+        e.position,
+        e.clipperProfileId,
+        e.totalPosts,
+        e.totalViews,
+        e.prize,
+      ]),
+    ).toEqual([
+      [1, "cp-a2", 3, 5, 10],
+      [2, "cp-a3", 2, 40, 0],
+    ]);
+    expect(result.entries[0]!.campaigns).toEqual([
+      { campaignId: "c1", campaignName: "Liga", posts: 3, views: 5 },
+    ]);
+    expect(result.stats).toEqual({
+      totalPostsInWindow: 7,
+      totalViewsInWindow: 55,
+      totalClippersWithPosts: 3,
+      totalCampaigns: 1,
+    });
+  });
+});
+
+describe("pagamentos em lote", () => {
+  it("payTopPostersDailyRankByDate busca prêmios e estornos uma vez", async () => {
+    const groupBy = vi.fn().mockResolvedValue(
+      ["a1", "a2", "a3"].map((applicationId, index) => ({
+        applicationId,
+        _count: { applicationId: 5 - index },
+        _sum: { views: 100n },
+      })),
+    );
+    const transactionFindMany = vi
+      .fn()
+      // créditos candidatos: a posição 1 tem um crédito estornado e um válido
+      .mockResolvedValueOnce([
+        {
+          id: "credit-reversed",
+          amount: 100,
+          processedAt: null,
+          createdAt: new Date("2026-10-03T10:00:00.000Z"),
+          rankingPosition: 2,
+        },
+        {
+          id: "credit-ok",
+          amount: 100,
+          processedAt: null,
+          createdAt: new Date("2026-10-03T09:00:00.000Z"),
+          rankingPosition: 1,
+        },
+      ])
+      // estornos
+      .mockResolvedValueOnce([
+        { metadata: { reversedPrizeCreditId: "credit-reversed" } },
+      ]);
+    const entryFindMany = vi
+      .fn()
+      .mockResolvedValueOnce([]) // persistTopClippersEntries: entradas existentes
+      .mockResolvedValueOnce([
+        {
+          id: "entry-2",
+          applicationId: "a2",
+          isDisqualified: false,
+          prizeStatus: "PENDING",
+        },
+        {
+          id: "entry-3",
+          applicationId: "a3",
+          isDisqualified: true,
+          prizeStatus: "PENDING",
+        },
+      ]);
+    const upsert = vi.fn().mockResolvedValue({});
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "c1",
+          name: "Liga",
+          dailyPix: false,
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: [
+            { position: 1, prize: 100 },
+            { position: 2, prize: 50 },
+            { position: 3, prize: 25 },
+          ],
+        }),
+      },
+      topClippersDailyRanking: {
+        upsert: vi.fn().mockResolvedValue({ id: "ranking-1", entries: [] }),
+      },
+      clipPost: { groupBy },
+      clipperApplication: {
+        findMany: vi.fn().mockResolvedValue(
+          ["a1", "a2", "a3"].map((id) => ({
+            id,
+            clipperProfileId: `cp-${id}`,
+            clipperProfile: {
+              fullName: `Nome ${id}`,
+              artisticName: null,
+              user: { email: null },
+            },
+          })),
+        ),
+      },
+      transaction: { findMany: transactionFindMany },
+      topClippersDailyRankingEntry: { findMany: entryFindMany, upsert },
+    });
+
+    const result = await api.payTopPostersDailyRankByDate({
+      campaignId: "c1",
+      date: "2026-10-02",
+      dryRun: true,
+    });
+
+    expect(transactionFindMany).toHaveBeenCalledTimes(2);
+    const candidatesWhere = transactionFindMany.mock.calls[0]![0].where;
+    expect(candidatesWhere.OR).toHaveLength(3);
+    expect(candidatesWhere.OR[0].AND[1]).toEqual({ rankingPosition: 1 });
+    expect(
+      transactionFindMany.mock.calls[1]![0].where.AND[1].OR,
+    ).toHaveLength(2);
+    // Só as posições sem prêmio prévio são gravadas
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(groupBy.mock.calls[0]![0].where.application).toMatchObject({
+      campaignId: "c1",
+    });
+    expect(result).toMatchObject({
+      dryRun: true,
+      totalAmount: 50,
+      payable: [{ position: 2, amount: 50, totalPosts: 4 }],
+      skipped: [
+        { position: 1, reason: "Prêmio de Top Postadores já creditado" },
+        { position: 3, reason: "Clipador desclassificado deste ranking" },
+      ],
+    });
+  });
+
+  it("payDailyRankByDate lê entradas e posts do top em lote", async () => {
+    const rawRow = (index: number) => ({
+      dailyRankingEntryId: `dre-${index}`,
+      clipPostId: `post-${index}`,
+      clipperProfileId: `cp-${index}`,
+      artisticName: null,
+      fullName: `Nome ${index}`,
+    });
+    loadDailyRankingDateContext.mockResolvedValue({
+      campaignId: "c1",
+      campaignName: "Liga",
+      dailyRankingId: "r1",
+      topCount: 3,
+      dailyPrizeTable: [
+        { position: 1, prize: 30 },
+        { position: 2, prize: 20 },
+        { position: 3, prize: 10 },
+      ],
+      rawRows: [1, 2, 3, 4, 5].map(rawRow),
+    });
+    const entryFindMany = vi.fn().mockResolvedValue([
+      { id: "dre-1", clipPostId: "post-1", dailyPrizeStatus: "PENDING", isDisqualified: false },
+      { id: "dre-2", clipPostId: "post-2", dailyPrizeStatus: "PENDING", isDisqualified: true },
+      { id: "dre-3", clipPostId: "post-3", dailyPrizeStatus: "PAID", isDisqualified: false },
+      { id: "dre-4", clipPostId: "post-4", dailyPrizeStatus: "PENDING", isDisqualified: false },
+      { id: "dre-5", clipPostId: "post-5", dailyPrizeStatus: "PENDING", isDisqualified: false },
+    ]);
+    const clipPostFindMany = vi.fn().mockResolvedValue([
+      { id: "post-1", status: "ELIGIBLE" },
+      { id: "post-3", status: "ELIGIBLE" },
+      { id: "post-4", status: "DISQUALIFIED" },
+    ]);
+    const api = caller({
+      dailyRankingEntry: { findMany: entryFindMany },
+      clipPost: { findMany: clipPostFindMany },
+    });
+
+    const result = await api.payDailyRankByDate({
+      campaignId: "c1",
+      date: "2026-10-02",
+      dryRun: true,
+    });
+
+    expect(entryFindMany).toHaveBeenCalledOnce();
+    expect(clipPostFindMany.mock.calls[0]![0].where.id.in).toEqual([
+      "post-1",
+      "post-3",
+      "post-4",
+    ]);
+    expect(result).toMatchObject({
+      dryRun: true,
+      totalAmount: 30,
+      payable: [{ position: 1, amount: 30 }],
+      skipped: [
+        { position: 2, reason: "Prêmio diário já marcado como pago" },
+        { position: 3, reason: "Post desqualificado" },
+      ],
+    });
+  });
+
+  it("payMonthlyRankByPeriod consulta os prêmios anteriores uma vez", async () => {
+    computeMonthlyLeaderboard.mockResolvedValue({
+      monthlyPrizeTable: [
+        { position: 1, prize: 300 },
+        { position: 2, prize: 200 },
+      ],
+      monthPeriod: "2026-10",
+      rows: [1, 2, 3].map((position) => ({
+        position,
+        clipperProfileId: `cp-${position}`,
+        clipperName: `Nome ${position}`,
+        clipperUsername: `user${position}`,
+      })),
+    });
+    const transactionFindMany = vi.fn().mockResolvedValue([
+      { rankingPosition: 2, wallet: { clipperProfileId: "cp-2" } },
+      // mesmo clipador em outra posição não conta
+      { rankingPosition: 1, wallet: { clipperProfileId: "cp-2" } },
+    ]);
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({ id: "c1", name: "Liga" }),
+      },
+      transaction: { findMany: transactionFindMany },
+    });
+
+    const result = await api.payMonthlyRankByPeriod({
+      campaignId: "c1",
+      dryRun: true,
+    });
+
+    expect(transactionFindMany).toHaveBeenCalledOnce();
+    expect(transactionFindMany.mock.calls[0]![0].where.OR).toEqual([
+      { rankingPosition: 1, wallet: { clipperProfileId: "cp-1" } },
+      { rankingPosition: 2, wallet: { clipperProfileId: "cp-2" } },
+    ]);
+    expect(result).toMatchObject({
+      dryRun: true,
+      totalAmount: 300,
+      payable: [{ position: 1, amount: 300 }],
+      skipped: [
+        {
+          position: 2,
+          reason: "Prêmio mensal já creditado para esta posição",
+        },
+        { position: 3, reason: "Sem valor de prêmio para esta posição" },
+      ],
     });
   });
 });

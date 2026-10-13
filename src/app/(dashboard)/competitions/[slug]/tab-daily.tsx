@@ -196,11 +196,12 @@ export function DailyTab({
     },
   )
 
+  // O calendário só aparece na sub-aba "Cronograma"
   const { data: calendarData, isLoading: isLoadingCalendar } =
     api.admin.getDailyRankingCalendar.useQuery(
       { campaignId },
       {
-        enabled: active && !!campaignId,
+        enabled: active && !!campaignId && dailySubTab === "cronograma",
         placeholderData: (prev) => prev,
       },
     )
