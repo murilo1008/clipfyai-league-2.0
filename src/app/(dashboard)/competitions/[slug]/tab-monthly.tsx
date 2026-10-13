@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import {
   BookmarkSimple,
   CaretDown,
@@ -31,12 +32,7 @@ import {
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import { ApplicationDetailsDialog } from "./application-details-dialog"
-import { ClipperMetricsDialog } from "./clipper-metrics-dialog"
-import {
-  MonthlyRankResultModal,
-  type MonthlyRankPreview,
-} from "./monthly-rank-result-modal"
+import type { MonthlyRankPreview } from "./monthly-rank-result-modal"
 import {
   type AdminApplication,
   type CompetitionDetails,
@@ -47,6 +43,28 @@ import {
   PositionBadge,
   useFormatCurrency,
 } from "./shared"
+
+// Dialogs abertos sob demanda: o chunk de cada um só é baixado no primeiro uso
+const ApplicationDetailsDialog = dynamic(() =>
+  import("./application-details-dialog").then(
+    (m) => m.ApplicationDetailsDialog,
+  ),
+)
+const ClipperMetricsDialog = dynamic(() =>
+  import("./clipper-metrics-dialog").then((m) => m.ClipperMetricsDialog),
+)
+const MonthlyRankResultModal = dynamic(() =>
+  import("./monthly-rank-result-modal").then((m) => m.MonthlyRankResultModal),
+)
+
+/** Monta o dialog na primeira abertura e o mantém montado (animação de fechar). */
+function useOpenedOnce(open: boolean) {
+  const [opened, setOpened] = React.useState(open)
+  React.useEffect(() => {
+    if (open) setOpened(true)
+  }, [open])
+  return opened || open
+}
 
 type MonthlyRankingEntry = CompetitionDetails["topMonthlyRanking"][number]
 
@@ -130,6 +148,10 @@ export function MonthlyTab(props: CompetitionTabProps) {
   const [selectedApplication, setSelectedApplication] =
     React.useState<AdminApplication | null>(null)
   const [isApplicationOpen, setIsApplicationOpen] = React.useState(false)
+
+  const mountResultModal = useOpenedOnce(resultOpen)
+  const mountMetricsDialog = useOpenedOnce(metricsOpen)
+  const mountApplicationDialog = useOpenedOnce(isApplicationOpen)
 
   const handleOpenApplication = async (entry: MonthlyRankingEntry) => {
     setLoadingApplicationId(entry.applicationId)
@@ -465,33 +487,39 @@ export function MonthlyTab(props: CompetitionTabProps) {
       </section>
 
       {/* ===== Modal: resultado do rank mensal ===== */}
-      <MonthlyRankResultModal
-        open={resultOpen}
-        onOpenChange={(open) => {
-          setResultOpen(open)
-          if (!open) setPreviewData(null)
-        }}
-        data={previewData}
-        slug={slug}
-        onSilentRepreview={handleSilentRepreview}
-      />
+      {mountResultModal && (
+        <MonthlyRankResultModal
+          open={resultOpen}
+          onOpenChange={(open) => {
+            setResultOpen(open)
+            if (!open) setPreviewData(null)
+          }}
+          data={previewData}
+          slug={slug}
+          onSilentRepreview={handleSilentRepreview}
+        />
+      )}
 
       {/* ===== Dialog: métricas detalhadas ===== */}
-      <ClipperMetricsDialog
-        entry={metricsEntry}
-        open={metricsOpen}
-        onOpenChange={setMetricsOpen}
-        campaignId={campaignId}
-      />
+      {mountMetricsDialog && (
+        <ClipperMetricsDialog
+          entry={metricsEntry}
+          open={metricsOpen}
+          onOpenChange={setMetricsOpen}
+          campaignId={campaignId}
+        />
+      )}
 
       {/* ===== Dialog: detalhes da aplicação ===== */}
-      <ApplicationDetailsDialog
-        application={selectedApplication}
-        open={isApplicationOpen}
-        onOpenChange={setIsApplicationOpen}
-        slug={slug}
-        campaignId={campaignId}
-      />
+      {mountApplicationDialog && (
+        <ApplicationDetailsDialog
+          application={selectedApplication}
+          open={isApplicationOpen}
+          onOpenChange={setIsApplicationOpen}
+          slug={slug}
+          campaignId={campaignId}
+        />
+      )}
     </>
   )
 }

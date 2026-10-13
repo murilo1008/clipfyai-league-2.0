@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import {
   ArrowSquareOut,
@@ -74,10 +75,7 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import {
-  DailyRankResultModal,
-  type DailyRankPreview,
-} from "./daily-rank-result-modal"
+import type { DailyRankPreview } from "./daily-rank-result-modal"
 import {
   EmptyState,
   MetricPill,
@@ -90,6 +88,12 @@ import {
   useFormatCurrency,
   type CompetitionTabProps,
 } from "./shared"
+
+// O modal do resultado (pagamentos, PIX, exportações) só é baixado quando o
+// primeiro ranking é gerado.
+const DailyRankResultModal = dynamic(() =>
+  import("./daily-rank-result-modal").then((m) => m.DailyRankResultModal),
+)
 
 const WEEK_DAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"] as const
 
@@ -120,6 +124,12 @@ export function DailyTab({
   )
   const [dailyRankResultModalOpen, setDailyRankResultModalOpen] =
     React.useState(false)
+  // Depois da primeira abertura o modal fica montado (animação de fechar)
+  const [hasOpenedDailyRankResult, setHasOpenedDailyRankResult] =
+    React.useState(false)
+  React.useEffect(() => {
+    if (dailyRankResultModalOpen) setHasOpenedDailyRankResult(true)
+  }, [dailyRankResultModalOpen])
   const [dailyRankPreviewData, setDailyRankPreviewData] =
     React.useState<DailyRankPreview | null>(null)
   const [markAnnouncedOnPay, setMarkAnnouncedOnPay] = React.useState(true)
@@ -1714,22 +1724,24 @@ export function DailyTab({
       </Dialog>
 
       {/* ===== Modal Resultado do Rank Diário ===== */}
-      <DailyRankResultModal
-        open={dailyRankResultModalOpen}
-        onOpenChange={(open) => {
-          setDailyRankResultModalOpen(open)
-          if (!open) {
-            setDailyRankPreviewData(null)
-          }
-        }}
-        slug={slug}
-        campaignId={campaignId}
-        data={data}
-        preview={dailyRankPreviewData}
-        markAnnouncedOnPay={markAnnouncedOnPay}
-        onMarkAnnouncedChange={setMarkAnnouncedOnPay}
-        refreshPreviewSilently={refreshPreviewSilently}
-      />
+      {(dailyRankResultModalOpen || hasOpenedDailyRankResult) && (
+        <DailyRankResultModal
+          open={dailyRankResultModalOpen}
+          onOpenChange={(open) => {
+            setDailyRankResultModalOpen(open)
+            if (!open) {
+              setDailyRankPreviewData(null)
+            }
+          }}
+          slug={slug}
+          campaignId={campaignId}
+          data={data}
+          preview={dailyRankPreviewData}
+          markAnnouncedOnPay={markAnnouncedOnPay}
+          onMarkAnnouncedChange={setMarkAnnouncedOnPay}
+          refreshPreviewSilently={refreshPreviewSilently}
+        />
+      )}
     </div>
   )
 }

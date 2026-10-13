@@ -123,6 +123,54 @@ function readVideoDuration(file: File): Promise<number | null> {
 const YOUTUBE_EMBED_ALLOW =
   "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
 
+/**
+ * Capa do YouTube no lugar do player: o iframe (centenas de kB de JS por
+ * vídeo) só carrega quando o vídeo é clicado, já em reprodução.
+ */
+function YouTubeEmbed({
+  youtubeId,
+  title,
+  iconClassName,
+}: {
+  youtubeId: string
+  title: string
+  iconClassName: string
+}) {
+  const [playing, setPlaying] = React.useState(false)
+
+  if (playing) {
+    return (
+      <iframe
+        src={`https://www.youtube.com/embed/${youtubeId}?autoplay=1`}
+        title={title}
+        allow={YOUTUBE_EMBED_ALLOW}
+        allowFullScreen
+        className="absolute inset-0 h-full w-full"
+      />
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setPlaying(true)}
+      aria-label={`Reproduzir ${title}`}
+      className="absolute inset-0 h-full w-full cursor-pointer"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover"
+      />
+      <span className="absolute inset-0 flex items-center justify-center bg-black/30">
+        <Play className={iconClassName} weight="fill" />
+      </span>
+    </button>
+  )
+}
+
 /* ========================================================================
    Página
    ======================================================================== */
@@ -572,12 +620,10 @@ export default function Library() {
                       {/* Mídia 16:9 */}
                       <div className="relative aspect-video w-full overflow-hidden bg-black/80">
                         {youtubeId ? (
-                          <iframe
-                            src={`https://www.youtube.com/embed/${youtubeId}`}
+                          <YouTubeEmbed
+                            youtubeId={youtubeId}
                             title={video.title ?? "Vídeo"}
-                            allow={YOUTUBE_EMBED_ALLOW}
-                            allowFullScreen
-                            className="absolute inset-0 h-full w-full"
+                            iconClassName="size-6 text-white"
                           />
                         ) : video.thumbnail ? (
                           <>
@@ -689,12 +735,10 @@ export default function Library() {
                       {/* Mídia */}
                       <div className="relative aspect-video w-40 shrink-0 overflow-hidden rounded-xl bg-black/80 ring-1 ring-white/10 sm:w-52">
                         {youtubeId ? (
-                          <iframe
-                            src={`https://www.youtube.com/embed/${youtubeId}`}
+                          <YouTubeEmbed
+                            youtubeId={youtubeId}
                             title={video.title ?? "Vídeo"}
-                            allow={YOUTUBE_EMBED_ALLOW}
-                            allowFullScreen
-                            className="absolute inset-0 h-full w-full"
+                            iconClassName="size-5 text-white"
                           />
                         ) : video.thumbnail ? (
                           <>
