@@ -48,6 +48,7 @@ export default function Approve() {
   const { signOut } = useClerk()
   const router = useRouter()
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const utils = api.useUtils()
   const { data: userData } = api.user.getCurrentUser.useQuery()
   const {
     data: verificationData,
@@ -80,11 +81,15 @@ export default function Approve() {
   // Redirecionar para dashboard se verificado
   useEffect(() => {
     if (verificationData?.verificationStatus === "VERIFIED") {
+      // O usuário em cache ainda tem o status antigo: a home busca o novo.
+      void utils.user.getCurrentUser.invalidate(undefined, {
+        refetchType: "none",
+      })
       setTimeout(() => {
         router.push("/")
       }, 3000)
     }
-  }, [verificationData, router])
+  }, [verificationData, router, utils])
 
   const handleRefresh = async () => {
     setIsRefreshing(true)

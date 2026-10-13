@@ -346,6 +346,12 @@ export default function Onboarding() {
   // Mutations
   const upsertProfile = api.user.upsertClipperProfile.useMutation()
   const completeOnboarding = api.user.completeOnboarding.useMutation()
+  const utils = api.useUtils()
+  // O usuário atual fica 5 min em cache: depois de gravar, marca como
+  // desatualizado sem buscar de novo aqui (a busca recarregaria o formulário);
+  // a próxima tela que usar o usuário busca a versão nova.
+  const markCurrentUserStale = () =>
+    void utils.user.getCurrentUser.invalidate(undefined, { refetchType: "none" })
 
   // Redirecionar se já completou onboarding ou está verificado
   useEffect(() => {
@@ -427,6 +433,7 @@ export default function Onboarding() {
   const saveProgress = async (stepData: UpsertClipperProfileInput) => {
     try {
       await upsertProfile.mutateAsync(stepData)
+      markCurrentUserStale()
     } catch (error) {
       console.error("Erro ao salvar progresso:", error)
     }
@@ -573,6 +580,7 @@ export default function Onboarding() {
       } else if (currentStep === 4) {
         // Etapa 4: Conclusão - Finalizar onboarding (auto-aprovação)
         await completeOnboarding.mutateAsync()
+        markCurrentUserStale()
 
         // Redirecionar direto para o dashboard (auto-aprovado)
         toast.success("🎉 Bem-vindo à Clipfy League! Sua conta foi aprovada automaticamente!")
@@ -1550,6 +1558,7 @@ function Step4Complete({ user }: { user: ClerkUser }) {
 
   // Mutation para atualizar imageUrl no banco
   const updateProfileImage = api.user.updateProfileImage.useMutation()
+  const utils = api.useUtils()
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -1585,6 +1594,9 @@ function Step4Complete({ user }: { user: ClerkUser }) {
       // 5. Salvar a imageUrl no banco de dados
       if (user.imageUrl) {
         await updateProfileImage.mutateAsync({ imageUrl: user.imageUrl })
+        void utils.user.getCurrentUser.invalidate(undefined, {
+          refetchType: "none",
+        })
       }
 
       toast.success("Foto de perfil atualizada com sucesso!")
