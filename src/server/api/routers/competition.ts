@@ -31,6 +31,7 @@ import {
   withCurrentUser,
 } from "@/server/competition-daily-ranking";
 import { cachedQuery } from "@/server/memory-cache";
+import { loadClipperGrowth } from "@/server/clipper-growth";
 import { getVisibleActiveCampaigns } from "@/server/competition-active-campaigns";
 import { withdrawFromCompetition } from "@/server/competition-withdrawal";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
@@ -1323,10 +1324,6 @@ export const campaignRouter = createTRPCRouter({
           });
         }
 
-        // Dados de crescimento (últimos 7 dias)
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
         const [
           campaignStats,
           monthlyBoard,
@@ -1335,7 +1332,7 @@ export const campaignRouter = createTRPCRouter({
           prizeAgg,
           topViralPostRow,
           bestEngagementRows,
-          growthRows,
+          growthData,
           applicationAccountsCount,
         ] = await Promise.all([
           // Participantes, posts e views da campanha (iguais para todos)
@@ -1408,33 +1405,11 @@ export const campaignRouter = createTRPCRouter({
             WHERE cp."campaignId" = ${campaign.id}
               AND cp."applicationId" = ${application.id}
           `,
-          // Por dia (UTC): último snapshot de cada post elegível no dia, somado.
-          ctx.db.$queryRaw<
-            { day: Date; views: bigint | null; engagement: bigint | null }[]
-          >`
-            SELECT
-              last_per_day."day",
-              SUM(last_per_day."views")::bigint AS "views",
-              SUM(last_per_day."engagement")::bigint AS "engagement"
-            FROM (
-              SELECT DISTINCT ON (cpm."clipPostId", date_trunc('day', cpm."collectedAt"))
-                date_trunc('day', cpm."collectedAt") AS "day",
-                cpm."views",
-                (cpm."likes"::bigint + cpm."comments" + cpm."shares") AS "engagement"
-              FROM "ClipPost" cp
-              INNER JOIN "ClipPostMetrics" cpm ON cpm."clipPostId" = cp."id"
-              WHERE cp."campaignId" = ${campaign.id}
-                AND cp."applicationId" = ${application.id}
-                AND cp."status" = 'ELIGIBLE'
-                AND cpm."collectedAt" >= ${sevenDaysAgo}::timestamp
-              ORDER BY
-                cpm."clipPostId",
-                date_trunc('day', cpm."collectedAt"),
-                cpm."collectedAt" DESC
-            ) last_per_day
-            GROUP BY last_per_day."day"
-            ORDER BY last_per_day."day" ASC
-          `,
+          // Crescimento (últimos 7 dias): total dos meus posts ao fim de cada dia
+          loadClipperGrowth(ctx.db, {
+            campaignId: campaign.id,
+            applicationId: application.id,
+          }),
           // Contador da aba "Minhas Contas" (a lista carrega ao abrir a aba)
           ctx.db.applicationSocialAccount.count({
             where: { applicationId: application.id },
@@ -1495,16 +1470,6 @@ export const campaignRouter = createTRPCRouter({
               myTotalPostsCount,
             })
           : null;
-
-        const growthData = growthRows.map((row) => ({
-          date: row.day.toLocaleDateString("pt-BR", {
-            day: "2-digit",
-            month: "2-digit",
-            timeZone: "UTC",
-          }),
-          views: Number(row.views ?? 0),
-          engagement: Number(row.engagement ?? 0),
-        }));
 
         const referenceDateYmd = getClipperDailyReferenceDateYmd();
         const { startDate: dailyWindowStart, endDate: dailyWindowEnd } =

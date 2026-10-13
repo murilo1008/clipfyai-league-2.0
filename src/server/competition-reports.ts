@@ -22,6 +22,7 @@ const topPostSelect = {
 export type CampaignGrowthPoint = {
   /** Dia UTC, "YYYY-MM-DD". */
   date: string;
+  /** Views ganhas no dia (o mesmo vale para likes, comentários e shares). */
   views: number;
   likes: number;
   comments: number;
@@ -37,9 +38,12 @@ type GrowthRow = {
 };
 
 /**
- * Crescimento da campanha por dia UTC: em cada dia, a última coleta do dia de
- * cada post elegível, somada entre os posts. Antes somava-se TODA coleta do
- * dia (um post com 3 coletas no dia contava 3 vezes).
+ * Crescimento da campanha por dia UTC: views (e likes, comentários e shares)
+ * ganhas em cada dia. Para cada post elegível, vale a última coleta de cada
+ * dia; o ganho do dia é a diferença para a coleta anterior do post (a
+ * primeira coleta conta inteira). Somar o valor das coletas do dia não serve:
+ * cada coleta é o total acumulado do post, e o League não coleta todo post
+ * todo dia. Dias sem coleta entram com ganho zero, para o eixo ser contínuo.
  *
  * O LATERAL lê as métricas post a post pelo índice (clipPostId, collectedAt):
  * o DISTINCT ON dentro da subconsulta impede o planner de achatá-la numa
@@ -51,28 +55,62 @@ export async function loadCampaignGrowth(
   campaignId: string,
 ): Promise<CampaignGrowthPoint[]> {
   const rows = await db.$queryRaw<GrowthRow[]>`
+    WITH post_days AS (
+      SELECT
+        post.id AS post_id,
+        last_of_day.day,
+        last_of_day.views,
+        last_of_day.likes,
+        last_of_day.comments,
+        last_of_day.shares
+      FROM "ClipPost" post
+      CROSS JOIN LATERAL (
+        SELECT DISTINCT ON (DATE_TRUNC('day', metrics."collectedAt"))
+          DATE_TRUNC('day', metrics."collectedAt") AS day,
+          metrics.views,
+          metrics.likes,
+          metrics.comments,
+          metrics.shares
+        FROM "ClipPostMetrics" metrics
+        WHERE metrics."clipPostId" = post.id
+        ORDER BY DATE_TRUNC('day', metrics."collectedAt"), metrics."collectedAt" DESC
+      ) last_of_day
+      WHERE post."campaignId" = ${campaignId}
+        AND post.status = 'ELIGIBLE'
+    ),
+    deltas AS (
+      SELECT
+        day,
+        views - LAG(views, 1, 0::bigint) OVER per_post AS views,
+        likes - LAG(likes, 1, 0) OVER per_post AS likes,
+        comments - LAG(comments, 1, 0) OVER per_post AS comments,
+        shares - LAG(shares, 1, 0) OVER per_post AS shares
+      FROM post_days
+      WINDOW per_post AS (PARTITION BY post_id ORDER BY day)
+    ),
+    gains AS (
+      SELECT
+        day,
+        SUM(views) AS views,
+        SUM(likes) AS likes,
+        SUM(comments) AS comments,
+        SUM(shares) AS shares
+      FROM deltas
+      GROUP BY day
+    ),
+    days AS (
+      SELECT GENERATE_SERIES(MIN(day), MAX(day), INTERVAL '1 day') AS day
+      FROM gains
+    )
     SELECT
-      TO_CHAR(last_of_day.day, 'YYYY-MM-DD') AS date,
-      COALESCE(SUM(last_of_day.views), 0)::bigint AS views,
-      COALESCE(SUM(last_of_day.likes), 0)::bigint AS likes,
-      COALESCE(SUM(last_of_day.comments), 0)::bigint AS comments,
-      COALESCE(SUM(last_of_day.shares), 0)::bigint AS shares
-    FROM "ClipPost" post
-    CROSS JOIN LATERAL (
-      SELECT DISTINCT ON (DATE_TRUNC('day', metrics."collectedAt"))
-        DATE_TRUNC('day', metrics."collectedAt") AS day,
-        metrics.views,
-        metrics.likes,
-        metrics.comments,
-        metrics.shares
-      FROM "ClipPostMetrics" metrics
-      WHERE metrics."clipPostId" = post.id
-      ORDER BY DATE_TRUNC('day', metrics."collectedAt"), metrics."collectedAt" DESC
-    ) last_of_day
-    WHERE post."campaignId" = ${campaignId}
-      AND post.status = 'ELIGIBLE'
-    GROUP BY last_of_day.day
-    ORDER BY last_of_day.day
+      TO_CHAR(days.day, 'YYYY-MM-DD') AS date,
+      COALESCE(gains.views, 0)::bigint AS views,
+      COALESCE(gains.likes, 0)::bigint AS likes,
+      COALESCE(gains.comments, 0)::bigint AS comments,
+      COALESCE(gains.shares, 0)::bigint AS shares
+    FROM days
+    LEFT JOIN gains ON gains.day = days.day
+    ORDER BY days.day
   `;
 
   return rows.map((row) => ({

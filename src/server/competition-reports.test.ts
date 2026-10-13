@@ -113,7 +113,7 @@ describe("loadCampaignGrowth", () => {
     expect(queryRaw).toHaveBeenCalledOnce();
   });
 
-  it("soma só a última coleta de cada post em cada dia, lida post a post", async () => {
+  it("soma o ganho de cada post sobre a última coleta do dia, lida post a post", async () => {
     const { db, queryRaw } = mockDb();
 
     await loadCampaignGrowth(db, "camp-1");
@@ -133,7 +133,14 @@ describe("loadCampaignGrowth", () => {
       `ORDER BY DATE_TRUNC('day', metrics."collectedAt"), metrics."collectedAt" DESC`,
     );
     expect(sql).toContain(`post."campaignId" = ? AND post.status = 'ELIGIBLE'`);
-    expect(sql).toContain("GROUP BY last_of_day.day ORDER BY last_of_day.day");
+    // Ganho = diferença para a coleta anterior do mesmo post (a primeira conta inteira)
+    expect(sql).toContain("views - LAG(views, 1, 0::bigint) OVER per_post");
+    expect(sql).toContain("WINDOW per_post AS (PARTITION BY post_id ORDER BY day)");
+    // Eixo contínuo: dias sem coleta entram com ganho zero
+    expect(sql).toContain(
+      "GENERATE_SERIES(MIN(day), MAX(day), INTERVAL '1 day')",
+    );
+    expect(sql).toContain("LEFT JOIN gains ON gains.day = days.day");
   });
 
   it("devolve lista vazia sem métricas", async () => {
