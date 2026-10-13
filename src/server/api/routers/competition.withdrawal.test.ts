@@ -172,8 +172,6 @@ describe("saída voluntária da competição", () => {
           id: application.id,
           campaignId: "campaign-1",
           status: "APPROVED",
-          _count: { clipPosts: 1 },
-          clipPosts: [],
         },
       ]);
     Object.assign(db, {
@@ -196,8 +194,15 @@ describe("saída voluntária da competição", () => {
       findMany,
       groupBy: vi.fn().mockResolvedValue([]),
     });
+    // Um vídeo não elegível: conta em postedVideoCount (todos os status),
+    // não em myPosts (só elegíveis).
+    const clipPostGroupBy = vi.fn().mockImplementation(async ({ by, where }) =>
+      by[0] === "applicationId" && !where.status
+        ? [{ applicationId: application.id, _count: { id: 1 } }]
+        : [],
+    );
     Object.assign(db.clipPost, {
-      groupBy: vi.fn().mockResolvedValue([]),
+      groupBy: clipPostGroupBy,
       findMany: vi.fn().mockResolvedValue([]),
     });
     Object.assign(db.transaction, { findMany: vi.fn().mockResolvedValue([]) });
@@ -205,13 +210,11 @@ describe("saída voluntária da competição", () => {
     expect(await api.getAllActiveCompetitions()).toEqual([
       expect.objectContaining({ myPosts: 0, postedVideoCount: 1 }),
     ]);
-    expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        select: expect.objectContaining({
-          _count: { select: { clipPosts: true } },
-        }),
-      }),
-    );
+    expect(clipPostGroupBy).toHaveBeenCalledWith({
+      by: ["applicationId"],
+      where: { applicationId: { in: [application.id] } },
+      _count: { id: true },
+    });
   });
 
   it("mantém acesso ao histórico encerrado antes da saída", async () => {
