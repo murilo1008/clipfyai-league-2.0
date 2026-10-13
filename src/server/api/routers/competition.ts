@@ -33,6 +33,10 @@ import {
 import { cachedQuery } from "@/server/memory-cache";
 import { withdrawFromCompetition } from "@/server/competition-withdrawal";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
+import {
+  loadCampaignReports,
+  loadEligiblePlatformsByUsername,
+} from "@/server/competition-reports";
 
 const brlCurrencyFormatter = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -316,363 +320,7 @@ export const campaignRouter = createTRPCRouter({
     .input(z.object({ campaignId: z.string() }))
     .query(async ({ ctx, input }) => {
       try {
-        // Buscar dados da campanha
-        const campaign = await ctx.db.campaign.findUnique({
-          where: { id: input.campaignId },
-          select: {
-            id: true,
-            name: true,
-            status: true,
-            startDate: true,
-            endDate: true,
-          },
-        });
-
-        if (!campaign) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Campanha não encontrada",
-          });
-        }
-
-        // Top Accounts (usuários com mais views elegíveis somadas)
-        const topAccounts = await ctx.db.clipPost.groupBy({
-          by: ["username"],
-          where: {
-            campaignId: input.campaignId,
-            username: { not: null },
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-          orderBy: {
-            _sum: {
-              views: "desc",
-            },
-          },
-          take: 10,
-        });
-
-        // Top Posts elegíveis por Views
-        const topPostsByViews = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            thumbnailUrl: true,
-            platform: true,
-            postedAt: true,
-          },
-          orderBy: {
-            views: "desc",
-          },
-          take: 10,
-        });
-
-        // Top Posts elegíveis por Likes
-        const topPostsByLikes = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            thumbnailUrl: true,
-            platform: true,
-            postedAt: true,
-          },
-          orderBy: {
-            likes: "desc",
-          },
-          take: 10,
-        });
-
-        // Top Posts elegíveis por Comments
-        const topPostsByComments = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            thumbnailUrl: true,
-            platform: true,
-            postedAt: true,
-          },
-          orderBy: {
-            comments: "desc",
-          },
-          take: 10,
-        });
-
-        // Posts elegíveis para a tabela
-        const allPosts = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            platform: true,
-            postedAt: true,
-          },
-          orderBy: {
-            views: "desc",
-          },
-        });
-
-        // Contas com posts elegíveis para a tabela (agrupadas)
-        const allAccountsGrouped = await ctx.db.clipPost.groupBy({
-          by: ["username"],
-          where: {
-            campaignId: input.campaignId,
-            username: { not: null },
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-          orderBy: {
-            _sum: {
-              views: "desc",
-            },
-          },
-        });
-
-        // Para cada conta, buscar as plataformas dos posts elegíveis
-        const allAccounts = await Promise.all(
-          allAccountsGrouped.map(async (acc) => {
-            const posts = await ctx.db.clipPost.findMany({
-              where: {
-                campaignId: input.campaignId,
-                username: acc.username,
-                status: "ELIGIBLE",
-              },
-              select: {
-                platform: true,
-                views: true,
-                likes: true,
-                comments: true,
-              },
-            });
-
-            const platforms = [...new Set(posts.map((p) => p.platform))];
-            const totalViews = Number(acc._sum.views || 0);
-            const totalLikes = acc._sum.likes || 0;
-            const totalComments = acc._sum.comments || 0;
-            const totalShares = acc._sum.shares || 0;
-            const totalSaves = acc._sum.saves || 0;
-            const avgEngagement = calculateEngagementRate(
-              totalViews,
-              totalLikes,
-              totalComments,
-              totalShares,
-              totalSaves,
-            );
-
-            return {
-              username: acc.username || "",
-              platforms,
-              totalViews,
-              totalLikes,
-              totalComments,
-              totalShares,
-              totalSaves,
-              postsCount: acc._count.id,
-              avgEngagement,
-            };
-          }),
-        );
-
-        // Crescimento de views ao longo do tempo (histórico de métricas)
-        const metricsHistory = await ctx.db.clipPostMetrics.findMany({
-          where: {
-            clipPost: {
-              campaignId: input.campaignId,
-              status: "ELIGIBLE",
-            },
-          },
-          select: {
-            collectedAt: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          orderBy: {
-            collectedAt: "asc",
-          },
-        });
-
-        // Agrupar métricas por data
-        const metricsGroupedByDate = metricsHistory.reduce(
-          (acc: Record<string, any>, metric) => {
-            const date = new Date(metric.collectedAt)
-              .toISOString()
-              .split("T")[0];
-            if (!date) return acc;
-
-            if (!acc[date]) {
-              acc[date] = {
-                views: BigInt(0),
-                likes: 0,
-                comments: 0,
-                shares: 0,
-                count: 0,
-              };
-            }
-            acc[date].views += metric.views;
-            acc[date].likes += metric.likes;
-            acc[date].comments += metric.comments;
-            acc[date].shares += metric.shares;
-            acc[date].count += 1;
-            return acc;
-          },
-          {} as Record<string, any>,
-        );
-
-        const growthData = Object.entries(metricsGroupedByDate).map(
-          ([date, data]: [string, any]) => ({
-            date,
-            views: Number(data.views),
-            likes: data.likes,
-            comments: data.comments,
-            shares: data.shares,
-          }),
-        );
-
-        // Estatísticas gerais dos posts elegíveis
-        const totalStats = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        });
-
-        // Distribuição dos posts elegíveis por plataforma
-        const platformStats = await ctx.db.clipPost.groupBy({
-          by: ["platform"],
-          where: {
-            campaignId: input.campaignId,
-            status: "ELIGIBLE",
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-          },
-          _count: {
-            id: true,
-          },
-        });
-
-        return {
-          campaign,
-          topAccounts: topAccounts.map((acc) => ({
-            username: acc.username,
-            platform: "INSTAGRAM", // Simplificação - pegar a plataforma mais usada
-            profileUrl: `https://instagram.com/${acc.username}`,
-            totalViews: Number(acc._sum.views || 0),
-            totalLikes: acc._sum.likes || 0,
-            totalComments: acc._sum.comments || 0,
-            totalShares: acc._sum.shares || 0,
-            postsCount: acc._count.id,
-          })),
-          topPostsByViews: topPostsByViews.map((post) => ({
-            ...post,
-            views: Number(post.views),
-          })),
-          topPostsByLikes: topPostsByLikes.map((post) => ({
-            ...post,
-            views: Number(post.views),
-          })),
-          topPostsByComments: topPostsByComments.map((post) => ({
-            ...post,
-            views: Number(post.views),
-          })),
-          allPosts: allPosts.map((post) => ({
-            id: post.id,
-            username: post.username || "",
-            url: post.submittedUrl,
-            platform: post.platform,
-            views: Number(post.views),
-            likes: post.likes,
-            comments: post.comments,
-            shares: post.shares,
-            saves: post.saves ?? 0,
-            postedAt: post.postedAt?.toISOString() || new Date().toISOString(),
-          })),
-          allAccounts,
-          growthData,
-          totalStats: {
-            totalViews: Number(totalStats._sum.views || 0),
-            totalLikes: totalStats._sum.likes || 0,
-            totalComments: totalStats._sum.comments || 0,
-            totalShares: totalStats._sum.shares || 0,
-            totalSaves: totalStats._sum.saves || 0,
-            totalPosts: totalStats._count.id,
-          },
-          platformStats: platformStats.map((stat) => ({
-            platform: stat.platform,
-            totalViews: Number(stat._sum.views || 0),
-            totalLikes: stat._sum.likes || 0,
-            totalComments: stat._sum.comments || 0,
-            postsCount: stat._count.id,
-          })),
-        };
+        return await loadCampaignReports(ctx.db, input.campaignId);
       } catch (error: any) {
         console.error("Erro ao buscar relatórios:", error);
         throw new TRPCError({
@@ -732,9 +380,8 @@ export const campaignRouter = createTRPCRouter({
             platform: true,
             postedAt: true,
           },
-          orderBy: {
-            [sortBy]: "desc",
-          },
+          // Desempate estável: a paginação por offset não repete nem pula posts
+          orderBy: [{ [sortBy]: "desc" }, { views: "desc" }, { id: "asc" }],
           skip,
           take: limit + 1, // +1 para verificar se tem próxima página
         });
@@ -801,63 +448,52 @@ export const campaignRouter = createTRPCRouter({
           };
         }
 
-        // Buscar contas agrupadas
-        const allAccountsGrouped = await ctx.db.clipPost.groupBy({
-          by: ["username"],
-          where,
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        });
-
-        // Para cada conta, buscar plataformas elegíveis e calcular engagement
-        let accounts = await Promise.all(
-          allAccountsGrouped.map(async (acc) => {
-            const posts = await ctx.db.clipPost.findMany({
-              where: {
-                campaignId,
-                username: acc.username,
-                status: "ELIGIBLE",
-              },
-              select: {
-                platform: true,
-              },
-            });
-
-            const platforms = Array.from(new Set(posts.map((p) => p.platform)));
-            const totalViews = Number(acc._sum.views || 0);
-            const totalLikes = acc._sum.likes || 0;
-            const totalComments = acc._sum.comments || 0;
-            const totalShares = acc._sum.shares || 0;
-            const totalSaves = acc._sum.saves || 0;
-            const avgEngagement = calculateEngagementRate(
-              totalViews,
-              totalLikes,
-              totalComments,
-              totalShares,
-              totalSaves,
-            );
-
-            return {
-              username: acc.username || "",
-              platforms,
-              totalViews,
-              totalLikes,
-              totalComments,
-              totalShares,
-              totalSaves,
-              postsCount: acc._count.id,
-              avgEngagement,
-            };
+        // Buscar contas agrupadas e, numa consulta só, as plataformas de cada uma
+        const [allAccountsGrouped, platformsByUsername] = await Promise.all([
+          ctx.db.clipPost.groupBy({
+            by: ["username"],
+            where,
+            _sum: {
+              views: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+            },
+            _count: {
+              id: true,
+            },
           }),
-        );
+          loadEligiblePlatformsByUsername(ctx.db, campaignId),
+        ]);
+
+        let accounts = allAccountsGrouped.map((acc) => {
+          const platforms = platformsByUsername.get(acc.username ?? "") ?? [];
+          const totalViews = Number(acc._sum.views || 0);
+          const totalLikes = acc._sum.likes || 0;
+          const totalComments = acc._sum.comments || 0;
+          const totalShares = acc._sum.shares || 0;
+          const totalSaves = acc._sum.saves || 0;
+          const avgEngagement = calculateEngagementRate(
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalShares,
+            totalSaves,
+          );
+
+          return {
+            username: acc.username || "",
+            platforms,
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalShares,
+            totalSaves,
+            postsCount: acc._count.id,
+            avgEngagement,
+          };
+        });
 
         // Filtrar por plataforma se especificado
         if (platform && platform !== "all") {
