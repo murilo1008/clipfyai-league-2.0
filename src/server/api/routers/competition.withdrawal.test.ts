@@ -576,48 +576,6 @@ describe("ranking diário: cache, ADMIN e datas aceitas", () => {
     expect(clipPostGroupBy).toHaveBeenCalledTimes(3);
   });
 
-  it("fora dos dias possíveis da campanha devolve o ranking vazio sem consultar", async () => {
-    const { api, db, dailyRankingFindFirst, clipPostGroupBy } = rankingFixture();
-
-    // Antes do dia anterior ao início e depois de amanhã (agora: 2026-10-09).
-    for (const date of ["2026-09-29", "2026-10-11"]) {
-      expect(
-        await api.getDailyRankingByDate({ campaignId: "campaign-1", date }),
-      ).toEqual({
-        date,
-        source: "LIVE",
-        rankingMode: "TOP_POSTS",
-        posts: [],
-        totalPosts: 0,
-        windowStart: new Date(
-          Date.parse(`${date}T20:00:00Z`) - 24 * 60 * 60 * 1000,
-        ).toISOString(),
-        windowEnd: `${date}T20:00:00.000Z`,
-      });
-      expect(
-        await api.getDailyTopClippersByPostedVideos({ campaignId: "campaign-1", date }),
-      ).toMatchObject({
-        date,
-        entries: [],
-        stats: {
-          totalPostsInWindow: 0,
-          totalViewsInWindow: 0,
-          totalClippersWithPosts: 0,
-          totalCampaigns: 1,
-        },
-      });
-    }
-    expect(db.$queryRaw).not.toHaveBeenCalled();
-    expect(dailyRankingFindFirst).not.toHaveBeenCalled();
-    expect(clipPostGroupBy).not.toHaveBeenCalled();
-    expect(db.clipPost.count).not.toHaveBeenCalled();
-
-    // Os limites ainda consultam: dia anterior ao início e amanhã.
-    await api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-09-30" });
-    await api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-10-10" });
-    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
-  });
-
   it("recusa datas que não existem no calendário", async () => {
     const { api } = rankingFixture();
     await expect(

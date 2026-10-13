@@ -31,7 +31,6 @@ import {
   getCachedLiveDailyRanking,
   getCachedSnapshotDailyRanking,
   isCalendarDateYmd,
-  isDailyRankingDateInRange,
   liveDailyPrizeTable,
   loadDailyTopClippersByPostedVideos,
   snapshotDailyPrizeTable,
@@ -1985,7 +1984,6 @@ export const campaignRouter = createTRPCRouter({
         where: { id: input.campaignId },
         select: {
           id: true,
-          startDate: true,
           rankingMetricType: true,
           activeRankingRule: {
             select: {
@@ -2007,20 +2005,6 @@ export const campaignRouter = createTRPCRouter({
       // Prêmios pela tabela atual da campanha, aplicados depois do cache.
       const dailyPrizeTable =
         campaign.activeRankingRule?.dailyPrizeTable ?? null;
-
-      // Fora dos dias em que a campanha pode ter posts: ranking vazio, sem
-      // consultar o banco nem criar chaves no cache.
-      if (!isDailyRankingDateInRange(input.date, campaign.startDate)) {
-        return {
-          date: input.date,
-          source: "LIVE" as const,
-          rankingMode: "TOP_POSTS" as const,
-          posts: [],
-          totalPosts: 0,
-          windowStart: startDate.toISOString(),
-          windowEnd: endDate.toISOString(),
-        };
-      }
 
       // Dados iguais para todos (cache por campanha/dia); isCurrentUser e
       // prêmio aplicados depois.
@@ -2096,7 +2080,6 @@ export const campaignRouter = createTRPCRouter({
       const campaignConfig = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
         select: {
-          startDate: true,
           topClippersRankingEnabled: true,
           topClippersPrizeTable: true,
         },
@@ -2130,22 +2113,9 @@ export const campaignRouter = createTRPCRouter({
           limit: input.limit,
         });
       // Igual para todos (cache por campanha/dia); isCurrentUser e prêmio
-      // depois. ADMIN lê direto do banco; fora dos dias possíveis da campanha
-      // o ranking é vazio (sem banco nem cache).
-      const board = !isDailyRankingDateInRange(
-        input.date,
-        campaignConfig.startDate,
-      )
-        ? {
-            entries: [],
-            stats: {
-              totalPostsInWindow: 0,
-              totalViewsInWindow: 0,
-              totalClippersWithPosts: 0,
-              totalCampaigns: 1,
-            },
-          }
-        : membership === null
+      // depois. ADMIN lê direto do banco.
+      const board =
+        membership === null
           ? await loadBoard()
           : await cachedQuery(
               `top-clippers-day:${input.campaignId}:${input.date}:${input.limit}`,

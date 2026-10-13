@@ -8,7 +8,6 @@ import {
   getCachedLiveDailyRanking,
   getCachedSnapshotDailyRanking,
   isCalendarDateYmd,
-  isDailyRankingDateInRange,
   liveDailyPrizeTable,
   loadDailyTopClippersByPostedVideos,
   loadLiveDailyRanking,
@@ -276,16 +275,6 @@ describe("datas aceitas no ranking diário", () => {
     expect(isCalendarDateYmd(date)).toBe(expected);
   });
 
-  it("vai do dia anterior ao início da campanha até amanhã (UTC)", () => {
-    const campaignStart = new Date("2026-10-01T03:00:00Z");
-    const now = new Date("2026-10-13T23:30:00Z").getTime();
-    expect(isDailyRankingDateInRange("2026-09-29", campaignStart, now)).toBe(false);
-    expect(isDailyRankingDateInRange("2026-09-30", campaignStart, now)).toBe(true);
-    expect(isDailyRankingDateInRange("2026-10-13", campaignStart, now)).toBe(true);
-    expect(isDailyRankingDateInRange("2026-10-14", campaignStart, now)).toBe(true);
-    expect(isDailyRankingDateInRange("2026-10-15", campaignStart, now)).toBe(false);
-    expect(isDailyRankingDateInRange("9999-12-31", campaignStart, now)).toBe(false);
-  });
 });
 
 describe("Top Clipadores do dia", () => {

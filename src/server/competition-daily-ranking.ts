@@ -108,8 +108,6 @@ export function dailyRankingCacheTtlMs(dateYmd: string, now = Date.now()) {
   return 6 * HOUR_MS;
 }
 
-const DAY_MS = 24 * HOUR_MS;
-
 /** YYYY-MM-DD que existe no calendário UTC (2026-02-31 e 2026-13-01 não passam). */
 export function isCalendarDateYmd(dateYmd: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateYmd);
@@ -122,23 +120,6 @@ export function isCalendarDateYmd(dateYmd: string) {
   const date = new Date(Date.UTC(year, month - 1, day));
   // Date.UTC trata anos 0–99 como 1900–1999: a volta para o texto também barra.
   return date.toISOString().slice(0, 10) === dateYmd;
-}
-
-/**
- * Dias de ranking que podem ter posts da campanha: do dia anterior ao início
- * até amanhã (UTC). Fora disso o ranking é vazio e não vai ao banco nem ao
- * cache — as chaves por dia não crescem com datas arbitrárias.
- */
-export function isDailyRankingDateInRange(
-  dateYmd: string,
-  campaignStartDate: Date,
-  now = Date.now(),
-) {
-  const first = new Date(campaignStartDate.getTime() - DAY_MS)
-    .toISOString()
-    .slice(0, 10);
-  const last = new Date(now + DAY_MS).toISOString().slice(0, 10);
-  return dateYmd >= first && dateYmd <= last;
 }
 
 /** `fresh`: lê direto do banco, sem usar nem preencher o cache (ADMIN). */
