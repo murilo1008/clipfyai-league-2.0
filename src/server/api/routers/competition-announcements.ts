@@ -190,11 +190,15 @@ export const competitionAnnouncementsRouter = createTRPCRouter({
   listForClipper: privateProcedure
     .input(pageSchema.extend({ slug: z.string().min(1) }).strict())
     .query(async ({ ctx, input }) => {
-      const profile = await requireAnnouncementClipper(ctx.db, ctx.userId);
-      const campaign = await ctx.db.campaign.findUnique({
-        where: { slug: input.slug },
-        select: { id: true, status: true },
-      });
+      // Perfil e competição não dependem um do outro: busca em paralelo
+      // (a recusa do perfil continua tendo prioridade sobre o NOT_FOUND).
+      const [profile, campaign] = await Promise.all([
+        requireAnnouncementClipper(ctx.db, ctx.userId),
+        ctx.db.campaign.findUnique({
+          where: { slug: input.slug },
+          select: { id: true, status: true },
+        }),
+      ]);
       if (!campaign)
         throw new TRPCError({
           code: "NOT_FOUND",

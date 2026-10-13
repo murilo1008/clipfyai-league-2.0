@@ -8,6 +8,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 }));
 vi.mock("@/server/db", () => ({ db: {} }));
 
+import { invalidateCachedQueries } from "@/server/memory-cache";
 import { notificationsRouter } from "./notifications";
 
 const createdAt = new Date("2026-10-08T15:00:00Z");
@@ -31,15 +32,46 @@ const record = {
   },
 };
 
-function setup(role = "CLIPPER") {
-  const db = {
-    clipperProfile: {
-      findUnique: vi.fn().mockResolvedValue({
-        id: "clipper-1",
-        verificationStatus: "VERIFIED",
-        user: { role },
-      }),
+type ProfileRow = {
+  id: string;
+  userId: string;
+  verificationStatus: string;
+  user: { role: string };
+};
+
+// Aplica os filtros que o banco aplicaria na consulta única de perfil + papel.
+function findProfile(rows: ProfileRow[]) {
+  return vi.fn(
+    async ({
+      where,
+    }: {
+      where: {
+        userId: string;
+        verificationStatus?: { not: string };
+        user?: { role: string };
+      };
+    }) => {
+      const row = rows.find(
+        (profile) =>
+          profile.userId === where.userId &&
+          (!where.verificationStatus ||
+            profile.verificationStatus !== where.verificationStatus.not) &&
+          (!where.user || profile.user.role === where.user.role),
+      );
+      return row ? { id: row.id } : null;
     },
+  );
+}
+
+function setup(role = "CLIPPER") {
+  const profile: ProfileRow = {
+    id: "clipper-1",
+    userId: "user-1",
+    verificationStatus: "VERIFIED",
+    user: { role },
+  };
+  const db = {
+    clipperProfile: { findUnique: findProfile([profile]) },
     competitionAnnouncement: { findFirst: vi.fn().mockResolvedValue(post) },
     notification: {
       groupBy: vi.fn().mockResolvedValue([
@@ -52,6 +84,7 @@ function setup(role = "CLIPPER") {
   };
   return {
     db,
+    profile,
     api: notificationsRouter.createCaller({
       db,
       headers: new Headers(),
@@ -82,6 +115,7 @@ const visibility = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  invalidateCachedQueries("");
   currentUser.mockResolvedValue({ id: "user-1" });
 });
 
@@ -407,16 +441,134 @@ describe("notificações de avisos da competição", () => {
   );
 
   it("bloqueia clipadores banidos", async () => {
-    const { api, db } = setup();
-    db.clipperProfile.findUnique.mockResolvedValue({
-      id: "clipper-1",
-      verificationStatus: "BANNED",
-      user: { role: "CLIPPER" },
-    });
+    const { api, db, profile } = setup();
+    profile.verificationStatus = "BANNED";
     await expect(api.unreadSummary()).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
+    await expect(api.list({})).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      api.markRead({ announcementId: "post-1" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.notification.groupBy).not.toHaveBeenCalled();
+    expect(db.notification.findMany).not.toHaveBeenCalled();
+    expect(db.notification.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("bloqueia usuários sem perfil de clipador", async () => {
+    const { api, db } = setup();
+    currentUser.mockResolvedValue({ id: "user-sem-perfil" });
+    await expect(api.unreadSummary()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Acesso restrito aos clipadores participantes.",
+    });
+    expect(db.notification.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("valida perfil, papel e banimento numa única consulta", async () => {
+    const { api, db } = setup();
+    await api.unreadSummary();
+    expect(db.clipperProfile.findUnique).toHaveBeenCalledTimes(1);
+    expect(db.clipperProfile.findUnique).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        verificationStatus: { not: "BANNED" },
+        user: { role: "CLIPPER" },
+      },
+      select: { id: true },
+    });
+  });
+
+  it("reaproveita por alguns segundos o contador zerado do mesmo usuário e filtro", async () => {
+    const { api, db } = setup();
+    db.notification.groupBy.mockResolvedValue([]);
+    const first = await api.unreadSummary({ slug: "competicao" });
+    expect(first).toEqual({ total: 0, byCampaign: {} });
+    expect(await api.unreadSummary({ slug: "competicao" })).toEqual(first);
+    expect(db.notification.groupBy).toHaveBeenCalledTimes(1);
+    expect(db.clipperProfile.findUnique).toHaveBeenCalledTimes(1);
+
+    // Outro filtro é outra chave.
+    await api.unreadSummary();
+    expect(db.notification.groupBy).toHaveBeenCalledTimes(2);
+  });
+
+  it("não guarda contador com avisos pendentes: a próxima leitura vem do banco", async () => {
+    const { api, db } = setup();
+    expect((await api.unreadSummary({ slug: "competicao" })).total).toBe(3);
+    db.notification.groupBy.mockResolvedValue([
+      { campaignId: "campaign-1", _count: { id: 1 } },
+    ]);
+    expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
+      total: 1,
+      byCampaign: { "campaign-1": 1 },
+    });
+    expect(db.notification.groupBy).toHaveBeenCalledTimes(2);
+  });
+
+  it("não compartilha o contador entre usuários", async () => {
+    const { api, db } = setup();
+    db.clipperProfile.findUnique = findProfile([
+      {
+        id: "clipper-1",
+        userId: "user-1",
+        verificationStatus: "VERIFIED",
+        user: { role: "CLIPPER" },
+      },
+      {
+        id: "clipper-2",
+        userId: "user-2",
+        verificationStatus: "VERIFIED",
+        user: { role: "CLIPPER" },
+      },
+    ]);
+    db.notification.groupBy.mockImplementation(async ({ where }) =>
+      where.userId === "user-1"
+        ? []
+        : [{ campaignId: "campaign-9", _count: { id: 5 } }],
+    );
+    expect(await api.unreadSummary()).toEqual({ total: 0, byCampaign: {} });
+    currentUser.mockResolvedValue({ id: "user-2" });
+    expect(await api.unreadSummary()).toEqual({
+      total: 5,
+      byCampaign: { "campaign-9": 5 },
+    });
+    expect(db.notification.groupBy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ userId: "user-2" }),
+      }),
+    );
+  });
+
+  it("descarta o contador em cache ao marcar um aviso como lido", async () => {
+    const { api, db } = setup();
+    db.notification.groupBy.mockResolvedValue([]);
+    expect((await api.unreadSummary({ slug: "competicao" })).total).toBe(0);
+    // Chegaram avisos depois da leitura em cache.
+    db.notification.groupBy.mockResolvedValue([
+      { campaignId: "campaign-1", _count: { id: 2 } },
+    ]);
+    expect((await api.unreadSummary({ slug: "competicao" })).total).toBe(0);
+    await api.markRead({ announcementId: "post-1" });
+    db.notification.groupBy.mockResolvedValue([
+      { campaignId: "campaign-1", _count: { id: 1 } },
+    ]);
+    expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
+      total: 1,
+      byCampaign: { "campaign-1": 1 },
+    });
+    expect(db.notification.groupBy).toHaveBeenCalledTimes(2);
+  });
+
+  it("não guarda falhas no cache do contador", async () => {
+    const { api, db, profile } = setup();
+    profile.verificationStatus = "BANNED";
+    await expect(api.unreadSummary()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    profile.verificationStatus = "VERIFIED";
+    expect((await api.unreadSummary()).total).toBe(3);
+    expect(db.notification.groupBy).toHaveBeenCalledTimes(1);
   });
 
   it("exige autenticação", async () => {
