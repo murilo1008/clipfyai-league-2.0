@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 
 import { Logo } from "@/components/logo"
+import { getStatusRedirect } from "@/components/templates/auth-redirect"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
@@ -16,29 +17,72 @@ interface AuthTemplateProps {
 /**
  * Guard de autenticação e status — mesma lógica de redirecionamento da
  * Clipfy League (onboarding / aprovação / banimento por verificationStatus).
+ *
+ * O layout do dashboard já busca `getCurrentUser` no servidor (HydrateClient),
+ * então quando o clerk-js termina de carregar o dado costuma estar no cache.
  */
 export function AuthTemplate({ children, requireAuth = true }: AuthTemplateProps) {
-  const { isLoaded: authLoaded, isSignedIn } = useAuth()
+  const { isLoaded: authLoaded, isSignedIn, userId } = useAuth()
   const { isLoaded: userLoaded } = useUser()
   const router = useRouter()
   const pathname = usePathname()
-  const [isInitialized, setIsInitialized] = useState(false)
+  const [isRedirectConfirmed, setIsRedirectConfirmed] = useState(false)
 
   const publicRoutes = ["/sign-in", "/sign-up", "/forgot-password"]
   const isPublicRoute = publicRoutes.includes(pathname)
 
-  const { data: dbUser, isLoading: isLoadingDbUser } =
-    api.user.getCurrentUser.useQuery(undefined, {
-      enabled: isSignedIn && authLoaded && userLoaded && !isPublicRoute,
-      retry: 1,
+  const {
+    data: cachedDbUser,
+    isLoading: isLoadingQuery,
+    isFetchedAfterMount,
+    refetch: refetchDbUser,
+  } = api.user.getCurrentUser.useQuery(undefined, {
+    enabled: isSignedIn && authLoaded && userLoaded && !isPublicRoute,
+    retry: 1,
+  })
+
+  // Cache de outra conta (saiu e entrou com outra sem recarregar a página):
+  // o dado antigo não vale nem por um render; espera o da conta atual.
+  const isOtherAccountCache =
+    !!isSignedIn &&
+    !isPublicRoute &&
+    !!cachedDbUser &&
+    cachedDbUser.id !== userId
+  const dbUser = isOtherAccountCache ? undefined : cachedDbUser
+  const isLoadingDbUser = isLoadingQuery || isOtherAccountCache
+
+  useEffect(() => {
+    if (isOtherAccountCache) void refetchDbUser()
+  }, [isOtherAccountCache, refetchDbUser])
+
+  const statusRedirect =
+    authLoaded && userLoaded && isSignedIn && !isPublicRoute && !isLoadingDbUser
+      ? getStatusRedirect(dbUser, pathname)
+      : null
+
+  // O cache pode ter vindo de outra tela (ex.: onboarding ou aprovação que
+  // acabaram de mudar o status sem invalidar a query, e o staleTime do
+  // usuário é longo). Antes de tirar alguém do dashboard, confirma com um
+  // dado buscado depois que o guard montou. Sem redirect, nada muda.
+  const needsRedirectCheck =
+    statusRedirect !== null && !isFetchedAfterMount && !isRedirectConfirmed
+
+  useEffect(() => {
+    if (!needsRedirectCheck) return
+    let active = true
+    void refetchDbUser().finally(() => {
+      if (active) setIsRedirectConfirmed(true)
     })
+    return () => {
+      active = false
+    }
+  }, [needsRedirectCheck, refetchDbUser])
 
   useEffect(() => {
     if (!authLoaded || !userLoaded) return
 
     // CASO 1: Não está logado
     if (!isSignedIn) {
-      setIsInitialized(true)
       if (requireAuth && !isPublicRoute) {
         router.push("/sign-in")
       }
@@ -49,60 +93,14 @@ export function AuthTemplate({ children, requireAuth = true }: AuthTemplateProps
     if (isLoadingDbUser) return
 
     // CASO 3: Está logado e dados carregados
-    setIsInitialized(true)
-
     if (isPublicRoute) {
       router.push("/")
       return
     }
 
     // CASO 4: CLIPPER - onboarding e status de verificação
-    if (dbUser?.role === "CLIPPER") {
-      if (!dbUser.onboardingCompleted && pathname !== "/onboarding") {
-        router.push("/onboarding")
-        return
-      }
-
-      if (
-        dbUser.onboardingCompleted &&
-        dbUser.clipperProfile?.verificationStatus === "PENDING" &&
-        pathname !== "/approve"
-      ) {
-        router.push("/approve")
-        return
-      }
-
-      if (
-        dbUser.onboardingCompleted &&
-        dbUser.clipperProfile?.verificationStatus === "UNVERIFIED" &&
-        pathname !== "/approve"
-      ) {
-        router.push("/approve")
-        return
-      }
-
-      if (
-        dbUser.clipperProfile?.verificationStatus === "REJECTED" &&
-        pathname !== "/approve"
-      ) {
-        router.push("/approve")
-        return
-      }
-
-      if (
-        dbUser.clipperProfile?.verificationStatus === "BANNED" &&
-        pathname !== "/banned"
-      ) {
-        router.push("/banned")
-        return
-      }
-
-      if (dbUser.clipperProfile?.verificationStatus === "VERIFIED") {
-        if (pathname === "/onboarding" || pathname === "/approve") {
-          router.push("/")
-          return
-        }
-      }
+    if (statusRedirect && !needsRedirectCheck) {
+      router.push(statusRedirect)
     }
   }, [
     authLoaded,
@@ -111,19 +109,25 @@ export function AuthTemplate({ children, requireAuth = true }: AuthTemplateProps
     requireAuth,
     isPublicRoute,
     router,
-    pathname,
     isLoadingDbUser,
-    dbUser,
+    statusRedirect,
+    needsRedirectCheck,
   ])
 
   const isCheckingSession = !authLoaded || !userLoaded
   const isLoadingProfile = isSignedIn && isLoadingDbUser
 
-  if (isCheckingSession || !isInitialized || isLoadingProfile) {
+  // Quem vai ser redirecionado fica no splash: o dashboard nem monta (e não
+  // dispara as queries da página) antes de ir para onboarding/aprovação.
+  if (isCheckingSession || isLoadingProfile || statusRedirect) {
     return (
       <AuthLoadingScreen
         stage={
-          isCheckingSession ? "session" : isLoadingProfile ? "profile" : "arena"
+          isCheckingSession
+            ? "session"
+            : isLoadingProfile || needsRedirectCheck
+              ? "profile"
+              : "arena"
         }
       />
     )
