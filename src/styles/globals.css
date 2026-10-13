@@ -8,6 +8,11 @@
    em vez de deixar o conteúdo estourar a dobra. */
 @custom-variant short (@media (max-height: 700px));
 
+/* Desktop com mouse: onde efeitos caros (backdrop-filter) ficam liberados.
+   Em celular/tablet, blur aninhado dentro de área com scroll é recalculado
+   a cada frame e trava aparelhos modestos. */
+@custom-variant desktop (@media (min-width: 1024px) and (hover: hover));
+
 /* ============================================================
    CLIPFY LEAGUE 2.0 — DESIGN TOKENS
    Paleta extraída da apresentação oficial da marca:
@@ -224,19 +229,29 @@
     border: 1px solid rgba(148, 224, 232, 0.1);
   }
 
-  /* Card da apresentação: escuro, borda fina teal, linha de glow no topo */
+  /* Card da apresentação: escuro, borda fina teal, linha de glow no topo.
+     Sem blur fora do desktop (ver variante `desktop`): no lugar dele o
+     fundo fica mais opaco (0.85), mantendo o contraste do texto. */
   .glass-card {
     position: relative;
-    background: rgba(255, 255, 255, 0.78);
-    backdrop-filter: blur(22px) saturate(170%);
-    -webkit-backdrop-filter: blur(22px) saturate(170%);
+    background: rgba(255, 255, 255, 0.85);
     border: 1px solid rgba(11, 36, 48, 0.1);
     border-radius: var(--radius);
     overflow: hidden;
   }
   .dark .glass-card {
-    background: rgba(8, 24, 40, 0.62);
+    background: rgba(8, 24, 40, 0.85);
     border: 1px solid rgba(148, 224, 232, 0.15);
+  }
+  @media (min-width: 1024px) and (hover: hover) {
+    .glass-card {
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(22px) saturate(170%);
+      -webkit-backdrop-filter: blur(22px) saturate(170%);
+    }
+    .dark .glass-card {
+      background: rgba(8, 24, 40, 0.62);
+    }
   }
   .glass-card::before {
     content: "";
