@@ -34,7 +34,8 @@ export async function generateMetadata({
 
   const post = await getPost(slug)
 
-  if (!post) {
+  // Rascunho/agendado não expõe título, resumo nem capa a quem adivinhar o slug.
+  if (!post || post.status !== "PUBLISHED") {
     return {
       title: "Post não encontrado | Central do Clipador",
       description: "O artigo que você está procurando não foi encontrado.",
@@ -114,6 +115,11 @@ export async function generateMetadata({
 // ============================================================================
 // DADOS ESTRUTURADOS JSON-LD
 // ============================================================================
+/** JSON dentro de <script>: escapa "<" para um título com "</script>" não fechar a tag. */
+function jsonLdHtml(data: unknown) {
+  return JSON.stringify(data).replace(/</g, "\\u003c")
+}
+
 function getJsonLd(slug: string, post: PublicPostRecord | null) {
   if (!post) return null
 
@@ -195,13 +201,13 @@ export default async function BlogPostPage({
 }) {
   const { slug } = await params
   const post = await getPost(slug)
-  const jsonLdData = getJsonLd(slug, post)
+  const publishedPost = post?.status === "PUBLISHED" ? post : null
+  const jsonLdData = getJsonLd(slug, publishedPost)
   // O artigo publicado já sai no HTML. A view continua sendo contada pelo
   // client, que busca o post de novo ao montar (com o contador já somado).
-  const initialPost =
-    post?.status === "PUBLISHED"
-      ? toPublicPost(post, post.viewsCount + 1)
-      : undefined
+  const initialPost = publishedPost
+    ? toPublicPost(publishedPost, publishedPost.viewsCount + 1)
+    : undefined
 
   return (
     <>
@@ -211,13 +217,13 @@ export default async function BlogPostPage({
           <script
             type="application/ld+json"
             dangerouslySetInnerHTML={{
-              __html: JSON.stringify(jsonLdData.articleJsonLd),
+              __html: jsonLdHtml(jsonLdData.articleJsonLd),
             }}
           />
           <script
             type="application/ld+json"
             dangerouslySetInnerHTML={{
-              __html: JSON.stringify(jsonLdData.breadcrumbJsonLd),
+              __html: jsonLdHtml(jsonLdData.breadcrumbJsonLd),
             }}
           />
         </>
