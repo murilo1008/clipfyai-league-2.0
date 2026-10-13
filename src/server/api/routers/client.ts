@@ -171,29 +171,50 @@ export const clientRouter = createTRPCRouter({
         })
       }
 
+      // Os gráficos do cliente desenham um ponto por dia: as coletas de
+      // perfis e vídeos chegam resumidas (totais e crescimento iguais).
+      const loadPerformance = (campaignId: string) =>
+        getCampaignPerformance(ctx.db, campaignId, {
+          snapshotResolution: "daily",
+        })
+      const forClient = (
+        performance: Awaited<ReturnType<typeof loadPerformance>>,
+      ) =>
+        performance
+          ? {
+              ...performance,
+              profiles: performance.profiles.filter(
+                (profile) =>
+                  profile.lastCollectedAt !== null &&
+                  profile.history.length > 0,
+              ),
+            }
+          : null
+
+      // Competição escolhida (já validada acima): só ela é calculada. A
+      // visão geral consolidada só aparece sem competição escolhida.
+      if (input?.campaignId) {
+        return {
+          campaigns,
+          selected: forClient(await loadPerformance(input.campaignId)),
+          overall: null,
+          aggregate: null,
+        }
+      }
+
       const performances = await Promise.all(
-        campaigns.map((campaign) =>
-          getCampaignPerformance(ctx.db, campaign.id),
-        ),
+        campaigns.map((campaign) => loadPerformance(campaign.id)),
       )
       const available = performances.filter(
         (performance): performance is NonNullable<typeof performance> =>
           Boolean(performance),
       )
-      const selectedId = input?.campaignId ?? campaigns[0]?.id
+      const selectedId = campaigns[0]?.id
       const selected =
         available.find(
           (performance) => performance.campaign.id === selectedId,
         ) ?? null
-      const selectedForClient = selected
-        ? {
-            ...selected,
-            profiles: selected.profiles.filter(
-              (profile) =>
-                profile.lastCollectedAt !== null && profile.history.length > 0,
-            ),
-          }
-        : null
+      const selectedForClient = forClient(selected)
 
       const totals = available.reduce(
         (result, performance) => ({

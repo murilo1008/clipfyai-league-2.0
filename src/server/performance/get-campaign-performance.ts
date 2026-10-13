@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 
 export const DEFAULT_REFERENCE_CPM = 13;
 
@@ -218,33 +218,234 @@ function getDailyViewsHistory(
   return rows;
 }
 
-export async function getCampaignPerformance(
+/** Só as colunas que viram histórico (sem `metadata`, que guarda o payload bruto). */
+const profileSnapshotSelect = { followers: true, collectedAt: true } as const;
+const videoSnapshotSelect = {
+  views: true,
+  likes: true,
+  comments: true,
+  shares: true,
+  collectedAt: true,
+} as const;
+
+type ProfileSnapshotRow = {
+  profileId: string;
+  followers: number;
+  collectedAt: Date;
+};
+
+type VideoSnapshotRow = {
+  videoId: string;
+  views: bigint;
+  likes: number;
+  comments: number;
+  shares: number;
+  collectedAt: Date;
+};
+
+function groupByOwner<T, K extends keyof T>(rows: T[], key: K) {
+  const groups = new Map<T[K], T[]>();
+  for (const row of rows) {
+    const list = groups.get(row[key]);
+    if (list) list.push(row);
+    else groups.set(row[key], [row]);
+  }
+  return groups;
+}
+
+/**
+ * Coletas resumidas por dia operacional: a primeira coleta de cada perfil ou
+ * vídeo (base do crescimento) e a última de cada dia (os gráficos de tendência
+ * só desenham um ponto por dia). Ordem cronológica, como o include completo.
+ */
+async function loadDailySnapshots(db: PrismaClient, campaignId: string) {
+  const [profileRows, videoRows] = await Promise.all([
+    db.$queryRaw<ProfileSnapshotRow[]>`
+      SELECT "profileId", followers, "collectedAt"
+      FROM (
+        (
+          SELECT DISTINCT ON (
+            snapshot."profileId",
+            DATE_TRUNC('day', snapshot."collectedAt" + INTERVAL '4 hours')
+          )
+            snapshot."profileId", snapshot.followers, snapshot."collectedAt"
+          FROM "CampaignPerformanceProfileSnapshot" snapshot
+          JOIN "CampaignPerformanceProfile" profile
+            ON profile.id = snapshot."profileId"
+          WHERE profile."campaignId" = ${campaignId}
+          ORDER BY
+            snapshot."profileId",
+            DATE_TRUNC('day', snapshot."collectedAt" + INTERVAL '4 hours'),
+            snapshot."collectedAt" DESC
+        )
+        UNION
+        (
+          SELECT DISTINCT ON (snapshot."profileId")
+            snapshot."profileId", snapshot.followers, snapshot."collectedAt"
+          FROM "CampaignPerformanceProfileSnapshot" snapshot
+          JOIN "CampaignPerformanceProfile" profile
+            ON profile.id = snapshot."profileId"
+          WHERE profile."campaignId" = ${campaignId}
+          ORDER BY snapshot."profileId", snapshot."collectedAt" ASC
+        )
+      ) daily
+      ORDER BY "profileId", "collectedAt" ASC
+    `,
+    db.$queryRaw<VideoSnapshotRow[]>`
+      SELECT "videoId", views, likes, comments, shares, "collectedAt"
+      FROM (
+        (
+          SELECT DISTINCT ON (
+            snapshot."videoId",
+            DATE_TRUNC('day', snapshot."collectedAt" + INTERVAL '4 hours')
+          )
+            snapshot."videoId", snapshot.views, snapshot.likes,
+            snapshot.comments, snapshot.shares, snapshot."collectedAt"
+          FROM "CampaignPerformanceVideoSnapshot" snapshot
+          JOIN "CampaignPerformanceVideo" video
+            ON video.id = snapshot."videoId"
+          WHERE video."campaignId" = ${campaignId}
+          ORDER BY
+            snapshot."videoId",
+            DATE_TRUNC('day', snapshot."collectedAt" + INTERVAL '4 hours'),
+            snapshot."collectedAt" DESC
+        )
+        UNION
+        (
+          SELECT DISTINCT ON (snapshot."videoId")
+            snapshot."videoId", snapshot.views, snapshot.likes,
+            snapshot.comments, snapshot.shares, snapshot."collectedAt"
+          FROM "CampaignPerformanceVideoSnapshot" snapshot
+          JOIN "CampaignPerformanceVideo" video
+            ON video.id = snapshot."videoId"
+          WHERE video."campaignId" = ${campaignId}
+          ORDER BY snapshot."videoId", snapshot."collectedAt" ASC
+        )
+      ) daily
+      ORDER BY "videoId", "collectedAt" ASC
+    `,
+  ]);
+
+  return {
+    profiles: groupByOwner(profileRows, "profileId"),
+    videos: groupByOwner(videoRows, "videoId"),
+  };
+}
+
+export type CampaignPerformanceOptions = {
+  /**
+   * Coletas de perfis e vídeos devolvidas no histórico:
+   * - "all" (padrão): todas as coletas;
+   * - "daily": a primeira coleta (base do crescimento) e a última de cada dia
+   *   operacional. Os totais e o crescimento não mudam; só o histórico fica
+   *   com um ponto por dia.
+   */
+  snapshotResolution?: "all" | "daily";
+};
+
+const campaignBaseSelect = {
+  id: true,
+  name: true,
+  slug: true,
+  status: true,
+  startDate: true,
+  endDate: true,
+  platforms: true,
+  requiredMentions: true,
+  performanceSettings: true,
+} as const;
+
+type CampaignWithSnapshots = Prisma.CampaignGetPayload<{
+  select: typeof campaignBaseSelect;
+}> & {
+  performanceProfiles: Array<
+    Prisma.CampaignPerformanceProfileGetPayload<object> & {
+      snapshots: Array<{ followers: number; collectedAt: Date }>;
+    }
+  >;
+  performanceVideos: Array<
+    Prisma.CampaignPerformanceVideoGetPayload<object> & {
+      snapshots: Array<{
+        views: bigint;
+        likes: number;
+        comments: number;
+        shares: number;
+        collectedAt: Date;
+      }>;
+    }
+  >;
+};
+
+async function loadCampaignWithSnapshots(
   db: PrismaClient,
   campaignId: string,
-) {
-  const [campaign, currentViews] = await Promise.all([
-    db.campaign.findUnique({
+  daily: boolean,
+): Promise<CampaignWithSnapshots | null> {
+  if (!daily) {
+    return db.campaign.findUnique({
       where: { id: campaignId },
       select: {
-        id: true,
-        name: true,
-        slug: true,
-        status: true,
-        startDate: true,
-        endDate: true,
-        platforms: true,
-        requiredMentions: true,
-        performanceSettings: true,
+        ...campaignBaseSelect,
         performanceProfiles: {
           orderBy: { createdAt: "asc" },
-          include: { snapshots: { orderBy: { collectedAt: "asc" } } },
+          include: {
+            snapshots: {
+              select: profileSnapshotSelect,
+              orderBy: { collectedAt: "asc" },
+            },
+          },
         },
         performanceVideos: {
           orderBy: { createdAt: "desc" },
-          include: { snapshots: { orderBy: { collectedAt: "asc" } } },
+          include: {
+            snapshots: {
+              select: videoSnapshotSelect,
+              orderBy: { collectedAt: "asc" },
+            },
+          },
         },
       },
+    });
+  }
+
+  // No modo diário as coletas vêm resumidas em SQL, em paralelo.
+  const [campaign, snapshots] = await Promise.all([
+    db.campaign.findUnique({
+      where: { id: campaignId },
+      select: {
+        ...campaignBaseSelect,
+        performanceProfiles: { orderBy: { createdAt: "asc" } },
+        performanceVideos: { orderBy: { createdAt: "desc" } },
+      },
     }),
+    loadDailySnapshots(db, campaignId),
+  ]);
+  if (!campaign) return null;
+
+  return {
+    ...campaign,
+    performanceProfiles: campaign.performanceProfiles.map((profile) => ({
+      ...profile,
+      snapshots: snapshots.profiles.get(profile.id) ?? [],
+    })),
+    performanceVideos: campaign.performanceVideos.map((video) => ({
+      ...video,
+      snapshots: snapshots.videos.get(video.id) ?? [],
+    })),
+  };
+}
+
+export async function getCampaignPerformance(
+  db: PrismaClient,
+  campaignId: string,
+  options: CampaignPerformanceOptions = {},
+) {
+  const [campaign, currentViews] = await Promise.all([
+    loadCampaignWithSnapshots(
+      db,
+      campaignId,
+      options.snapshotResolution === "daily",
+    ),
     db.clipPost.aggregate({
       where: {
         campaignId,
