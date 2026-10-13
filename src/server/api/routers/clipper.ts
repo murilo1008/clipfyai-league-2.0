@@ -3452,51 +3452,64 @@ export const clipperRouter = createTRPCRouter({
         }
 
         // 3.2. Buscar posts com os mesmos platformVideoIds e plataformas no banco
+        // (uma consulta para o lote inteiro, no índice platformVideoId+platform)
         if (videoIdsToCheck.length > 0) {
-          const duplicateVideos = await Promise.all(
-            videoIdsToCheck.map(async ({ platformVideoId, platform }) => {
-              try {
-                const existing = await ctx.db.clipPost.findFirst({
-                  where: {
-                    platformVideoId,
-                    platform: platform as
-                      | "INSTAGRAM"
-                      | "TIKTOK"
-                      | "YOUTUBE"
-                      | "KWAI"
-                      | "FACEBOOK",
-                  },
+          let existingVideos: Array<{
+            platformVideoId: string | null;
+            platform: string;
+            campaign: { name: string };
+            application: {
+              clipperProfile: { fullName: string; artisticName: string | null };
+            };
+          }> = [];
+          try {
+            existingVideos = await ctx.db.clipPost.findMany({
+              where: {
+                OR: videoIdsToCheck.map(({ platformVideoId, platform }) => ({
+                  platformVideoId,
+                  platform: platform as
+                    | "INSTAGRAM"
+                    | "TIKTOK"
+                    | "YOUTUBE"
+                    | "KWAI"
+                    | "FACEBOOK",
+                })),
+              },
+              select: {
+                platformVideoId: true,
+                platform: true,
+                campaign: {
                   select: {
-                    submittedUrl: true,
-                    campaign: {
+                    name: true,
+                  },
+                },
+                application: {
+                  select: {
+                    clipperProfile: {
                       select: {
-                        name: true,
-                      },
-                    },
-                    application: {
-                      select: {
-                        clipperProfile: {
-                          select: {
-                            fullName: true,
-                            artisticName: true,
-                          },
-                        },
+                        fullName: true,
+                        artisticName: true,
                       },
                     },
                   },
-                });
-                return existing;
-              } catch (error) {
-                console.error(
-                  `Erro ao verificar platformVideoId ${platformVideoId}:`,
-                  error,
-                );
-                return null;
-              }
-            }),
-          );
+                },
+              },
+            });
+          } catch (error) {
+            // Mesmo comportamento de antes: falha na checagem não bloqueia o envio
+            console.error("Erro ao verificar platformVideoIds:", error);
+          }
 
-          const firstDuplicate = duplicateVideos.find((v) => v !== null);
+          // Primeiro vídeo do lote (na ordem enviada) que já existe
+          const firstDuplicate = videoIdsToCheck
+            .map(({ platformVideoId, platform }) =>
+              existingVideos.find(
+                (video) =>
+                  video.platformVideoId === platformVideoId &&
+                  video.platform === platform,
+              ),
+            )
+            .find((video) => video !== undefined);
           if (firstDuplicate) {
             const duplicateCampaign = firstDuplicate.campaign.name;
             const duplicateClipper =
@@ -3535,61 +3548,65 @@ export const clipperRouter = createTRPCRouter({
               message: "Esta competição não está aberta para novos posts.",
             });
           }
-          return Promise.all(
-            postsWithResolvedUrls.map(async (post) => {
-              const account = socialAccounts.find((acc) => acc.id === post.accountId);
-              if (!account) return null;
+          // Valida todas as plataformas antes de gravar (o primeiro erro, na
+          // ordem do lote, aborta a transação inteira, como antes).
+          const postsToCreate = postsWithResolvedUrls.flatMap((post) => {
+            const account = socialAccounts.find((acc) => acc.id === post.accountId);
+            if (!account) return [];
 
-              // Verificar se a plataforma da conta é compatível com a campanha
-              if (!application.campaign.platforms.includes(account.platform)) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: `A plataforma ${account.platform} não é aceita nesta competição`,
-                });
-              }
-
-              // Extrair platformVideoId da URL
-              const platformVideoId = extractPlatformVideoId(
-                post.url,
-                account.platform,
-              );
-
-              if (platformVideoId) {
-                console.log(
-                  `✅ PlatformVideoId extraído: ${platformVideoId} (${account.platform}) da URL: ${post.url}`,
-                );
-              } else {
-                console.warn(
-                  `⚠️ Não foi possível extrair platformVideoId de ${account.platform}: ${post.url}`,
-                );
-              }
-
-              return await tx.clipPost.create({
-                data: {
-                  campaignId: input.campaignId,
-                  applicationId: application.id,
-                  platform: account.platform,
-                  submittedUrl: post.url,
-                  normalizedUrl: account.platform === "TIKTOK" ? post.url : undefined,
-                  platformVideoId: platformVideoId, // Salvar shortcode extraído da URL
-                  username: account.username, // Salvar username da conta social
-                  status: "PENDING", // Posts começam pendentes de validação
-                  views: 0,
-                  likes: 0,
-                  comments: 0,
-                  shares: 0,
-                },
+            // Verificar se a plataforma da conta é compatível com a campanha
+            if (!application.campaign.platforms.includes(account.platform)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `A plataforma ${account.platform} não é aceita nesta competição`,
               });
-            }),
-          );
-        });
+            }
 
-        const validPosts = createdPosts.filter((p) => p !== null);
+            // Extrair platformVideoId da URL
+            const platformVideoId = extractPlatformVideoId(
+              post.url,
+              account.platform,
+            );
+
+            if (platformVideoId) {
+              console.log(
+                `✅ PlatformVideoId extraído: ${platformVideoId} (${account.platform}) da URL: ${post.url}`,
+              );
+            } else {
+              console.warn(
+                `⚠️ Não foi possível extrair platformVideoId de ${account.platform}: ${post.url}`,
+              );
+            }
+
+            return [
+              {
+                campaignId: input.campaignId,
+                applicationId: application.id,
+                platform: account.platform,
+                submittedUrl: post.url,
+                normalizedUrl:
+                  account.platform === "TIKTOK" ? post.url : undefined,
+                platformVideoId: platformVideoId, // Salvar shortcode extraído da URL
+                username: account.username, // Salvar username da conta social
+                status: "PENDING" as const, // Posts começam pendentes de validação
+                views: 0,
+                likes: 0,
+                comments: 0,
+                shares: 0,
+              },
+            ];
+          });
+
+          // Um INSERT para o lote (antes: um create por post)
+          return postsToCreate.length > 0
+            ? tx.clipPost.createManyAndReturn({ data: postsToCreate })
+            : [];
+        });
 
         return {
           success: true,
-          postsCreated: validPosts.length,
-          posts: validPosts,
+          postsCreated: createdPosts.length,
+          posts: createdPosts,
         };
       } catch (error) {
         console.error("Erro ao submeter posts:", error);
