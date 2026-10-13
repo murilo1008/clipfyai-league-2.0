@@ -198,7 +198,7 @@ const TX_TABLE_TYPES: Record<
    ============================================================ */
 
 export function FinancialTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props;
+  const { slug, campaignId, data, active } = props;
   const formatCurrency = useFormatCurrency();
   const utils = api.useUtils();
 
@@ -355,7 +355,6 @@ export function FinancialTab(props: CompetitionTabProps) {
         utils.clipper.getTransactions.invalidate(),
         utils.clipper.getWalletStats.invalidate(),
       ]);
-      refetch();
     },
     onError: (error) => {
       toast.error(error.message || "Erro ao registrar PIX");

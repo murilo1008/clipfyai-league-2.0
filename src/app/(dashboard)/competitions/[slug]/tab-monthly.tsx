@@ -51,7 +51,7 @@ import {
 type MonthlyRankingEntry = CompetitionDetails["topMonthlyRanking"][number]
 
 export function MonthlyTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, refetch } = props
+  const { slug, campaignId, data } = props
   const formatCurrency = useFormatCurrency()
 
   const entries = React.useMemo(
@@ -473,7 +473,6 @@ export function MonthlyTab(props: CompetitionTabProps) {
         }}
         data={previewData}
         slug={slug}
-        refetch={refetch}
         onSilentRepreview={handleSilentRepreview}
       />
 

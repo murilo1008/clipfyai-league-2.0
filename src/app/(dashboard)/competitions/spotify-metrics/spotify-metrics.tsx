@@ -83,6 +83,38 @@ const RANGE_HINT: Record<Range, string> = {
   all: "desde a primeira coleta",
 };
 
+/** Tempo máximo de polling enquanto uma coleta não termina. */
+const POLL_MAX_MS = 3 * 60_000;
+/** Polls seguidos sem a execução na lista até tratá-la como encerrada. */
+const MISSING_RUN_MAX_POLLS = 5;
+
+/**
+ * Intervalo com recuo: `baseMs` no 1º minuto, o dobro no 2º, o quádruplo no
+ * 3º; depois de POLL_MAX_MS o polling para.
+ */
+function backoffPollMs(startedAt: number, baseMs: number): number | false {
+  const elapsed = Date.now() - startedAt;
+  if (elapsed >= POLL_MAX_MS) return false;
+  return baseMs * 2 ** Math.floor(elapsed / 60_000);
+}
+
+/**
+ * Polling com teto enquanto `pending` for verdadeiro: o início fica no ref e
+ * é zerado quando a condição deixa de valer.
+ */
+function cappedPollMs(
+  pending: boolean,
+  startedAt: React.MutableRefObject<number | null>,
+  baseMs: number,
+): number | false {
+  if (!pending) {
+    startedAt.current = null;
+    return false;
+  }
+  startedAt.current ??= Date.now();
+  return backoffPollMs(startedAt.current, baseMs);
+}
+
 const dateTimeFormat = new Intl.DateTimeFormat("pt-BR", {
   dateStyle: "short",
   timeStyle: "short",
@@ -131,6 +163,17 @@ export default function SpotifyMetrics() {
   const [refreshingRunId, setRefreshingRunId] = React.useState("");
   const [removalTargetId, setRemovalTargetId] = React.useState("");
 
+  /* ── Polling com teto (início de cada ciclo) ── */
+  const tracksPollStartedAt = React.useRef<number | null>(null);
+  const evolutionPollStartedAt = React.useRef<number | null>(null);
+  const runPollStartedAt = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    tracksPollStartedAt.current = null;
+  }, [campaignId, range]);
+  React.useEffect(() => {
+    evolutionPollStartedAt.current = null;
+  }, [selectedTrackId, range]);
+
   /* ── Queries ── */
   const { data: campaigns, isLoading: campaignsLoading } =
     api.admin.spotifyMetrics.campaigns.useQuery({
@@ -150,14 +193,18 @@ export default function SpotifyMetrics() {
     {
       enabled: Boolean(campaignId),
       refetchInterval: (query) =>
-        query.state.data?.some(
-          (item) =>
-            item.isActive &&
-            item.track.currentPlayCount == null &&
-            !item.track.lastError,
-        ) || Boolean(refreshingRunId)
-          ? 3_000
-          : false,
+        cappedPollMs(
+          Boolean(
+            query.state.data?.some(
+              (item) =>
+                item.isActive &&
+                item.track.currentPlayCount == null &&
+                !item.track.lastError,
+            ) || Boolean(refreshingRunId),
+          ),
+          tracksPollStartedAt,
+          3_000,
+        ),
     },
   );
 
@@ -182,8 +229,12 @@ export default function SpotifyMetrics() {
       {
         enabled: Boolean(selectedTrackId),
         refetchInterval: (query) => {
-          if (selectedTrackPending) return 3_000;
-          if (!selectedTrackLatestCollectedAt) return false;
+          if (selectedTrackPending) {
+            return cappedPollMs(true, evolutionPollStartedAt, 3_000);
+          }
+          if (!selectedTrackLatestCollectedAt) {
+            return cappedPollMs(false, evolutionPollStartedAt, 3_000);
+          }
           const graphLatestCollectedAt =
             query.state.data?.summary.latestCollectedAt;
           // Só é "desatualizado" quando o gráfico já carregou e está atrás da
@@ -192,19 +243,22 @@ export default function SpotifyMetrics() {
             graphLatestCollectedAt != null &&
             new Date(graphLatestCollectedAt).getTime() <
               new Date(selectedTrackLatestCollectedAt).getTime();
-          return graphIsOutdated ? 3_000 : false;
+          return cappedPollMs(graphIsOutdated, evolutionPollStartedAt, 3_000);
         },
       },
     );
 
-  const { data: runs } = api.admin.spotifyMetrics.runs.useQuery(
-    { campaignId },
-    {
-      enabled: Boolean(campaignId && refreshingRunId),
-      refetchInterval: refreshingRunId ? 2_000 : false,
-    },
-  );
+  const { data: runs, dataUpdatedAt: runsUpdatedAt } =
+    api.admin.spotifyMetrics.runs.useQuery(
+      { campaignId },
+      {
+        enabled: Boolean(campaignId && refreshingRunId),
+        refetchInterval: () =>
+          cappedPollMs(Boolean(refreshingRunId), runPollStartedAt, 2_000),
+      },
+    );
   const refreshingRun = runs?.find((run) => run.id === refreshingRunId);
+  const missingRunPolls = React.useRef(0);
 
   /* ── Invalidação compartilhada ── */
   const invalidate = React.useCallback(async () => {
@@ -283,6 +337,32 @@ export default function SpotifyMetrics() {
       toast.error(error.message);
     },
   });
+
+  /* ── Coleta manual sem resposta: some da lista ou passa do teto ── */
+  React.useEffect(() => {
+    missingRunPolls.current = 0;
+    if (!refreshingRunId) return;
+    const timeout = setTimeout(() => {
+      setRefreshingRunId("");
+      setRefreshingTrackId("");
+      void invalidate();
+      toast.info("A coleta segue em segundo plano", {
+        description: "Os dados aparecem aqui quando ela terminar.",
+      });
+    }, POLL_MAX_MS);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshingRunId]);
+
+  React.useEffect(() => {
+    if (!refreshingRunId || !runs || refreshingRun) return;
+    missingRunPolls.current += 1;
+    if (missingRunPolls.current < MISSING_RUN_MAX_POLLS) return;
+    setRefreshingRunId("");
+    setRefreshingTrackId("");
+    void invalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runsUpdatedAt]);
 
   /* ── Conclusão da coleta manual ── */
   React.useEffect(() => {

@@ -186,7 +186,7 @@ const STEP_TONES: Record<
    ============================================================ */
 
 export function ApplicationsTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props;
+  const { slug, campaignId, data, active } = props;
   const utils = api.useUtils();
   const formatCurrency = useFormatCurrency();
 
@@ -341,11 +341,11 @@ export function ApplicationsTab(props: CompetitionTabProps) {
       toast.success(`${approved} clipador(es) aprovado(s) com sucesso!`);
     }
 
+    // A invalidação já busca de novo os detalhes (sem refetch duplicado)
     await Promise.all([
       utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
       utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
     ]);
-    refetch();
   };
 
   /* ===== Puxar Clipadores (clone) ===== */
@@ -529,7 +529,6 @@ export function ApplicationsTab(props: CompetitionTabProps) {
         utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
         utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
       ]);
-      refetch();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Erro ao puxar clipadores",
@@ -596,7 +595,6 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           utils.admin.getCompetitionApplicationsAdmin.invalidate({ slug }),
           utils.admin.listAvailableClippersForCompetition.invalidate(),
         ]);
-        refetch();
       },
       onError: (error) => {
         toast.error(error.message || "Erro ao inscrever clipadores");

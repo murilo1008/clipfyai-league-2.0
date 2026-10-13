@@ -100,7 +100,6 @@ export function DailyTab({
   campaignId,
   data,
   active,
-  refetch,
 }: CompetitionTabProps) {
   const formatCurrency = useFormatCurrency()
 
@@ -1730,7 +1729,6 @@ export function DailyTab({
         markAnnouncedOnPay={markAnnouncedOnPay}
         onMarkAnnouncedChange={setMarkAnnouncedOnPay}
         refreshPreviewSilently={refreshPreviewSilently}
-        refetch={refetch}
       />
     </div>
   )

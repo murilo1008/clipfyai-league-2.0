@@ -1061,7 +1061,6 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
           open={isEditOpen}
           onOpenChange={setIsEditOpen}
           campaign={campaign}
-          onSuccess={() => void refetchDetails()}
         />
       )}
       {(isPrizesOpen || hasOpenedPrizes) && (

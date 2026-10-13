@@ -731,7 +731,7 @@ function PostedAtFilter({
    Tab "Posts Recentes"
    ============================================================ */
 
-export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
+export function PostsTab({ slug, data, active }: CompetitionTabProps) {
   const utils = api.useUtils()
 
   /* ===== Filtros + paginação (server-side) ===== */
@@ -830,7 +830,9 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
       { enabled: isReassignOpen && !!postToReassign?.id },
     )
 
-  /* ===== Mutations (toasts + invalidações idênticos ao original) ===== */
+  /* ===== Mutations (toasts + invalidações idênticos ao original) =====
+     A invalidação já busca de novo as queries ativas (detalhes e posts);
+     um refetch() logo depois repetiria a consulta pesada dos detalhes. */
   const updateClipPostStatus = api.admin.updateClipPostStatus.useMutation({
     onSuccess: async () => {
       toast.success("Status do post atualizado com sucesso!")
@@ -843,7 +845,6 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
         utils.admin.getCompetitionPostsAdmin.invalidate(),
         utils.campaign.getCompetitionDetails.invalidate(),
       ])
-      refetch()
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao atualizar status do post"),
@@ -862,7 +863,6 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
         utils.admin.getCompetitionPostsAdmin.invalidate(),
         utils.campaign.getCompetitionDetails.invalidate(),
       ])
-      refetch()
     },
     onError: (error) => toast.error(error.message || "Erro ao deletar post"),
   })
@@ -883,7 +883,6 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
         utils.admin.getCompetitionPostsAdmin.invalidate(),
         utils.campaign.getCompetitionDetails.invalidate(),
       ])
-      refetch()
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao deletar posts selecionados"),
@@ -903,9 +902,7 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
           utils.admin.getCompetitionPostsAdmin.invalidate(),
           utils.admin.getClipPostReassignmentTargets.invalidate(),
           utils.campaign.getCompetitionDetails.invalidate(),
-          refetchPosts(),
         ])
-        refetch()
       },
       onError: (error) =>
         toast.error(error.message || "Erro ao trocar vídeo de competição"),
