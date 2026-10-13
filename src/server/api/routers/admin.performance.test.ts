@@ -702,6 +702,57 @@ describe("getDailyTopClippersByPostedVideos", () => {
       totalCampaigns: 1,
     });
   });
+
+  it("desempata posts e views pelo applicationId, como a prévia e o pagamento", async () => {
+    // O banco devolve os grupos em qualquer ordem; empatados em posts e views,
+    // vence o menor applicationId (mesma ordem do groupBy do pagamento).
+    const groupBy = vi.fn().mockResolvedValue([
+      { applicationId: "app-c", _count: { applicationId: 2 }, _sum: { views: 10n } },
+      { applicationId: "app-a", _count: { applicationId: 2 }, _sum: { views: 10n } },
+      { applicationId: "app-d", _count: { applicationId: 3 }, _sum: { views: 1n } },
+      { applicationId: "app-b", _count: { applicationId: 2 }, _sum: { views: 10n } },
+    ]);
+    const applicationFindMany = vi.fn().mockImplementation(async ({ where }) =>
+      (where.id.in as string[]).map((id) => ({
+        id,
+        clipperProfileId: `cp-${id}`,
+        clipperProfile: {
+          fullName: `Nome ${id}`,
+          artisticName: null,
+          user: { imageUrl: null },
+        },
+      })),
+    );
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          name: "Liga",
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: [
+            { position: 1, prize: 30 },
+            { position: 2, prize: 20 },
+            { position: 3, prize: 10 },
+          ],
+        }),
+      },
+      clipPost: { groupBy },
+      clipperApplication: { findMany: applicationFindMany },
+    });
+
+    const result = await api.getDailyTopClippersByPostedVideos({
+      campaignId: "c1",
+      date: "2026-10-02",
+      limit: 3,
+    });
+
+    expect(
+      result.entries.map((e) => [e.position, e.clipperProfileId, e.prize]),
+    ).toEqual([
+      [1, "cp-app-d", 30],
+      [2, "cp-app-a", 20],
+      [3, "cp-app-b", 10],
+    ]);
+  });
 });
 
 describe("pagamentos em lote", () => {

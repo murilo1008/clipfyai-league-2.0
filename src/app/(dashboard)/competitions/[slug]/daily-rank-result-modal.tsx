@@ -145,13 +145,17 @@ export interface DailyRankResultModalProps {
 const PIX_STATUS_POLL_MAX_MS = 10 * 60_000;
 /** Depois deste tempo no mesmo status, o polling de 5s passa para 15s. */
 const PIX_STATUS_FAST_POLL_MS = 2 * 60_000;
+/** Intervalo de nova tentativa depois de uma leitura com erro. */
+const PIX_STATUS_ERROR_POLL_MS = 30_000;
 
 type PixStatusPollState = { status: string | undefined; since: number };
 
 /**
  * Intervalo de polling do status de PIX conforme a fase do pagamento.
- * Não consulta de novo com erro ou sem status (a primeira leitura já acontece
- * pelo `enabled`) e para depois de 10 min sem mudança de status.
+ * Para ao concluir e depois de 10 min sem mudança de status. Com erro, tenta
+ * de novo a cada 30 s dentro do mesmo teto (uma falha passageira logo após
+ * executar o PIX não congela o status na tela). Sem status e sem erro não
+ * consulta de novo: a primeira leitura já acontece pelo `enabled`.
  */
 function pixStatusPollMs(
   query: {
@@ -163,10 +167,11 @@ function pixStatusPollMs(
   if (poll.current.status !== status) {
     poll.current = { status, since: Date.now() };
   }
-  if (query.state.status === "error") return false;
-  if (status === undefined || status === "COMPLETED") return false;
+  if (status === "COMPLETED") return false;
   const elapsed = Date.now() - poll.current.since;
   if (elapsed >= PIX_STATUS_POLL_MAX_MS) return false;
+  if (query.state.status === "error") return PIX_STATUS_ERROR_POLL_MS;
+  if (status === undefined) return false;
   if (status === "PROCESSING" || status === "QUEUED") {
     return elapsed < PIX_STATUS_FAST_POLL_MS ? 5_000 : 15_000;
   }

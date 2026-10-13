@@ -10622,10 +10622,14 @@ export const adminRouter = createTRPCRouter({
         0,
       );
 
+      // Mesma ordem da prévia e do pagamento (posts, views e, no empate,
+      // applicationId crescente): a posição e o prêmio exibidos são os pagos.
       const topGroups = groups
         .sort((a, b) => {
           if (b.totalPosts !== a.totalPosts) return b.totalPosts - a.totalPosts;
-          return b.totalViews - a.totalViews;
+          if (b.totalViews !== a.totalViews) return b.totalViews - a.totalViews;
+          if (a.applicationId === b.applicationId) return 0;
+          return a.applicationId < b.applicationId ? -1 : 1;
         })
         .slice(0, input.limit);
 
