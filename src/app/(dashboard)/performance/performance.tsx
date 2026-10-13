@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
@@ -874,13 +874,12 @@ function VideoCard({ video }: { video: RequiredVideo }) {
       <div className="flex gap-4 p-4 sm:p-5">
         <div className="bg-muted relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl sm:size-24">
           {video.thumbnailUrl ? (
-            <Image
+            <ClipThumbnail
               src={video.thumbnailUrl}
               alt=""
               fill
               sizes="(min-width: 640px) 96px, 80px"
               className="object-cover"
-              unoptimized={video.thumbnailUrl.startsWith("http://")}
             />
           ) : (
             <PlayCircle

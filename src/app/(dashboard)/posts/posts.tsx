@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData } from "@tanstack/react-query";
 import {
@@ -705,7 +705,7 @@ function PostCard({
     <div className="group ring-border/60 hover:ring-brand-cyan/60 not-dark:hover:ring-primary/50 relative block aspect-[9/16] overflow-hidden rounded-2xl ring-1 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-[color-mix(in_oklab,var(--brand-cyan)_22%,transparent)] motion-reduce:transition-none motion-reduce:hover:translate-y-0">
       {/* Thumbnail */}
       {post.thumbnail ? (
-        <Image
+        <ClipThumbnail
           src={post.thumbnail}
           alt={`Corte de ${username}`}
           fill

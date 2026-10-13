@@ -1,6 +1,3 @@
-"use client"
-
-import * as React from "react"
 import Link from "next/link"
 
 import {
@@ -12,7 +9,6 @@ import {
   Clock,
   Eye,
   Lightning,
-  List,
   Medal,
   SealCheck,
   Shield,
@@ -21,8 +17,7 @@ import {
   TrendUp,
   UsersThree,
   Warning,
-  X,
-} from "@phosphor-icons/react"
+} from "@phosphor-icons/react/dist/ssr"
 
 import { Logo } from "@/components/logo"
 import { DarkScope } from "@/components/shared/dark-scope"
@@ -35,30 +30,14 @@ import {
 } from "@/components/ui/accordion"
 import { Button } from "@/components/ui/button"
 
+import {
+  ContratarButton,
+  LandingHeader,
+  ScrollToClippersButton,
+} from "./landing-header"
 import { Safari } from "./safari"
 
 export default function LandingPage() {
-  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
-
-  const handleContratar = () => {
-    window.open("/interest-list", "_blank")
-  }
-
-  const scrollToClippers = () => {
-    document.getElementById("clipadores")?.scrollIntoView({ behavior: "smooth" })
-    setMobileMenuOpen(false)
-  }
-
-  const scrollToSection = (id: string) => {
-    const element = document.getElementById(id)
-    element?.scrollIntoView({ behavior: "smooth" })
-    setMobileMenuOpen(false)
-  }
-
-  const toggleMobileMenu = () => {
-    setMobileMenuOpen(!mobileMenuOpen)
-  }
-
   return (
     <DarkScope className="text-foreground relative min-h-svh overflow-x-hidden bg-[#050f1c] text-white">
       {/* Ambiente fixo: petróleo + grade + auroras da marca */}
@@ -75,126 +54,7 @@ export default function LandingPage() {
         />
       </div>
 
-      {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
-        <div
-          className="animate-fade-in fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden"
-          onClick={toggleMobileMenu}
-        />
-      )}
-
-      {/* Header */}
-      <header className="fixed top-0 right-0 left-0 z-50 border-b border-white/10 bg-[#050f1c]/85 backdrop-blur-xl">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4 sm:px-6 lg:px-8">
-          <Link href="/" aria-label="Clipfy League">
-            <Logo width={140} height={35} shadow={false} className="h-8 w-auto" />
-          </Link>
-          <nav className="hidden items-center gap-6 md:flex">
-            <button
-              onClick={() => scrollToSection("como-funciona")}
-              className="hover:text-brand-cyan cursor-pointer text-sm font-medium text-white/75 transition-colors"
-            >
-              Como funciona
-            </button>
-            <button
-              onClick={() => scrollToSection("plataforma")}
-              className="hover:text-brand-cyan cursor-pointer text-sm font-medium text-white/75 transition-colors"
-            >
-              Plataforma
-            </button>
-            <button
-              onClick={() => scrollToSection("faq")}
-              className="hover:text-brand-cyan cursor-pointer text-sm font-medium text-white/75 transition-colors"
-            >
-              FAQ
-            </button>
-            <button
-              onClick={scrollToClippers}
-              className="hover:text-brand-cyan cursor-pointer text-sm font-medium text-white/75 transition-colors"
-            >
-              Sou Clipador
-            </button>
-            <Button
-              onClick={handleContratar}
-              size="sm"
-              className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
-            >
-              Quero contratar
-            </Button>
-          </nav>
-          <button
-            className={`group relative cursor-pointer rounded-lg p-2 transition-all md:hidden ${
-              mobileMenuOpen
-                ? "bg-brand-cyan/20 shadow-lg shadow-brand-cyan/50"
-                : "hover:bg-white/10"
-            }`}
-            onClick={toggleMobileMenu}
-            aria-label="Toggle menu"
-          >
-            <div className="relative h-6 w-6">
-              <List
-                className={`absolute inset-0 h-6 w-6 transition-all duration-200 ease-in-out ${
-                  mobileMenuOpen
-                    ? "scale-75 rotate-45 opacity-0"
-                    : "scale-100 rotate-0 opacity-100"
-                }`}
-              />
-              <X
-                className={`text-brand-cyan absolute inset-0 h-6 w-6 transition-all duration-200 ease-in-out ${
-                  mobileMenuOpen
-                    ? "scale-100 rotate-0 opacity-100"
-                    : "scale-75 -rotate-45 opacity-0"
-                }`}
-              />
-            </div>
-          </button>
-        </div>
-        {/* Mobile Navigation */}
-        {mobileMenuOpen && (
-          <div className="animate-fade-in-down border-brand-cyan/30 shadow-brand-cyan/20 border-t bg-gradient-to-b from-[#050f1c]/95 to-[#050f1c]/90 shadow-2xl backdrop-blur-xl md:hidden">
-            <div className="container mx-auto space-y-3 px-4 py-6">
-              <button
-                onClick={() => scrollToSection("como-funciona")}
-                className="animate-fade-in-down hover:text-brand-cyan block w-full cursor-pointer rounded-lg py-3 text-left text-sm font-medium transition-all hover:bg-white/10 hover:pl-2"
-                style={{ animationDelay: "0.05s" }}
-              >
-                Como funciona
-              </button>
-              <button
-                onClick={() => scrollToSection("plataforma")}
-                className="animate-fade-in-down hover:text-brand-cyan block w-full cursor-pointer rounded-lg py-3 text-left text-sm font-medium transition-all hover:bg-white/10 hover:pl-2"
-                style={{ animationDelay: "0.1s" }}
-              >
-                Plataforma
-              </button>
-              <button
-                onClick={() => scrollToSection("faq")}
-                className="animate-fade-in-down hover:text-brand-cyan block w-full cursor-pointer rounded-lg py-3 text-left text-sm font-medium transition-all hover:bg-white/10 hover:pl-2"
-                style={{ animationDelay: "0.15s" }}
-              >
-                FAQ
-              </button>
-              <Button
-                onClick={scrollToClippers}
-                variant="outline"
-                size="sm"
-                className="animate-fade-in-down w-full cursor-pointer rounded-xl border-white/15 text-white transition-all hover:scale-[1.02] hover:bg-white/5 hover:text-white"
-                style={{ animationDelay: "0.2s" }}
-              >
-                Sou Clipador
-              </Button>
-              <Button
-                onClick={handleContratar}
-                size="sm"
-                className="btn-gradient-auth animate-fade-in-down w-full cursor-pointer rounded-xl font-semibold transition-all hover:scale-[1.02]"
-                style={{ animationDelay: "0.25s" }}
-              >
-                Quero contratar
-              </Button>
-            </div>
-          </div>
-        )}
-      </header>
+      <LandingHeader />
 
       <div className="relative z-10">
         {/* Hero Section */}
@@ -264,20 +124,18 @@ export default function LandingPage() {
                 className="animate-fade-in flex flex-col items-center gap-3 sm:flex-row sm:justify-center"
                 style={{ animationDelay: "0.8s" }}
               >
-                <Button
-                  onClick={handleContratar}
+                <ContratarButton
                   className="btn-gradient-auth cursor-pointer rounded-xl text-sm font-semibold shadow-[0_8px_30px_-8px_rgba(20,247,254,0.45)] transition-all hover:scale-105"
                 >
                   Realizar uma competição
                   <ArrowRight className="ml-2 size-4" />
-                </Button>
-                <Button
-                  onClick={scrollToClippers}
+                </ContratarButton>
+                <ScrollToClippersButton
                   variant="outline"
                   className="cursor-pointer rounded-xl border-white/15 text-sm text-white transition-all hover:scale-105 hover:bg-white/5 hover:text-white"
                 >
                   Sou Clipador
-                </Button>
+                </ScrollToClippersButton>
               </div>
 
               <p
@@ -615,13 +473,12 @@ export default function LandingPage() {
 
               <Reveal>
                 <div className="mt-8 text-center">
-                  <Button
-                    onClick={handleContratar}
+                  <ContratarButton
                     className="btn-gradient-auth cursor-pointer rounded-xl font-semibold transition-all hover:scale-105"
                   >
                     Ver a plataforma em ação
                     <Eye className="ml-2 size-4" />
-                  </Button>
+                  </ContratarButton>
                 </div>
               </Reveal>
             </div>
@@ -874,13 +731,12 @@ export default function LandingPage() {
 
               <Reveal>
                 <div className="mt-8 text-center">
-                  <Button
-                    onClick={handleContratar}
+                  <ContratarButton
                     className="btn-gradient-auth cursor-pointer rounded-xl font-semibold transition-all hover:scale-105"
                   >
                     Quero um plano para minha marca
                     <ArrowRight className="ml-2 size-4" />
-                  </Button>
+                  </ContratarButton>
                 </div>
               </Reveal>
             </div>
@@ -1098,13 +954,12 @@ export default function LandingPage() {
                     </p>
 
                     <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-                      <Button
-                        onClick={handleContratar}
+                      <ContratarButton
                         className="btn-gradient-auth cursor-pointer rounded-xl text-base font-semibold shadow-[0_8px_30px_-8px_rgba(20,247,254,0.45)] transition-all hover:scale-105"
                       >
                         Quero contratar a Clipfy League
                         <ArrowRight className="ml-2 size-5" />
-                      </Button>
+                      </ContratarButton>
                     </div>
 
                     <div className="mt-6 flex flex-wrap items-center justify-center gap-6 text-sm text-white/60">

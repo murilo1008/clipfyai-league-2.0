@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import {
   ArrowCounterClockwise,
   ArrowSquareOut,
@@ -1107,7 +1107,7 @@ export function DailyRankResultModal({
             )}
           >
             {entry.thumbnailUrl ? (
-              <Image
+              <ClipThumbnail
                 src={entry.thumbnailUrl}
                 alt={`Post por @${entry.username ?? ""}`}
                 fill
