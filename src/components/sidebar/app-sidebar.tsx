@@ -92,6 +92,9 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     api.clipper.getMyCompetitionOptions.useQuery(undefined, {
       enabled: user?.role === "CLIPPER",
       staleTime: 5 * 60_000,
+      // O menu fica montado a sessão toda: voltar para a aba atualiza a lista
+      // (inscrição aprovada pelo admin, competição encerrada).
+      refetchOnWindowFocus: true,
     })
   // Só nomes e ids para o menu — o getDashboard completo roda ~13 queries
   // de métricas por campanha e era refeito em toda navegação.

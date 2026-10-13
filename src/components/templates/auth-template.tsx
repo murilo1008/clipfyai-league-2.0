@@ -1,6 +1,7 @@
 "use client"
 
 import { useAuth, useUser } from "@clerk/nextjs"
+import { useQueryClient } from "@tanstack/react-query"
 import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 
@@ -17,16 +18,33 @@ interface AuthTemplateProps {
 /**
  * Guard de autenticação e status — mesma lógica de redirecionamento da
  * Clipfy League (onboarding / aprovação / banimento por verificationStatus).
- *
- * O layout do dashboard já busca `getCurrentUser` no servidor (HydrateClient),
- * então quando o clerk-js termina de carregar o dado costuma estar no cache.
  */
+
+/**
+ * Última conta logada nesta aba. Fica fora do componente porque o guard
+ * desmonta na tela de login: sair e entrar com outra conta sem recarregar a
+ * página mantém o cache do React Query, que ainda tem os dados da anterior.
+ */
+let lastSignedInUserId: string | null = null
+
 export function AuthTemplate({ children, requireAuth = true }: AuthTemplateProps) {
   const { isLoaded: authLoaded, isSignedIn, userId } = useAuth()
   const { isLoaded: userLoaded } = useUser()
   const router = useRouter()
   const pathname = usePathname()
   const [isRedirectConfirmed, setIsRedirectConfirmed] = useState(false)
+  const queryClient = useQueryClient()
+
+  // Outra conta na mesma aba: descarta tudo o que foi buscado pela anterior
+  // (menu, competições, carteira…) e busca de novo o que está na tela.
+  useEffect(() => {
+    if (!userId) return
+    const previousUserId = lastSignedInUserId
+    lastSignedInUserId = userId
+    if (previousUserId && previousUserId !== userId) {
+      void queryClient.resetQueries()
+    }
+  }, [userId, queryClient])
 
   const publicRoutes = ["/sign-in", "/sign-up", "/forgot-password"]
   const isPublicRoute = publicRoutes.includes(pathname)

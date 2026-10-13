@@ -113,6 +113,10 @@ export function AddAccountsDialog({
   )
 
   const hasAnyAccount = (allSocialAccounts ?? []).length > 0
+  // As duas listas carregam quando o dialog abre: até chegarem as duas, não dá
+  // para saber quais contas já estão na competição.
+  const isLoadingAccounts =
+    open && (allSocialAccounts === undefined || applicationAccounts === undefined)
 
   const handleSubmit = () => {
     if (selectedAccountsToAdd.length === 0) {
@@ -163,7 +167,12 @@ export function AddAccountsDialog({
               Escolha as Contas para Adicionar
             </Label>
 
-            {!hasAnyAccount ? (
+            {isLoadingAccounts ? (
+              <div className="text-muted-foreground flex items-center justify-center gap-2 py-8 text-sm">
+                <Spinner className="size-4 animate-spin" />
+                Carregando suas contas...
+              </div>
+            ) : !hasAnyAccount ? (
               <div className="bg-muted/30 flex flex-col items-center gap-3 rounded-2xl py-8 text-center">
                 <UsersThree className="text-muted-foreground size-12" />
                 <div>
@@ -334,7 +343,9 @@ export function AddAccountsDialog({
             className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
             onClick={handleSubmit}
             disabled={
-              selectedAccountsToAdd.length === 0 || addAccountsMutation.isPending
+              isLoadingAccounts ||
+              selectedAccountsToAdd.length === 0 ||
+              addAccountsMutation.isPending
             }
           >
             {addAccountsMutation.isPending ? (
