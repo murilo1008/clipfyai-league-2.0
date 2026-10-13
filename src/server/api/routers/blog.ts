@@ -1,10 +1,69 @@
 import { createTRPCRouter, adminProcedure, publicProcedure, privateProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { Prisma } from "@prisma/client";
 import OpenAI from "openai";
 import { UTApi, UTFile } from "uploadthing/server";
 import { env } from "@/env";
+import type { db as prismaClient } from "@/server/db";
+import { publicPostSelect, toPublicPost } from "@/server/blog/public-post";
 import { calculateEngagementRate } from "@/lib/ranking-helpers";
+
+const DAY_MS = 86400000;
+
+/** Tabelas (e coluna de data) dos gráficos diários do relatório do blog. */
+const DAILY_SERIES = {
+  views: { table: "BlogPostView", column: "viewedAt" },
+  likes: { table: "BlogPostLike", column: "createdAt" },
+  comments: { table: "BlogComment", column: "createdAt" },
+} as const;
+
+/**
+ * Contagem das 30 janelas de 24 h que terminam no fim de `today`, em uma
+ * consulta agrupada. A janela i começa em `today - i * 24 h` — os mesmos
+ * limites dos 30 counts em sequência de antes, com o mesmo rótulo de data.
+ */
+export async function countLast30Days(
+  db: Pick<typeof prismaClient, "$queryRaw">,
+  series: keyof typeof DAILY_SERIES,
+  today: Date,
+) {
+  const { table, column } = DAILY_SERIES[series];
+  const start = new Date(today.getTime() - 29 * DAY_MS);
+  const end = new Date(today.getTime() + DAY_MS);
+  const col = Prisma.raw(`"${column}"`);
+  const rows = await db.$queryRaw<Array<{ bucket: number; count: number }>>`
+    SELECT
+      FLOOR(EXTRACT(EPOCH FROM (${col} - ${start}::timestamp)) / 86400)::int AS bucket,
+      COUNT(*)::int AS count
+    FROM ${Prisma.raw(`"${table}"`)}
+    WHERE ${col} >= ${start}::timestamp
+      AND ${col} < ${end}::timestamp
+    GROUP BY 1
+  `;
+  const countByBucket = new Map(rows.map((row) => [row.bucket, row.count]));
+
+  const days: { date: string; count: number }[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const dayStart = new Date(today.getTime() - i * DAY_MS);
+    days.push({
+      date: dayStart.toISOString().split("T")[0]!,
+      count: countByBucket.get(29 - i) ?? 0,
+    });
+  }
+  return days;
+}
+
+/** Campos do post para o editor do admin (inclui o conteúdo completo). */
+const postForEditSelect = {
+  id: true,
+  title: true,
+  slug: true,
+  excerpt: true,
+  content: true,
+  coverImageUrl: true,
+  status: true,
+} as const;
 
 export const blogRouter = createTRPCRouter({
   // ============================================================================
@@ -313,12 +372,31 @@ export const blogRouter = createTRPCRouter({
   // Listar todos os posts com métricas e relações
   getPosts: adminProcedure.query(async ({ ctx }) => {
     try {
+      // `select` em vez de `include`: a lista não usa o conteúdo completo.
       const posts = await ctx.db.blogPost.findMany({
         orderBy: [
           { isPinned: "desc" },
           { createdAt: "desc" },
         ],
-        include: {
+        select: {
+          id: true,
+          title: true,
+          slug: true,
+          excerpt: true,
+          coverImageUrl: true,
+          tags: true,
+          status: true,
+          publishedAt: true,
+          scheduledAt: true,
+          isFeatured: true,
+          isPinned: true,
+          viewsCount: true,
+          likesCount: true,
+          commentsCount: true,
+          sharesCount: true,
+          readTimeMinutes: true,
+          createdAt: true,
+          updatedAt: true,
           author: {
             select: {
               id: true,
@@ -368,6 +446,32 @@ export const blogRouter = createTRPCRouter({
       });
     }
   }),
+
+  // Lista leve (id e título) para filtros e seletores do admin
+  getPostOptions: adminProcedure.query(async ({ ctx }) => {
+    return ctx.db.blogPost.findMany({
+      orderBy: [{ isPinned: "desc" }, { createdAt: "desc" }],
+      select: { id: true, title: true },
+    });
+  }),
+
+  // Post completo para o editor do admin: qualquer status (rascunhos e
+  // agendados inclusive) e sem contar visualização.
+  getPostForEdit: adminProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const post = await ctx.db.blogPost.findUnique({
+        where: { id: input.id },
+        select: postForEditSelect,
+      });
+      if (!post) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Post não encontrado",
+        });
+      }
+      return post;
+    }),
 
   // Estatísticas gerais dos posts
   getPostsStats: adminProcedure.query(async ({ ctx }) => {
@@ -469,126 +573,163 @@ export const blogRouter = createTRPCRouter({
       const last30 = new Date(today.getTime() - 30 * 86400000);
       const last90 = new Date(today.getTime() - 90 * 86400000);
 
-      // --- Aggregate totals ---
-      const aggregates = await ctx.db.blogPost.aggregate({
-        _sum: { viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true },
-        _avg: { viewsCount: true, likesCount: true, commentsCount: true, readTimeMinutes: true },
-        _count: true,
-      });
+      // Todas as leituras são independentes: saem em paralelo. Os gráficos
+      // diários são uma consulta agrupada por série (antes, 30 counts em
+      // sequência para cada uma).
+      const [
+        aggregates,
+        publishedCount,
+        viewsByDay,
+        likesByDay,
+        commentsByDay,
+        [viewsToday, viewsLast7, viewsLast30],
+        [likesToday, likesLast7, likesLast30],
+        [commentsToday, commentsLast7, commentsLast30],
+        topPostsByViews,
+        topPostsByLikes,
+        topPostsByComments,
+        categories,
+        devices,
+        browsers,
+        countries,
+        referrers,
+        recentLikes,
+        recentComments,
+      ] = await Promise.all([
+        // --- Aggregate totals ---
+        ctx.db.blogPost.aggregate({
+          _sum: { viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true },
+          _avg: { viewsCount: true, likesCount: true, commentsCount: true, readTimeMinutes: true },
+          _count: true,
+        }),
+        ctx.db.blogPost.count({ where: { status: "PUBLISHED" } }),
 
-      const publishedCount = await ctx.db.blogPost.count({ where: { status: "PUBLISHED" } });
+        // --- Views, likes e comentários por dia (últimos 30 dias) ---
+        countLast30Days(ctx.db, "views", today),
+        countLast30Days(ctx.db, "likes", today),
+        countLast30Days(ctx.db, "comments", today),
 
-      // --- Views by day (last 30 days) ---
-      const viewsByDay: { date: string; count: number }[] = [];
-      for (let i = 29; i >= 0; i--) {
-        const dayStart = new Date(today.getTime() - i * 86400000);
-        const dayEnd = new Date(dayStart.getTime() + 86400000);
-        const count = await ctx.db.blogPostView.count({
-          where: { viewedAt: { gte: dayStart, lt: dayEnd } },
-        });
-        viewsByDay.push({
-          date: dayStart.toISOString().split("T")[0]!,
-          count,
-        });
-      }
+        // --- Period comparisons ---
+        Promise.all([
+          ctx.db.blogPostView.count({ where: { viewedAt: { gte: today } } }),
+          ctx.db.blogPostView.count({ where: { viewedAt: { gte: last7 } } }),
+          ctx.db.blogPostView.count({ where: { viewedAt: { gte: last30 } } }),
+        ]),
+        Promise.all([
+          ctx.db.blogPostLike.count({ where: { createdAt: { gte: today } } }),
+          ctx.db.blogPostLike.count({ where: { createdAt: { gte: last7 } } }),
+          ctx.db.blogPostLike.count({ where: { createdAt: { gte: last30 } } }),
+        ]),
+        Promise.all([
+          ctx.db.blogComment.count({ where: { createdAt: { gte: today } } }),
+          ctx.db.blogComment.count({ where: { createdAt: { gte: last7 } } }),
+          ctx.db.blogComment.count({ where: { createdAt: { gte: last30 } } }),
+        ]),
 
-      // --- Likes by day (last 30 days) ---
-      const likesByDay: { date: string; count: number }[] = [];
-      for (let i = 29; i >= 0; i--) {
-        const dayStart = new Date(today.getTime() - i * 86400000);
-        const dayEnd = new Date(dayStart.getTime() + 86400000);
-        const count = await ctx.db.blogPostLike.count({
-          where: { createdAt: { gte: dayStart, lt: dayEnd } },
-        });
-        likesByDay.push({
-          date: dayStart.toISOString().split("T")[0]!,
-          count,
-        });
-      }
+        // --- Top 10 posts by views ---
+        ctx.db.blogPost.findMany({
+          where: { status: "PUBLISHED" },
+          orderBy: { viewsCount: "desc" },
+          take: 10,
+          select: {
+            id: true, title: true, slug: true, coverImageUrl: true,
+            viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true,
+            publishedAt: true, readTimeMinutes: true,
+            category: { select: { title: true, color: true } },
+          },
+        }),
 
-      // --- Comments by day (last 30 days) ---
-      const commentsByDay: { date: string; count: number }[] = [];
-      for (let i = 29; i >= 0; i--) {
-        const dayStart = new Date(today.getTime() - i * 86400000);
-        const dayEnd = new Date(dayStart.getTime() + 86400000);
-        const count = await ctx.db.blogComment.count({
-          where: { createdAt: { gte: dayStart, lt: dayEnd } },
-        });
-        commentsByDay.push({
-          date: dayStart.toISOString().split("T")[0]!,
-          count,
-        });
-      }
+        // --- Top 10 posts by likes ---
+        ctx.db.blogPost.findMany({
+          where: { status: "PUBLISHED" },
+          orderBy: { likesCount: "desc" },
+          take: 10,
+          select: {
+            id: true, title: true, slug: true,
+            viewsCount: true, likesCount: true, commentsCount: true,
+            category: { select: { title: true, color: true } },
+          },
+        }),
 
-      // --- Period comparisons ---
-      const [viewsToday, viewsLast7, viewsLast30] = await Promise.all([
-        ctx.db.blogPostView.count({ where: { viewedAt: { gte: today } } }),
-        ctx.db.blogPostView.count({ where: { viewedAt: { gte: last7 } } }),
-        ctx.db.blogPostView.count({ where: { viewedAt: { gte: last30 } } }),
-      ]);
+        // --- Top 10 posts by comments ---
+        ctx.db.blogPost.findMany({
+          where: { status: "PUBLISHED" },
+          orderBy: { commentsCount: "desc" },
+          take: 10,
+          select: {
+            id: true, title: true, slug: true,
+            viewsCount: true, likesCount: true, commentsCount: true,
+            category: { select: { title: true, color: true } },
+          },
+        }),
 
-      const [likesToday, likesLast7, likesLast30] = await Promise.all([
-        ctx.db.blogPostLike.count({ where: { createdAt: { gte: today } } }),
-        ctx.db.blogPostLike.count({ where: { createdAt: { gte: last7 } } }),
-        ctx.db.blogPostLike.count({ where: { createdAt: { gte: last30 } } }),
-      ]);
-
-      const [commentsToday, commentsLast7, commentsLast30] = await Promise.all([
-        ctx.db.blogComment.count({ where: { createdAt: { gte: today } } }),
-        ctx.db.blogComment.count({ where: { createdAt: { gte: last7 } } }),
-        ctx.db.blogComment.count({ where: { createdAt: { gte: last30 } } }),
-      ]);
-
-      // --- Top 10 posts by views ---
-      const topPostsByViews = await ctx.db.blogPost.findMany({
-        where: { status: "PUBLISHED" },
-        orderBy: { viewsCount: "desc" },
-        take: 10,
-        select: {
-          id: true, title: true, slug: true, coverImageUrl: true,
-          viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true,
-          publishedAt: true, readTimeMinutes: true,
-          category: { select: { title: true, color: true } },
-        },
-      });
-
-      // --- Top 10 posts by likes ---
-      const topPostsByLikes = await ctx.db.blogPost.findMany({
-        where: { status: "PUBLISHED" },
-        orderBy: { likesCount: "desc" },
-        take: 10,
-        select: {
-          id: true, title: true, slug: true,
-          viewsCount: true, likesCount: true, commentsCount: true,
-          category: { select: { title: true, color: true } },
-        },
-      });
-
-      // --- Top 10 posts by comments ---
-      const topPostsByComments = await ctx.db.blogPost.findMany({
-        where: { status: "PUBLISHED" },
-        orderBy: { commentsCount: "desc" },
-        take: 10,
-        select: {
-          id: true, title: true, slug: true,
-          viewsCount: true, likesCount: true, commentsCount: true,
-          category: { select: { title: true, color: true } },
-        },
-      });
-
-      // --- Category performance ---
-      const categories = await ctx.db.blogCategory.findMany({
-        where: { isActive: true },
-        include: {
-          posts: {
-            where: { status: "PUBLISHED" },
-            select: {
-              viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true,
+        // --- Category performance ---
+        ctx.db.blogCategory.findMany({
+          where: { isActive: true },
+          include: {
+            posts: {
+              where: { status: "PUBLISHED" },
+              select: {
+                viewsCount: true, likesCount: true, commentsCount: true, sharesCount: true,
+              },
             },
           },
-        },
-        orderBy: { order: "asc" },
-      });
+          orderBy: { order: "asc" },
+        }),
+
+        // --- Device breakdown ---
+        ctx.db.blogPostView.groupBy({
+          by: ["device"],
+          _count: { id: true },
+          where: { device: { not: null } },
+          orderBy: { _count: { id: "desc" } },
+        }),
+
+        // --- Browser breakdown ---
+        ctx.db.blogPostView.groupBy({
+          by: ["browser"],
+          _count: { id: true },
+          where: { browser: { not: null } },
+          orderBy: { _count: { id: "desc" } },
+          take: 5,
+        }),
+
+        // --- Country breakdown ---
+        ctx.db.blogPostView.groupBy({
+          by: ["country"],
+          _count: { id: true },
+          where: { country: { not: null } },
+          orderBy: { _count: { id: "desc" } },
+          take: 10,
+        }),
+
+        // --- Referrer breakdown ---
+        ctx.db.blogPostView.groupBy({
+          by: ["referrer"],
+          _count: { id: true },
+          where: { referrer: { not: null } },
+          orderBy: { _count: { id: "desc" } },
+          take: 8,
+        }),
+
+        // --- Recent activity (last 10 likes/comments) ---
+        ctx.db.blogPostLike.findMany({
+          take: 5,
+          orderBy: { createdAt: "desc" },
+          include: {
+            user: { select: { name: true, imageUrl: true } },
+            post: { select: { title: true, slug: true } },
+          },
+        }),
+        ctx.db.blogComment.findMany({
+          take: 5,
+          orderBy: { createdAt: "desc" },
+          include: {
+            author: { select: { name: true, imageUrl: true } },
+            post: { select: { title: true, slug: true } },
+          },
+        }),
+      ]);
 
       const categoryPerformance = categories.map((cat) => ({
         id: cat.id,
@@ -600,41 +741,6 @@ export const blogRouter = createTRPCRouter({
         totalComments: cat.posts.reduce((s, p) => s + p.commentsCount, 0),
         totalShares: cat.posts.reduce((s, p) => s + p.sharesCount, 0),
       }));
-
-      // --- Device breakdown ---
-      const devices = await ctx.db.blogPostView.groupBy({
-        by: ["device"],
-        _count: { id: true },
-        where: { device: { not: null } },
-        orderBy: { _count: { id: "desc" } },
-      });
-
-      // --- Browser breakdown ---
-      const browsers = await ctx.db.blogPostView.groupBy({
-        by: ["browser"],
-        _count: { id: true },
-        where: { browser: { not: null } },
-        orderBy: { _count: { id: "desc" } },
-        take: 5,
-      });
-
-      // --- Country breakdown ---
-      const countries = await ctx.db.blogPostView.groupBy({
-        by: ["country"],
-        _count: { id: true },
-        where: { country: { not: null } },
-        orderBy: { _count: { id: "desc" } },
-        take: 10,
-      });
-
-      // --- Referrer breakdown ---
-      const referrers = await ctx.db.blogPostView.groupBy({
-        by: ["referrer"],
-        _count: { id: true },
-        where: { referrer: { not: null } },
-        orderBy: { _count: { id: "desc" } },
-        take: 8,
-      });
 
       // --- Engagement rate ---
       const totalViews = aggregates._sum.viewsCount || 0;
@@ -648,25 +754,6 @@ export const blogRouter = createTRPCRouter({
         0,
         0
       ).toFixed(2);
-
-      // --- Recent activity (last 10 likes/comments) ---
-      const recentLikes = await ctx.db.blogPostLike.findMany({
-        take: 5,
-        orderBy: { createdAt: "desc" },
-        include: {
-          user: { select: { name: true, imageUrl: true } },
-          post: { select: { title: true, slug: true } },
-        },
-      });
-
-      const recentComments = await ctx.db.blogComment.findMany({
-        take: 5,
-        orderBy: { createdAt: "desc" },
-        include: {
-          author: { select: { name: true, imageUrl: true } },
-          post: { select: { title: true, slug: true } },
-        },
-      });
 
       return {
         // Totals
@@ -1494,7 +1581,21 @@ Aplique a edição e retorne o texto completo editado em markdown.`,
             { isFeatured: "desc" },
             { publishedAt: "desc" },
           ],
-          include: {
+          // `select` em vez de `include`: os cards não usam o conteúdo.
+          select: {
+            id: true,
+            title: true,
+            slug: true,
+            excerpt: true,
+            coverImageUrl: true,
+            tags: true,
+            isFeatured: true,
+            isPinned: true,
+            publishedAt: true,
+            viewsCount: true,
+            likesCount: true,
+            commentsCount: true,
+            readTimeMinutes: true,
             author: {
               select: {
                 id: true,
@@ -1555,23 +1656,7 @@ Aplique a edição e retorne o texto completo editado em markdown.`,
       try {
         const post = await ctx.db.blogPost.findUnique({
           where: { slug: input.slug },
-          include: {
-            author: {
-              select: {
-                id: true,
-                name: true,
-                imageUrl: true,
-              },
-            },
-            category: {
-              select: {
-                id: true,
-                title: true,
-                slug: true,
-                color: true,
-              },
-            },
-          },
+          select: publicPostSelect,
         });
 
         if (!post || post.status !== "PUBLISHED") {
@@ -1691,27 +1776,7 @@ Aplique a edição e retorne o texto completo editado em markdown.`,
           console.error("Erro ao registrar view detalhada:", viewError);
         }
 
-        return {
-          id: post.id,
-          title: post.title,
-          slug: post.slug,
-          excerpt: post.excerpt,
-          content: post.content,
-          coverImageUrl: post.coverImageUrl,
-          tags: post.tags,
-          isFeatured: post.isFeatured,
-          isPinned: post.isPinned,
-          publishedAt: post.publishedAt,
-          viewsCount: post.viewsCount + 1,
-          likesCount: post.likesCount,
-          commentsCount: post.commentsCount,
-          sharesCount: post.sharesCount,
-          readTimeMinutes: post.readTimeMinutes,
-          metaTitle: post.metaTitle,
-          metaDescription: post.metaDescription,
-          author: post.author,
-          category: post.category,
-        };
+        return toPublicPost(post, post.viewsCount + 1);
       } catch (error: any) {
         if (error instanceof TRPCError) throw error;
         console.error("Erro ao buscar post:", error);

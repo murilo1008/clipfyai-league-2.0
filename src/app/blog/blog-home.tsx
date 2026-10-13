@@ -373,7 +373,6 @@ export default function BlogHome() {
               fill
               className="object-cover object-center"
               priority
-              quality={100}
               sizes="100vw"
             />
           </div>

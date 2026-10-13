@@ -43,8 +43,7 @@ import {
 } from "@phosphor-icons/react"
 import { formatDistanceToNow } from "date-fns"
 import { ptBR } from "date-fns/locale"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
+import dynamic from "next/dynamic"
 import { toast } from "sonner"
 
 import { BlogPostsHeroViz, BlogPostsHeroVizSkeleton } from "@/components/blog/blog-posts-hero-viz"
@@ -1456,10 +1455,25 @@ function MarkdownView({
         "prose-blockquote:rounded-r-xl prose-blockquote:py-1 prose-blockquote:px-4 prose-blockquote:not-italic",
       )}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <MarkdownContent content={content} />
     </div>
   )
 }
+
+// react-markdown/remark-gfm só entram quando um preview de IA é aberto.
+const MarkdownContent = dynamic(
+  () => import("./markdown-content").then((mod) => mod.MarkdownContent),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col gap-2">
+        <Bone className="h-4 w-3/4" />
+        <Bone delay={60} className="h-4 w-full" />
+        <Bone delay={120} className="h-4 w-5/6" />
+      </div>
+    ),
+  },
+)
 
 /* ============================================================
    DIALOG DE IA — CRIAÇÃO
@@ -2447,13 +2461,15 @@ function AIEditPostDialog({
   })
 
   /**
-   * MELHORIA: `getPosts` não devolve `content`, então o editor abria vazio.
-   * Buscamos o post completo pelo slug e hidratamos o editor quando chega.
+   * `getPosts` não devolve `content`: o post completo vem de uma procedure
+   * de admin, que aceita rascunhos e agendados e não conta visualização
+   * (a pública devolvia NOT_FOUND para rascunhos e somava uma view a cada
+   * abertura do editor).
    */
-  const fullPost = api.blog.getPublicPostBySlug.useQuery(
-    { slug: post.slug },
+  const fullPost = api.blog.getPostForEdit.useQuery(
+    { id: post.id },
     {
-      enabled: open && Boolean(post.slug),
+      enabled: open && Boolean(post.id),
       retry: false,
       refetchOnWindowFocus: false,
       staleTime: 0,

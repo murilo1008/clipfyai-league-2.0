@@ -853,15 +853,31 @@ function LikeButton({
 // ============================================================================
 // COMPONENTE PRINCIPAL
 // ============================================================================
-export default function BlogPost({ slug }: { slug: string }) {
+type PublicPost = RouterOutputs["blog"]["getPublicPostBySlug"]
+
+export default function BlogPost({
+  slug,
+  initialPost,
+}: {
+  slug: string
+  /** Post lido no servidor: o artigo já vem no HTML, sem esperar o client. */
+  initialPost?: PublicPost
+}) {
   const [copied, setCopied] = React.useState(false)
   const { user, isLoaded: isUserLoaded } = useUser()
 
+  // Com o post do servidor, a busca do client ainda roda ao montar (dado
+  // marcado como antigo): é ela que registra a visualização, como antes.
   const {
     data: post,
     isLoading,
     error,
-  } = api.blog.getPublicPostBySlug.useQuery({ slug })
+  } = api.blog.getPublicPostBySlug.useQuery(
+    { slug },
+    initialPost
+      ? { initialData: initialPost, initialDataUpdatedAt: 0 }
+      : undefined,
+  )
 
   const handleShare = () => {
     if (!post) return
