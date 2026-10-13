@@ -38,6 +38,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useBoundedPolling } from "@/hooks/use-bounded-polling";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
@@ -54,6 +55,24 @@ import {
    ============================================================ */
 
 const TERMINAL_JOB_STATUSES = ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"];
+
+/** Polling do job de análise: 3 s, recuando até 15 s, por no máximo 30 min. */
+const JOB_POLLING = {
+  initialMs: 3_000,
+  maxIntervalMs: 15_000,
+  maxDurationMs: 30 * 60_000,
+};
+
+/**
+ * Polling da coleta da competição (muitos posts): 2,5 s, recuando até 30 s,
+ * por no máximo 1 h. Depois disso a tela pede para recarregar.
+ */
+const EXTRACTION_POLLING = {
+  initialMs: 2_500,
+  maxIntervalMs: 30_000,
+  stepMs: 2 * 60_000,
+  maxDurationMs: 60 * 60_000,
+};
 
 interface CompetitionCommentsAnalysisPanelProps {
   campaignId: string;
@@ -103,6 +122,11 @@ export function CompetitionCommentsAnalysisPanel({
     },
   );
 
+  // Os dois pollings param em erro e depois do prazo: um job travado (ou
+  // um lote que o League não conhece mais) não fica sendo consultado para
+  // sempre — antes, um erro na primeira leitura da coleta deixava `data`
+  // vazio e o polling seguia a cada 2,5 s indefinidamente.
+  const jobPolling = useBoundedPolling(jobId, JOB_POLLING);
   const jobQuery = api.commentsAnalysis.getJob.useQuery(
     { jobId: jobId ?? "" },
     {
@@ -110,11 +134,18 @@ export function CompetitionCommentsAnalysisPanel({
       refetchInterval: (query) => {
         const status = (query.state.data as CommentsAnalysisJob | undefined)
           ?.status;
-        return status === "PENDING" || status === "RUNNING" ? 3000 : false;
+        return jobPolling.interval(
+          query,
+          status === "PENDING" || status === "RUNNING",
+        );
       },
     },
   );
 
+  const extractionPolling = useBoundedPolling(
+    extractionBatchId,
+    EXTRACTION_POLLING,
+  );
   const extractionStatus =
     api.admin.getCampaignCommentsExtractionStatus.useQuery(
       { batchId: extractionBatchId ?? "" },
@@ -122,9 +153,10 @@ export function CompetitionCommentsAnalysisPanel({
         enabled: Boolean(extractionBatchId),
         refetchInterval: (query) => {
           const status = query.state.data;
-          return status && status.processedJobs >= status.totalJobs
-            ? false
-            : 2500;
+          return extractionPolling.interval(
+            query,
+            !status || status.processedJobs < status.totalJobs,
+          );
         },
         refetchOnWindowFocus: false,
       },
@@ -288,6 +320,7 @@ export function CompetitionCommentsAnalysisPanel({
     triggerExtraction.isPending ||
     (Boolean(extractionBatchId) &&
       !extractionStatus.error &&
+      !extractionPolling.expired &&
       !extractionFinished.current &&
       (!batch || batch.processedJobs < batch.totalJobs));
 
@@ -295,7 +328,9 @@ export function CompetitionCommentsAnalysisPanel({
     trigger.error?.message ??
     jobQuery.error?.message ??
     extractionStatus.error?.message ??
-    null;
+    (extractionPolling.expired
+      ? "A coleta ainda não terminou. Recarregue a página para conferir o andamento."
+      : null);
 
   return (
     <CommentsAnalysisResultsPanel

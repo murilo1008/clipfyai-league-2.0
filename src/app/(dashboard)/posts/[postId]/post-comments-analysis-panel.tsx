@@ -17,6 +17,7 @@ import {
   type CommentsAnalysisAggregateData,
 } from "@/components/comments-analysis/comments-analysis-results-panel";
 import { Button } from "@/components/ui/button";
+import { useBoundedPolling } from "@/hooks/use-bounded-polling";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
@@ -32,6 +33,13 @@ import { api } from "@/trpc/react";
 const MAX_COMMENTS = 3_000;
 
 const TERMINAL_JOB_STATUSES = ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"];
+
+/** Polling do job de análise: 3 s, recuando até 15 s, por no máximo 30 min. */
+const JOB_POLLING = {
+  initialMs: 3_000,
+  maxIntervalMs: 15_000,
+  maxDurationMs: 30 * 60_000,
+};
 
 interface PostCommentsAnalysisPanelProps {
   postId: string;
@@ -59,6 +67,9 @@ export function PostCommentsAnalysisPanel({
     { refetchOnWindowFocus: false },
   );
 
+  // Para em erro e depois de 30 min: um job travado não fica sendo
+  // consultado para sempre.
+  const jobPolling = useBoundedPolling(jobId, JOB_POLLING);
   const jobQuery = api.commentsAnalysis.getJob.useQuery(
     { jobId: jobId ?? "" },
     {
@@ -66,7 +77,10 @@ export function PostCommentsAnalysisPanel({
       refetchInterval: (query) => {
         const status = (query.state.data as CommentsAnalysisJob | undefined)
           ?.status;
-        return status === "PENDING" || status === "RUNNING" ? 3000 : false;
+        return jobPolling.interval(
+          query,
+          status === "PENDING" || status === "RUNNING",
+        );
       },
     },
   );
