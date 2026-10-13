@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   BookmarkSimple,
@@ -525,7 +525,7 @@ export function DailyTab({
                         {/* Thumbnail + plataforma */}
                         <div className="bg-muted relative h-20 w-14 shrink-0 overflow-hidden rounded-xl sm:h-32 sm:w-20">
                           {entry.thumbnailUrl ? (
-                            <Image
+                            <ClipThumbnail
                               src={entry.thumbnailUrl}
                               alt={`Post por @${entry.username}`}
                               fill

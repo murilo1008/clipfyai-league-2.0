@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   CalendarBlank,
@@ -126,7 +126,7 @@ function PostCard({ post }: { post: MyPost }) {
         </div>
       ) : (
         <>
-          <Image
+          <ClipThumbnail
             src={post.thumbnailUrl}
             alt={`Post de @${post.username}`}
             fill

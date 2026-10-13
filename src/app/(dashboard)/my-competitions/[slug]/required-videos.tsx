@@ -1,6 +1,6 @@
 "use client";
 
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { ArrowSquareOut, Play, VideoCamera } from "@phosphor-icons/react";
 
 import { Reveal } from "@/components/shared/reveal";
@@ -54,11 +54,10 @@ export function RequiredVideos({
               >
                 <div className="bg-muted/30 relative flex aspect-video items-center justify-center">
                   {video.thumbnailUrl ? (
-                    <Image
+                    <ClipThumbnail
                       src={video.thumbnailUrl}
                       alt=""
                       fill
-                      unoptimized
                       sizes="(min-width: 1280px) 400px, (min-width: 640px) 50vw, 100vw"
                       className="object-cover"
                     />

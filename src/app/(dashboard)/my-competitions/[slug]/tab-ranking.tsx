@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ChatCircle,
   Clock,
@@ -148,7 +148,7 @@ function DailyRankingRow({
         {/* Thumb vertical */}
         <div className="bg-muted relative h-16 w-12 shrink-0 overflow-hidden rounded-lg sm:h-24 sm:w-16 md:h-32 md:w-20">
           {post.thumbnailUrl ? (
-            <Image
+            <ClipThumbnail
               src={post.thumbnailUrl}
               alt={`Post por ${post.clipperName}`}
               fill

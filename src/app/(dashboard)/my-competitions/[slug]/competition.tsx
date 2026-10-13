@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -1271,7 +1272,7 @@ export default function Competition({
                 >
                   <div className="bg-muted relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-2xl">
                     {topViralPost.thumbnailUrl ? (
-                      <Image
+                      <ClipThumbnail
                         src={topViralPost.thumbnailUrl}
                         alt="Post mais viral"
                         fill

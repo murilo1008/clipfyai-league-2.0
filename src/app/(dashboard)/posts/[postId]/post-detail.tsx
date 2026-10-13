@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -467,7 +467,7 @@ export default function PostDetail({ postId }: PostDetailProps) {
                 className="glass-card animate-glow group relative block aspect-[9/16] w-full overflow-hidden rounded-3xl p-0"
               >
                 {post.thumbnail ? (
-                  <Image
+                  <ClipThumbnail
                     src={post.thumbnail}
                     alt={`Thumbnail do post de ${username}`}
                     fill

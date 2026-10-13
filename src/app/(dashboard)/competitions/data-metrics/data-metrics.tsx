@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   CalendarBlank,
@@ -725,13 +725,12 @@ export default function DataMetrics() {
                             {/* Thumbnail */}
                             {video.thumbnailUrl && (
                               <span className="bg-muted/30 relative block size-12 shrink-0 overflow-hidden rounded-xl sm:size-14">
-                                <Image
+                                <ClipThumbnail
                                   src={video.thumbnailUrl}
                                   alt=""
                                   fill
                                   sizes="56px"
                                   className="object-cover"
-                                  unoptimized
                                 />
                               </span>
                             )}

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ChatCircle,
   Eye,
@@ -225,7 +225,7 @@ export function StatsTab({
           <div className="flex items-center gap-3 sm:gap-4">
             <div className="bg-muted relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl sm:size-24">
               {bestPost.thumbnailUrl ? (
-                <Image
+                <ClipThumbnail
                   src={bestPost.thumbnailUrl}
                   alt="Melhor post"
                   fill

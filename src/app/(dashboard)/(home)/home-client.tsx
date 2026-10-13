@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import Link from "next/link";
 import {
   ArrowSquareOut,
@@ -1361,7 +1362,7 @@ function ViralPostsGrid({ posts }: { posts: Campaign["topPosts"] }) {
             className="group ring-border/60 hover:ring-brand-cyan/50 not-dark:hover:ring-primary/50 relative aspect-[9/16] overflow-hidden rounded-2xl ring-1 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-black/20 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
           >
             {post.thumbnailUrl ? (
-              <Image
+              <ClipThumbnail
                 src={post.thumbnailUrl}
                 alt={`Vídeo de ${handle}`}
                 fill

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   ArrowsClockwise,
@@ -497,12 +497,13 @@ export function TikTokBrowserEmbed({
       {isLoading && playerUrl && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black text-white">
           {thumbnailUrl && (
-            <Image
+            <ClipThumbnail
               src={thumbnailUrl}
               alt=""
               fill
               sizes="160px"
               className="object-contain opacity-50 blur-sm"
+              fallback={null}
             />
           )}
           <Spinner className="relative size-7 animate-spin" />
@@ -1469,7 +1470,7 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
                   {/* Thumbnail 9:16 */}
                   <div className="bg-muted/60 relative aspect-[9/16] w-full shrink-0 overflow-hidden">
                     {post.thumbnail ? (
-                      <Image
+                      <ClipThumbnail
                         src={post.thumbnail}
                         alt={`Post de ${post.clipperName}`}
                         fill
