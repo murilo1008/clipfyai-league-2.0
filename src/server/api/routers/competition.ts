@@ -1786,11 +1786,14 @@ export const campaignRouter = createTRPCRouter({
           },
           select: { id: true, status: true, campaign: { select: { status: true } } },
         });
-        if (
-          !application ||
-          application.campaign.status === "ARCHIVED" ||
-          !isParticipatingApplication(application.status)
-        ) {
+        // Mesma mensagem de getCompetitionDetails/getCompetitionRanking
+        if (application?.campaign.status === "ARCHIVED") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Esta competição não está mais disponível",
+          });
+        }
+        if (!application || !isParticipatingApplication(application.status)) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Você não está participando desta competição",
