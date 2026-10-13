@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useUser } from "@clerk/nextjs"
@@ -23,7 +24,6 @@ import {
 import { AnimatePresence, motion } from "framer-motion"
 import { toast } from "sonner"
 
-import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { DarkScope } from "@/components/shared/dark-scope"
 import { Bone } from "@/components/shared/skeletons"
 import {
@@ -44,6 +44,16 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { api, type RouterOutputs } from "@/trpc/react"
+
+// Diálogo de vendas sob demanda: o chunk só é baixado quando o clipador abre
+// o diálogo, e ele só fica montado enquanto está aberto.
+const ClipfyProPricingDialog = dynamic(
+  () =>
+    import("@/components/clippers/clipfy-pro-pricing-dialog").then(
+      (m) => m.ClipfyProPricingDialog,
+    ),
+  { ssr: false },
+)
 
 // ============================================================
 // TIPOS
@@ -458,11 +468,13 @@ export default function Modules() {
           </div>
         </DarkScope>
 
-        <ClipfyProPricingDialog
-          open={isProDialogOpen}
-          onOpenChange={setIsProDialogOpen}
-          userEmail={userEmail}
-        />
+        {isProDialogOpen && (
+          <ClipfyProPricingDialog
+            open={isProDialogOpen}
+            onOpenChange={setIsProDialogOpen}
+            userEmail={userEmail}
+          />
+        )}
       </>
     )
   }
@@ -883,11 +895,13 @@ export default function Modules() {
         </AnimatePresence>
       </div>
 
-      <ClipfyProPricingDialog
-        open={isProDialogOpen}
-        onOpenChange={setIsProDialogOpen}
-        userEmail={userEmail}
-      />
+      {isProDialogOpen && (
+        <ClipfyProPricingDialog
+          open={isProDialogOpen}
+          onOpenChange={setIsProDialogOpen}
+          userEmail={userEmail}
+        />
+      )}
     </TooltipProvider>
   )
 }

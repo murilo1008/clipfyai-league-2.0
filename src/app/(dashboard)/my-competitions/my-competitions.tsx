@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import { useUser } from "@clerk/nextjs"
@@ -26,7 +27,6 @@ import {
   X,
 } from "@phosphor-icons/react"
 
-import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
 import { canRejoinCompetition } from "@/lib/competition-participation"
 import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
@@ -56,6 +56,16 @@ import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
+
+// Diálogo de vendas sob demanda: o chunk só é baixado quando o clipador abre
+// o diálogo, e ele só fica montado enquanto está aberto.
+const ClipfyProPricingDialog = dynamic(
+  () =>
+    import("@/components/clippers/clipfy-pro-pricing-dialog").then(
+      (m) => m.ClipfyProPricingDialog,
+    ),
+  { ssr: false },
+)
 
 /* ===== Ranking (top3 / top10 / top50 / demais) ===== */
 const rankingConfig = {
@@ -656,11 +666,13 @@ export default function MyCompetitions() {
         onOpenChange={setIsCreatePostOpen}
         preSelectedCampaignId={selectedCompetitionId}
       />
-      <ClipfyProPricingDialog
-        open={isProDialogOpen}
-        onOpenChange={setIsProDialogOpen}
-        userEmail={user?.emailAddresses?.[0]?.emailAddress}
-      />
+      {isProDialogOpen && (
+        <ClipfyProPricingDialog
+          open={isProDialogOpen}
+          onOpenChange={setIsProDialogOpen}
+          userEmail={user?.emailAddresses?.[0]?.emailAddress}
+        />
+      )}
     </div>
   )
 }
