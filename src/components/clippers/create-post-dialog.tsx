@@ -349,7 +349,7 @@ export function CreatePostDialog({
 
   // Mutation para submeter posts
   const submitPostsMutation = api.clipper.submitPosts.useMutation({
-    onSuccess: async (data) => {
+    onSuccess: (data) => {
       const count = data.postsCreated
       toast.success(
         `${count} ${count === 1 ? "post enviado" : "posts enviados"} com sucesso!`,
@@ -359,33 +359,29 @@ export function CreatePostDialog({
         },
       )
 
-      // Invalidar TODAS as queries relevantes para atualizar contadores e rankings
-      await Promise.all([
-        // Queries do clipper
-        utils.clipper.getMyCompetitions.invalidate(),
-        utils.clipper.getMyApplications.invalidate(),
-        utils.clipper.getMySocialAccounts.invalidate(),
-
-        // Queries de campanha
-        utils.campaign.getAllActiveCompetitions.invalidate(),
-        utils.campaign.getMyActiveAndCompletedCompetitions.invalidate(),
-        utils.campaign.getCompetitionDetails.invalidate(),
-        utils.campaign.getScheduled.invalidate(),
-
-        // Invalidar query específica da competição se houver
-        selectedCompetition &&
-          utils.campaign.getCompetitionDetails.invalidate({
-            slug:
-              competitions.find((c) => c.id === selectedCompetition)?.slug ||
-              "",
-          }),
-      ])
+      // Fecha primeiro; as atualizações rodam em segundo plano e só nas
+      // queries que mudam com novos posts.
+      const campaignId = selectedCompetition
+      const slug = competitions.find((c) => c.id === campaignId)?.slug
 
       setIsSubmitting(false)
       handleClose()
 
       if (onSuccess) {
         onSuccess()
+      }
+
+      void utils.clipper.getMyCompetitions.invalidate()
+      void utils.clipper.getMyApplications.invalidate()
+      void utils.campaign.getAllActiveCompetitions.invalidate()
+      if (slug) {
+        void utils.campaign.getCompetitionDetails.invalidate({ slug })
+      } else {
+        void utils.campaign.getCompetitionDetails.invalidate()
+      }
+      if (campaignId) {
+        void utils.campaign.getMyCompetitionPosts.invalidate({ campaignId })
+        void utils.campaign.getCompetitionRanking.invalidate({ campaignId })
       }
     },
     onError: (error) => {

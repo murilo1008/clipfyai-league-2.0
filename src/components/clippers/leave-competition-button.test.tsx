@@ -12,6 +12,10 @@ vi.mock("@/trpc/react", () => ({
   },
 }));
 
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({ removeQueries: vi.fn() }),
+}));
+
 import { LeaveCompetitionButton } from "./leave-competition-button";
 
 const competition = {
