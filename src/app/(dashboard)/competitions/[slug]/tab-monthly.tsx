@@ -51,7 +51,7 @@ import {
 type MonthlyRankingEntry = CompetitionDetails["topMonthlyRanking"][number]
 
 export function MonthlyTab(props: CompetitionTabProps) {
-  const { slug, campaignId, data, active, refetch } = props
+  const { slug, campaignId, data, refetch } = props
   const formatCurrency = useFormatCurrency()
 
   const entries = React.useMemo(
@@ -121,24 +121,40 @@ export function MonthlyTab(props: CompetitionTabProps) {
   const [metricsOpen, setMetricsOpen] = React.useState(false)
 
   /* ===== Ver Aplicação ===== */
-  const { data: applicationsData } =
-    api.admin.getCompetitionApplicationsAdmin.useQuery(
-      { slug, page: 1, pageSize: 200 },
-      { enabled: active },
-    )
+  // A inscrição é buscada pelo id só no clique (antes a página baixava as 200
+  // primeiras inscrições e procurava pelo nome).
+  const utils = api.useUtils()
+  const [loadingApplicationId, setLoadingApplicationId] = React.useState<
+    string | null
+  >(null)
   const [selectedApplication, setSelectedApplication] =
     React.useState<AdminApplication | null>(null)
   const [isApplicationOpen, setIsApplicationOpen] = React.useState(false)
 
-  const handleOpenApplication = (entry: MonthlyRankingEntry) => {
-    const application = applicationsData?.applications.find(
-      (app) =>
-        app.clipperName === entry.clipperName ||
-        app.clipperArtisticName === entry.clipperUsername,
-    )
-    if (application) {
-      setSelectedApplication(application)
-      setIsApplicationOpen(true)
+  const handleOpenApplication = async (entry: MonthlyRankingEntry) => {
+    setLoadingApplicationId(entry.applicationId)
+    try {
+      const result = await utils.admin.getCompetitionApplicationsAdmin.fetch({
+        slug,
+        applicationId: entry.applicationId,
+        page: 1,
+        pageSize: 1,
+      })
+      const application = result.applications[0]
+      if (application) {
+        setSelectedApplication(application)
+        setIsApplicationOpen(true)
+      } else {
+        toast.error("Aplicação não encontrada")
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "Erro ao carregar a aplicação",
+      )
+    } finally {
+      setLoadingApplicationId(null)
     }
   }
 
@@ -401,9 +417,14 @@ export function MonthlyTab(props: CompetitionTabProps) {
                       variant="ghost"
                       size="sm"
                       className="text-muted-foreground hover:text-foreground ml-auto h-7 cursor-pointer gap-1.5 rounded-lg text-xs"
-                      onClick={() => handleOpenApplication(entry)}
+                      disabled={loadingApplicationId === entry.applicationId}
+                      onClick={() => void handleOpenApplication(entry)}
                     >
-                      <Eye className="size-3" />
+                      {loadingApplicationId === entry.applicationId ? (
+                        <Spinner className="size-3 animate-spin" />
+                      ) : (
+                        <Eye className="size-3" />
+                      )}
                       Ver Aplicação
                     </Button>
                   </div>

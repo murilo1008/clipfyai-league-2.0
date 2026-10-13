@@ -928,3 +928,337 @@ describe("pagamentos em lote", () => {
     });
   });
 });
+
+describe("getCompetitionDetailsAdmin", () => {
+  it("deriva totais e ranking de contas de uma agregação e hidrata só o top do dia", async () => {
+    computeMonthlyLeaderboard.mockResolvedValue({ rows: [] });
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        username: "ana",
+        platform: "TIKTOK",
+        allPosts: 3,
+        posts: 2,
+        views: 1_000n,
+        likes: 50n,
+        comments: 5n,
+        shares: 5n,
+        saves: null,
+      },
+      {
+        username: null,
+        platform: "INSTAGRAM",
+        allPosts: 1,
+        posts: 1,
+        views: 3_000n,
+        likes: 10n,
+        comments: 0n,
+        shares: 0n,
+        saves: 20n,
+      },
+      // só posts não elegíveis: conta no total de posts, fora do ranking
+      {
+        username: "bia",
+        platform: "TIKTOK",
+        allPosts: 4,
+        posts: 0,
+        views: 0n,
+        likes: 0n,
+        comments: 0n,
+        shares: 0n,
+        saves: null,
+      },
+    ]);
+    const todayPost = (id: string, applicationId: string, views: bigint) => ({
+      id,
+      applicationId,
+      submittedUrl: `https://t/${id}`,
+      username: "ana",
+      platform: "TIKTOK",
+      thumbnailUrl: null,
+      postedAt: new Date("2026-10-02T10:00:00.000Z"),
+      views,
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      saves: null,
+    });
+    const clipPostFindMany = vi
+      .fn()
+      .mockImplementation(async ({ take }) =>
+        take === 10
+          ? []
+          : [
+              todayPost("p1", "a1", 10n),
+              todayPost("p2", "a2", 30n),
+              todayPost("p3", "a3", 20n),
+            ],
+      );
+    const applicationFindMany = vi.fn().mockImplementation(async ({ where }) =>
+      (where.id.in as string[]).map((id) => ({
+        id,
+        clipperProfile: {
+          artisticName: `Artista ${id}`,
+          fullName: `Nome ${id}`,
+          user: { imageUrl: `https://img/${id}` },
+          clan: null,
+        },
+      })),
+    );
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "c1",
+          slug: "c",
+          name: "Liga",
+          status: "ACTIVE",
+          startDate: new Date("2026-10-01T00:00:00.000Z"),
+          endDate: new Date("2026-10-30T00:00:00.000Z"),
+          rankingMetricType: "VIEWS",
+          prizeInfo: null,
+          organization: null,
+          activeRankingRule: { dailyTopCount: 2, dailyPrizeTable: [] },
+        }),
+      },
+      clipperApplication: {
+        count: vi.fn().mockResolvedValue(7),
+        findMany: applicationFindMany,
+      },
+      clipPost: {
+        count: vi.fn().mockResolvedValue(5),
+        findMany: clipPostFindMany,
+      },
+      dailyRanking: { findFirst: vi.fn().mockResolvedValue(null) },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await api.getCompetitionDetailsAdmin({ slug: "c" });
+
+    expect(result.stats).toEqual({
+      totalViews: 4000,
+      totalLikes: 60,
+      totalComments: 5,
+      totalShares: 5,
+      totalSaves: 20,
+      totalClippers: 7,
+      totalPosts: 8,
+      engagementRate: 2.25,
+    });
+    expect(
+      result.topAccountsRanking.map((a) => [
+        a.position,
+        a.username,
+        a.postsCount,
+        a.totalViews,
+        a.totalSaves,
+      ]),
+    ).toEqual([
+      [1, "unknown", 1, 3000, 20],
+      [2, "ana", 2, 1000, 0],
+    ]);
+    // Posts de hoje sem relações; perfis só das 2 posições do top
+    expect(clipPostFindMany.mock.calls[0]![0].select).not.toHaveProperty(
+      "application",
+    );
+    expect(applicationFindMany.mock.calls[0]![0].where.id.in).toEqual([
+      "a2",
+      "a3",
+    ]);
+    expect(
+      result.topDailyRanking.map((p) => [
+        p.position,
+        p.postId,
+        p.clipperName,
+        p.clipperImageUrl,
+        p.postUrl,
+      ]),
+    ).toEqual([
+      [1, "p2", "Artista a2", "https://img/a2", "https://t/p2"],
+      [2, "p3", "Artista a3", "https://img/a3", "https://t/p3"],
+    ]);
+  });
+});
+
+describe("getCompetitionApplicationsAdmin", () => {
+  it("soma posts e ganhos agrupados no banco", async () => {
+    const postGroupBy = vi.fn().mockResolvedValue([
+      {
+        applicationId: "a1",
+        status: "ELIGIBLE",
+        platform: "TIKTOK",
+        username: "Ana",
+        _count: { _all: 2 },
+        _sum: { views: 300n, likes: 30 },
+      },
+      {
+        applicationId: "a1",
+        status: "ELIGIBLE",
+        platform: "TIKTOK",
+        username: "ana",
+        _count: { _all: 1 },
+        _sum: { views: 100n, likes: 10 },
+      },
+      {
+        applicationId: "a1",
+        status: "PENDING",
+        platform: "TIKTOK",
+        username: "ana",
+        _count: { _all: 4 },
+        _sum: { views: 999n, likes: 99 },
+      },
+      {
+        applicationId: "a1",
+        status: "ELIGIBLE",
+        platform: "INSTAGRAM",
+        username: "outra",
+        _count: { _all: 1 },
+        _sum: { views: 5n, likes: 1 },
+      },
+    ]);
+    const transactionGroupBy = vi
+      .fn()
+      .mockResolvedValue([{ walletId: "w1", _sum: { amount: 125.5 } }]);
+    const application = {
+      id: "a1",
+      clipperProfileId: "cp1",
+      status: "APPROVED",
+      withdrawnAt: null,
+      createdAt: new Date("2026-10-01T00:00:00.000Z"),
+      approvedAt: null,
+      reviewedBy: null,
+      reviewNotes: null,
+      rejectionReason: null,
+      clipperProfile: {
+        fullName: "Ana Silva",
+        artisticName: "Ana",
+        phone: null,
+        cpf: null,
+        pixKey: null,
+        city: null,
+        state: null,
+        user: { name: null, email: "ana@x", imageUrl: null },
+        clan: null,
+      },
+      socialAccounts: [
+        {
+          socialAccount: {
+            id: "s1",
+            platform: "TIKTOK",
+            username: "ANA",
+            profileUrl: null,
+            isPrimary: true,
+            isVerified: false,
+            followers: null,
+          },
+        },
+      ],
+    };
+    const api = caller({
+      campaign: { findUnique: vi.fn().mockResolvedValue({ id: "c1" }) },
+      clipperApplication: {
+        groupBy: vi.fn().mockResolvedValue([
+          { status: "APPROVED", _count: { id: 1 } },
+          { status: "PENDING", _count: { id: 2 } },
+        ]),
+        findMany: vi.fn().mockResolvedValue([application]),
+        count: vi.fn().mockResolvedValue(1),
+      },
+      clipPost: { groupBy: postGroupBy },
+      wallet: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "w1", clipperProfileId: "cp1" }]),
+      },
+      transaction: { groupBy: transactionGroupBy },
+    });
+
+    const result = await api.getCompetitionApplicationsAdmin({ slug: "c" });
+
+    expect(postGroupBy.mock.calls[0]![0].where).toEqual({
+      applicationId: { in: ["a1"] },
+    });
+    expect(transactionGroupBy.mock.calls[0]![0].where).toMatchObject({
+      campaignId: "c1",
+      wallet: { clipperProfileId: { in: ["cp1"] } },
+    });
+    const [app] = result.applications;
+    expect(app).toMatchObject({
+      postsCount: 8,
+      eligiblePostsCount: 4,
+      totalViews: 405,
+      totalLikes: 41,
+      totalEarned: 125.5,
+      socialAccounts: [
+        { id: "s1", postsCount: 7, eligiblePostsCount: 3, totalViews: 400 },
+      ],
+    });
+    expect(app).not.toHaveProperty("posts");
+    expect(result).toMatchObject({
+      pendingCount: 2,
+      approvedCount: 1,
+      totalCount: 3,
+    });
+  });
+});
+
+describe("getCompetitionPostsAdmin", () => {
+  it("ordena por engajamento no banco e pagina pelos ids", async () => {
+    const queryRaw = vi.fn().mockImplementation(async (...call: unknown[]) =>
+      sqlOf(call).sql.includes("COUNT(*)")
+        ? [{ count: 40 }]
+        : [{ id: "p2" }, { id: "p1" }],
+    );
+    const post = (id: string) => ({
+      id,
+      submittedUrl: `https://www.tiktok.com/@a/video/${id}`,
+      platformVideoId: id,
+      thumbnailUrl: null,
+      platform: "TIKTOK",
+      username: "a",
+      views: 10n,
+      likes: 1,
+      comments: 0,
+      shares: 0,
+      postedAt: null,
+      createdAt: new Date("2026-10-01T00:00:00.000Z"),
+      status: "ELIGIBLE",
+      ineligibilityReason: null,
+      bucketVideo: null,
+      application: null,
+    });
+    const findMany = vi.fn().mockResolvedValue([post("p1"), post("p2")]);
+    const api = caller({
+      campaign: { findUnique: vi.fn().mockResolvedValue({ id: "c1" }) },
+      clipPost: { findMany },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await api.getCompetitionPostsAdmin({
+      slug: "c",
+      sortBy: "engagement",
+      page: 2,
+      pageSize: 20,
+      commentsDataFilter: "without",
+      accountSearch: "@ana_",
+    });
+
+    const pageQuery = sqlOf(
+      queryRaw.mock.calls.find((call) => !sqlOf(call).sql.includes("COUNT(*)"))!,
+    );
+    expect(pageQuery.sql).toContain("::float8 / cp.views::float8");
+    expect(pageQuery.sql).toContain('NOT EXISTS');
+    expect(pageQuery.sql).toContain("ILIKE");
+    expect(pageQuery.values).toEqual(
+      expect.arrayContaining(["c1", "%ana_%", 20]),
+    );
+    expect(findMany.mock.calls[0]![0].where).toEqual({
+      id: { in: ["p2", "p1"] },
+    });
+    expect(result.posts.map((p) => p.id)).toEqual(["p2", "p1"]);
+    expect(result.pagination).toMatchObject({
+      totalCount: 40,
+      totalPages: 2,
+      hasNextPage: false,
+      hasPreviousPage: true,
+    });
+  });
+});
