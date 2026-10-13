@@ -384,7 +384,9 @@ export const clientRouter = createTRPCRouter({
             performanceSettings: { select: { investedAmount: true } },
           },
         },
-        // Buscar organizações associadas
+        // Organização associada: só os campos usados como fallback do
+        // perfil (as campanhas da organização e o `_count` — que agregava a
+        // tabela de campanhas inteira — não eram usados).
         organizations: {
           select: {
             organization: {
@@ -393,17 +395,6 @@ export const clientRouter = createTRPCRouter({
                 name: true,
                 website: true,
                 country: true,
-                _count: {
-                  select: {
-                    campaigns: true,
-                  },
-                },
-                campaigns: {
-                  select: {
-                    id: true,
-                    status: true,
-                  },
-                },
               },
             },
           },
@@ -510,25 +501,14 @@ export const clientRouter = createTRPCRouter({
               performanceSettings: { select: { investedAmount: true } },
             },
           },
+          // Organização: só os campos usados como fallback do perfil.
           organizations: {
-            include: {
+            select: {
               organization: {
-                include: {
-                  _count: {
-                    select: {
-                      campaigns: true,
-                    },
-                  },
-                  campaigns: {
-                    select: {
-                      id: true,
-                      name: true,
-                      status: true,
-                      startDate: true,
-                      endDate: true,
-                      createdAt: true,
-                    },
-                  },
+                select: {
+                  name: true,
+                  website: true,
+                  country: true,
                 },
               },
             },
@@ -1075,17 +1055,17 @@ export const clientRouter = createTRPCRouter({
       })
     }
 
-    const totalClients = await ctx.db.user.count({
-      where: { role: "CLIENT" },
-    })
-
-    const totalOrganizations = await ctx.db.organization.count()
-
-    const totalCampaigns = await ctx.db.campaign.count()
-
-    const activeCampaigns = await ctx.db.campaign.count({
-      where: { status: "ACTIVE" },
-    })
+    const [totalClients, totalOrganizations, totalCampaigns, activeCampaigns] =
+      await Promise.all([
+        ctx.db.user.count({
+          where: { role: "CLIENT" },
+        }),
+        ctx.db.organization.count(),
+        ctx.db.campaign.count(),
+        ctx.db.campaign.count({
+          where: { status: "ACTIVE" },
+        }),
+      ])
 
     return {
       totalClients,
