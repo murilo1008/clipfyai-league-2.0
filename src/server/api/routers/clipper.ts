@@ -1685,20 +1685,10 @@ export const clipperRouter = createTRPCRouter({
       );
 
       try {
-        console.log(
-          "🔍 Buscando wallet para clipperProfileId:",
-          input.clipperProfileId,
-        );
-
+        // Chamada em toda página (chip de saldo no cabeçalho): sem logs por requisição.
         const wallet = await ctx.db.wallet.findUnique({
           where: { clipperProfileId: input.clipperProfileId },
         });
-
-        console.log("💰 Wallet encontrada:", wallet ? "SIM" : "NÃO");
-        if (wallet) {
-          console.log("💵 Saldo:", wallet.balance);
-          console.log("📊 Total Ganho:", wallet.totalEarned);
-        }
 
         return wallet || null;
       } catch (error) {
@@ -1753,24 +1743,9 @@ export const clipperRouter = createTRPCRouter({
       );
 
       try {
-        // Buscar a wallet primeiro
-        const wallet = await ctx.db.wallet.findUnique({
-          where: { clipperProfileId: input.clipperProfileId },
-        });
-
-        if (!wallet) {
-          return {
-            transactions: [],
-            total: 0,
-            page: input.page,
-            pageSize: input.pageSize,
-            totalPages: 0,
-          };
-        }
-
-        // Construir filtros
+        // Filtra pela wallet do clipador direto na relação (sem wallet: 0 linhas)
         const where: any = {
-          walletId: wallet.id,
+          wallet: { clipperProfileId: input.clipperProfileId },
         };
 
         if (input.type && input.type !== "ALL") {
@@ -1781,18 +1756,31 @@ export const clipperRouter = createTRPCRouter({
           where.status = input.status;
         }
 
-        // Buscar total de transações
-        const total = await ctx.db.transaction.count({ where });
-
-        // Buscar transações com paginação
-        const transactions = await ctx.db.transaction.findMany({
-          where,
-          orderBy: {
-            createdAt: "desc",
-          },
-          skip: (input.page - 1) * input.pageSize,
-          take: input.pageSize,
-        });
+        // Total e página em paralelo; só os campos exibidos (sem os JSON de
+        // saque/metadata das até 500 linhas)
+        const [total, transactions] = await Promise.all([
+          ctx.db.transaction.count({ where }),
+          ctx.db.transaction.findMany({
+            where,
+            orderBy: {
+              createdAt: "desc",
+            },
+            skip: (input.page - 1) * input.pageSize,
+            take: input.pageSize,
+            select: {
+              id: true,
+              type: true,
+              status: true,
+              amount: true,
+              balanceBefore: true,
+              balanceAfter: true,
+              description: true,
+              rankingPosition: true,
+              proofUrls: true,
+              createdAt: true,
+            },
+          }),
+        ]);
 
         return {
           transactions,
@@ -1825,89 +1813,60 @@ export const clipperRouter = createTRPCRouter({
       );
 
       try {
-        const wallet = await ctx.db.wallet.findUnique({
-          where: { clipperProfileId: input.clipperProfileId },
-        });
-
-        if (!wallet) {
-          return {
-            totalTransactions: 0,
-            totalCredits: 0,
-            totalCreditsCount: 0,
-            totalWithdrawals: 0,
-            pendingWithdrawals: 0,
-            completedWithdrawals: 0,
-            lastTransaction: null,
-          };
-        }
-
-        const [
-          totalTransactions,
-          totalCredits,
-          totalWithdrawals,
-          pendingWithdrawals,
-          completedWithdrawals,
-          lastTransaction,
-        ] = await Promise.all([
-          ctx.db.transaction.count({
-            where: { walletId: wallet.id },
-          }),
-          ctx.db.transaction.aggregate({
-            where: {
-              walletId: wallet.id,
-              type: {
-                in: ["PRIZE_CREDIT", "BONUS", "ADJUSTMENT", "REFUND"],
-              },
-              status: "COMPLETED",
-              amount: { gt: 0 },
-            },
-            _sum: {
-              amount: true,
-            },
-            _count: {
-              id: true,
-            },
-          }),
-          ctx.db.transaction.count({
-            where: {
-              walletId: wallet.id,
-              type: {
-                in: [
-                  "WITHDRAWAL_REQUEST",
-                  "WITHDRAWAL_APPROVED",
-                  "WITHDRAWAL_COMPLETED",
-                ],
-              },
-            },
-          }),
-          ctx.db.transaction.count({
-            where: {
-              walletId: wallet.id,
-              type: {
-                in: ["WITHDRAWAL_REQUEST", "WITHDRAWAL_APPROVED"],
-              },
-              status: {
-                in: ["PENDING", "PROCESSING"],
-              },
-            },
-          }),
-          ctx.db.transaction.count({
-            where: {
-              walletId: wallet.id,
-              type: "WITHDRAWAL_COMPLETED",
-              status: "COMPLETED",
-            },
-          }),
+        // Todas as contagens/somas numa consulta (antes: wallet + 6 consultas);
+        // sem wallet, tudo 0 e lastTransaction null, como antes.
+        const [statsRows, lastTransaction] = await Promise.all([
+          ctx.db.$queryRaw<
+            Array<{
+              totalTransactions: number;
+              totalCredits: number;
+              totalCreditsCount: number;
+              totalWithdrawals: number;
+              pendingWithdrawals: number;
+              completedWithdrawals: number;
+            }>
+          >`
+            SELECT
+              COUNT(*)::int AS "totalTransactions",
+              COALESCE(SUM(t."amount") FILTER (
+                WHERE t."type" IN ('PRIZE_CREDIT', 'BONUS', 'ADJUSTMENT', 'REFUND')
+                  AND t."status" = 'COMPLETED'
+                  AND t."amount" > 0
+              ), 0)::float8 AS "totalCredits",
+              (COUNT(*) FILTER (
+                WHERE t."type" IN ('PRIZE_CREDIT', 'BONUS', 'ADJUSTMENT', 'REFUND')
+                  AND t."status" = 'COMPLETED'
+                  AND t."amount" > 0
+              ))::int AS "totalCreditsCount",
+              (COUNT(*) FILTER (
+                WHERE t."type" IN ('WITHDRAWAL_REQUEST', 'WITHDRAWAL_APPROVED', 'WITHDRAWAL_COMPLETED')
+              ))::int AS "totalWithdrawals",
+              (COUNT(*) FILTER (
+                WHERE t."type" IN ('WITHDRAWAL_REQUEST', 'WITHDRAWAL_APPROVED')
+                  AND t."status" IN ('PENDING', 'PROCESSING')
+              ))::int AS "pendingWithdrawals",
+              (COUNT(*) FILTER (
+                WHERE t."type" = 'WITHDRAWAL_COMPLETED' AND t."status" = 'COMPLETED'
+              ))::int AS "completedWithdrawals"
+            FROM "Transaction" t
+            INNER JOIN "Wallet" w ON w."id" = t."walletId"
+            WHERE w."clipperProfileId" = ${input.clipperProfileId}
+          `,
           ctx.db.transaction.findFirst({
-            where: { walletId: wallet.id },
+            where: { wallet: { clipperProfileId: input.clipperProfileId } },
             orderBy: { createdAt: "desc" },
           }),
         ]);
+        const stats = statsRows[0];
+        const totalTransactions = stats?.totalTransactions ?? 0;
+        const totalWithdrawals = stats?.totalWithdrawals ?? 0;
+        const pendingWithdrawals = stats?.pendingWithdrawals ?? 0;
+        const completedWithdrawals = stats?.completedWithdrawals ?? 0;
 
         return {
           totalTransactions,
-          totalCredits: totalCredits._sum.amount || 0,
-          totalCreditsCount: totalCredits._count.id,
+          totalCredits: stats?.totalCredits || 0,
+          totalCreditsCount: stats?.totalCreditsCount ?? 0,
           totalWithdrawals,
           pendingWithdrawals,
           completedWithdrawals,
