@@ -37,7 +37,8 @@ type PollableQuery = { state: { status: string } };
 /**
  * Devolve uma função para `refetchInterval` do React Query. O relógio começa
  * na primeira vez em que há algo pendente e recomeça quando `key` muda (ex.:
- * outro job ou nova leva enfileirada). Para de vez quando a consulta falha.
+ * outro job ou nova leva enfileirada) ou depois que nada mais está pendente.
+ * Com `key` nula não há polling. Para de vez quando a consulta falha.
  * `expired` fica `true` quando o prazo acabou com algo ainda pendente — a tela
  * pode oferecer um "atualizar" manual.
  */
@@ -54,7 +55,15 @@ export function useBoundedPolling(
 
   const interval = React.useCallback(
     (query: PollableQuery, isPending: boolean): number | false => {
-      if (!isPending || query.state.status === "error") return false;
+      // O React Query chama `refetchInterval` também com a query desligada:
+      // sem chave não há o que acompanhar, e o relógio não pode começar.
+      if (key === null) return false;
+      if (query.state.status === "error") return false;
+      if (!isPending) {
+        // Acabou a pendência: a próxima começa um prazo novo.
+        startRef.current = null;
+        return false;
+      }
       const now = Date.now();
       // Nova chave (ou primeira pendência): recomeça a contagem.
       if (!startRef.current || startRef.current.key !== key) {

@@ -56,11 +56,15 @@ import {
 
 const TERMINAL_JOB_STATUSES = ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"];
 
-/** Polling do job de análise: 3 s, recuando até 15 s, por no máximo 30 min. */
+/**
+ * Polling do job de análise: 3 s, recuando até 1 min, por no máximo 6 h. A
+ * análise da competição roda em lote no League e costuma passar de 30 min;
+ * depois do prazo, voltar para a aba consulta o job de novo.
+ */
 const JOB_POLLING = {
   initialMs: 3_000,
-  maxIntervalMs: 15_000,
-  maxDurationMs: 30 * 60_000,
+  maxIntervalMs: 60_000,
+  maxDurationMs: 6 * 60 * 60_000,
 };
 
 /**
@@ -112,6 +116,8 @@ export function CompetitionCommentsAnalysisPanel({
   const incrementalEstimateQuery =
     api.commentsAnalysis.estimateCampaign.useQuery(incrementalEstimateInput, {
       refetchOnWindowFocus: false,
+      // Cada tentativa é uma carga pesada no League: sem repetição automática.
+      retry: false,
     });
 
   const fullEstimateQuery = api.commentsAnalysis.estimateCampaign.useQuery(
@@ -119,6 +125,7 @@ export function CompetitionCommentsAnalysisPanel({
     {
       enabled: isFullReanalysisOpen,
       refetchOnWindowFocus: false,
+      retry: false,
     },
   );
 
@@ -131,6 +138,7 @@ export function CompetitionCommentsAnalysisPanel({
     { jobId: jobId ?? "" },
     {
       enabled: Boolean(jobId),
+      refetchOnWindowFocus: true,
       refetchInterval: (query) => {
         const status = (query.state.data as CommentsAnalysisJob | undefined)
           ?.status;
@@ -300,8 +308,10 @@ export function CompetitionCommentsAnalysisPanel({
   const job = jobQuery.data as CommentsAnalysisJob | undefined;
   const batch = extractionStatus.data;
 
-  const isRunning =
-    job?.status === "PENDING" || job?.status === "RUNNING" || trigger.isPending;
+  // Depois do prazo do polling o job pode seguir rodando no League: os botões
+  // voltam e a tela avisa, em vez de ficar em "Analisando…" para sempre.
+  const jobActive = job?.status === "PENDING" || job?.status === "RUNNING";
+  const isRunning = (jobActive && !jobPolling.expired) || trigger.isPending;
   const incrementalExceedsLimit = Boolean(incrementalEstimate?.exceedsLimit);
   const canTriggerIncremental =
     !isRunning &&
@@ -330,6 +340,9 @@ export function CompetitionCommentsAnalysisPanel({
     extractionStatus.error?.message ??
     (extractionPolling.expired
       ? "A coleta ainda não terminou. Recarregue a página para conferir o andamento."
+      : null) ??
+    (jobActive && jobPolling.expired
+      ? "A análise ainda está em processamento. Volte mais tarde ou recarregue a página."
       : null);
 
   return (

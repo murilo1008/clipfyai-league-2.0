@@ -207,12 +207,16 @@ function selectPosts(db: DbClient, input: z.infer<typeof postsInput>) {
   });
 }
 
-/** Status atual dos downloads em andamento (polling leve da tela). */
+/**
+ * Status atual dos downloads em andamento (polling leve da tela). Filtra pela
+ * competição do post (a mesma das listas): o `campaignId` do download não
+ * acompanha um post movido de competição pelo admin.
+ */
 function selectStatuses(db: DbClient, input: z.infer<typeof statusesInput>) {
   return db.clipPostBucketVideo.findMany({
     where: {
-      campaignId: input.campaignId,
       clipPostId: { in: input.clipPostIds },
+      clipPost: { campaignId: input.campaignId },
     },
     select: { clipPostId: true, status: true },
   });

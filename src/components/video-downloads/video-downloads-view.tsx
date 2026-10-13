@@ -386,14 +386,16 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
     statusesInput,
     {
       enabled: isAdmin && canPollStatuses,
-      refetchInterval: (query) => pendingPolling.interval(query, true),
+      refetchInterval: (query) =>
+        pendingPolling.interval(query, hasPendingPosts),
     },
   );
   const clientStatuses = api.videoDownloads.client.statuses.useQuery(
     statusesInput,
     {
       enabled: !isAdmin && canPollStatuses,
-      refetchInterval: (query) => pendingPolling.interval(query, true),
+      refetchInterval: (query) =>
+        pendingPolling.interval(query, hasPendingPosts),
     },
   );
   const statusesQuery = isAdmin ? adminStatuses : clientStatuses;

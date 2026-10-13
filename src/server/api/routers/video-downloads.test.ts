@@ -86,7 +86,8 @@ describe("videoDownloads.client", () => {
       select: { id: true },
     });
     expect(db.clipPostBucketVideo.findMany).toHaveBeenCalledWith({
-      where: { campaignId: "c1", clipPostId: { in: ["p1"] } },
+      // Pela competição do post: o download não acompanha um post movido
+      where: { clipPostId: { in: ["p1"] }, clipPost: { campaignId: "c1" } },
       select: { clipPostId: true, status: true },
     });
     expect(statuses).toEqual([{ clipPostId: "p1", status: "SUCCEEDED" }]);

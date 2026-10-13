@@ -53,8 +53,20 @@ function extractErrorMessage(data: any, status: number): string {
   return `Erro ao comunicar com análise de comentários (${status})`;
 }
 
-/** Prazo de cada chamada à API do League (estimativas rodam ao abrir a tela). */
+/** Prazo padrão de cada chamada à API do League (status de jobs, agregados). */
 const LEAGUE_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Estimar e disparar uma análise fazem o League carregar e preparar dezenas
+ * de milhares de comentários de forma síncrona: prazo bem maior que o padrão.
+ */
+const LEAGUE_ANALYSIS_TIMEOUT_MS = 120_000;
+
+type LeagueFetchOptions = {
+  timeoutMs?: number;
+  /** Mensagem do TIMEOUT (ex.: um disparo que pode ter chegado ao League). */
+  timeoutMessage?: string;
+};
 
 function isAbortError(error: unknown) {
   return (
@@ -66,6 +78,10 @@ function isAbortError(error: unknown) {
 async function leagueFetch<T = LeagueResponse>(
   path: string,
   init: RequestInit = {},
+  {
+    timeoutMs = LEAGUE_FETCH_TIMEOUT_MS,
+    timeoutMessage = "A análise de comentários não respondeu a tempo. Tente novamente em instantes.",
+  }: LeagueFetchOptions = {},
 ): Promise<T> {
   const baseUrl = resolveLeagueBaseUrl();
   const headers = new Headers(init.headers);
@@ -82,15 +98,14 @@ async function leagueFetch<T = LeagueResponse>(
     response = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers,
-      signal: init.signal ?? AbortSignal.timeout(LEAGUE_FETCH_TIMEOUT_MS),
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs),
     });
     text = await response.text();
   } catch (error) {
     if (isAbortError(error)) {
       throw new TRPCError({
         code: "TIMEOUT",
-        message:
-          "A análise de comentários não respondeu a tempo. Tente novamente em instantes.",
+        message: timeoutMessage,
         cause: error,
       });
     }
@@ -367,6 +382,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        { timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS },
       );
     }),
 
@@ -386,6 +402,11 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        {
+          timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS,
+          timeoutMessage:
+            "A análise pode ter sido iniciada, mas o League demorou a responder. Confira o andamento em instantes antes de disparar de novo.",
+        },
       );
     }),
 
@@ -403,6 +424,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        { timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS },
       );
     }),
 
@@ -421,6 +443,11 @@ export const commentsAnalysisRouter = createTRPCRouter({
             forceReprocess: input.forceReprocess,
             maxComments: input.maxComments,
           }),
+        },
+        {
+          timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS,
+          timeoutMessage:
+            "A análise pode ter sido iniciada, mas o League demorou a responder. Confira o andamento em instantes antes de disparar de novo.",
         },
       );
     }),
