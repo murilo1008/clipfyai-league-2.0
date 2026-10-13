@@ -61,6 +61,7 @@ import { buildOfficialProfileTargets } from "@/server/performance/profile-target
 import {
   cachedAdminHomeQuery,
   getEligiblePlatformTotals,
+  getHomeTickerClips,
   viewsGrowthStartDate,
 } from "@/server/admin-home-metrics";
 import { cachedQuery } from "@/server/memory-cache";
@@ -4095,6 +4096,11 @@ export const adminRouter = createTRPCRouter({
   ),
 
   // Top Clippers
+  // Ticker do hero da home: top vídeos das competições ativas, já intercalados
+  getHomeTickerClips: adminProcedure.query(({ ctx }) =>
+    getHomeTickerClips(ctx.db),
+  ),
+
   getTopClippers: adminProcedure.query(({ ctx }) =>
     cachedAdminHomeQuery("top-clippers", async () => {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

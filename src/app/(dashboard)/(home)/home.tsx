@@ -55,57 +55,10 @@ export default function Home() {
   const { data: topCampaigns, isLoading: loadingTopCampaigns } =
     api.admin.getTopCampaigns.useQuery()
 
-  // Ticker do hero: 20 vídeos mais vistos das competições ATIVAS.
-  // Busca o top de CADA competição ativa e intercala (round-robin) para
-  // garantir vídeos diferentes de competições diferentes.
-  const { data: activeCampaigns } = api.campaign.getActive.useQuery()
-  const topPostsPerCampaign = api.useQueries((t) =>
-    (activeCampaigns ?? []).map((campaign) =>
-      t.admin.getAllPosts({
-        page: 1,
-        limit: 10,
-        status: "ELIGIBLE",
-        orderBy: "views",
-        orderDirection: "desc",
-        campaignId: campaign.id,
-      }),
-    ),
-  )
-
-  const tickerClips: TickerClip[] = React.useMemo(() => {
-    const perCampaign = topPostsPerCampaign.map((query) =>
-      (query.data?.posts ?? []).filter(
-        (post) => post.thumbnail && post.thumbnail.trim() !== "",
-      ),
-    )
-
-    const seenThumbnails = new Set<string>()
-    const clips: TickerClip[] = []
-
-    // Round-robin: 1º mais visto de cada competição, depois o 2º de cada, etc.
-    for (let round = 0; round < 10 && clips.length < 20; round++) {
-      for (const posts of perCampaign) {
-        if (clips.length >= 20) break
-        const post = posts[round]
-        if (!post?.thumbnail) continue
-        if (seenThumbnails.has(post.thumbnail)) continue
-        seenThumbnails.add(post.thumbnail)
-        clips.push({
-          id: post.id,
-          thumbnail: post.thumbnail,
-          views: post.views,
-          engagementRate:
-            post.views > 0
-              ? ((post.likes + post.comments + post.shares) / post.views) * 100
-              : 0,
-          username: post.username,
-          platform: post.platform,
-        })
-      }
-    }
-    return clips
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topPostsPerCampaign.map((query) => query.dataUpdatedAt).join(",")])
+  // Ticker do hero: 20 vídeos mais vistos das competições ATIVAS, com o
+  // top de cada competição intercalado (round-robin) no servidor.
+  const { data: tickerData } = api.admin.getHomeTickerClips.useQuery()
+  const tickerClips: TickerClip[] = tickerData ?? []
 
   const kpis = dashboard?.overview
 

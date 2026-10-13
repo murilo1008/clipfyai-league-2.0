@@ -92,3 +92,125 @@ export function getEligiblePlatformTotals(
     },
   );
 }
+
+/** Vídeo do ticker do hero (só os campos que o card usa). */
+export type HomeTickerClip = {
+  id: string;
+  thumbnail: string;
+  views: number;
+  engagementRate: number;
+  username: string;
+  platform: Platform;
+};
+
+export type HomeTickerPost = {
+  id: string;
+  thumbnailUrl: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  username: string | null;
+  platform: Platform;
+};
+
+const TICKER_CAMPAIGNS = 10;
+const TICKER_POSTS_PER_CAMPAIGN = 10;
+const TICKER_CLIPS = 20;
+
+/**
+ * Intercala (round-robin) os mais vistos de cada competição: o 1º de cada,
+ * depois o 2º de cada, etc. Ignora vídeos sem thumbnail e thumbnails repetidas.
+ */
+export function buildHomeTickerClips(
+  postsPerCampaign: HomeTickerPost[][],
+): HomeTickerClip[] {
+  const perCampaign = postsPerCampaign.map((posts) =>
+    posts.filter((post) => post.thumbnailUrl && post.thumbnailUrl.trim() !== ""),
+  );
+
+  const seenThumbnails = new Set<string>();
+  const clips: HomeTickerClip[] = [];
+
+  for (
+    let round = 0;
+    round < TICKER_POSTS_PER_CAMPAIGN && clips.length < TICKER_CLIPS;
+    round++
+  ) {
+    for (const posts of perCampaign) {
+      if (clips.length >= TICKER_CLIPS) break;
+      const post = posts[round];
+      if (!post?.thumbnailUrl) continue;
+      if (seenThumbnails.has(post.thumbnailUrl)) continue;
+      seenThumbnails.add(post.thumbnailUrl);
+      clips.push({
+        id: post.id,
+        thumbnail: post.thumbnailUrl,
+        views: post.views,
+        engagementRate:
+          post.views > 0
+            ? ((post.likes + post.comments + post.shares) / post.views) * 100
+            : 0,
+        username: post.username || "",
+        platform: post.platform,
+      });
+    }
+  }
+  return clips;
+}
+
+type TickerRow = Omit<HomeTickerPost, "views"> & {
+  campaignRank: number;
+  views: bigint;
+};
+
+/**
+ * Ticker do hero: os 10 vídeos elegíveis mais vistos de cada uma das 10
+ * competições ativas e públicas mais recentes (as mesmas de
+ * `campaign.getActive`), em uma consulta e com cache de 5 minutos.
+ */
+export function getHomeTickerClips(db: Pick<PrismaClient, "$queryRaw">) {
+  return cachedAdminHomeQuery("ticker-clips", async () => {
+    const rows = await db.$queryRaw<TickerRow[]>`
+      WITH active AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY "startDate" DESC)::int AS rank
+        FROM "Campaign"
+        WHERE status = 'ACTIVE' AND "isPrivate" = false
+        ORDER BY "startDate" DESC
+        LIMIT ${TICKER_CAMPAIGNS}
+      )
+      SELECT
+        a.rank AS "campaignRank",
+        p.id,
+        p."thumbnailUrl",
+        p.views,
+        p.likes,
+        p.comments,
+        p.shares,
+        p.username,
+        p.platform
+      FROM active a
+      CROSS JOIN LATERAL (
+        SELECT cp.id, cp."thumbnailUrl", cp.views, cp.likes, cp.comments,
+          cp.shares, cp.username, cp.platform
+        FROM "ClipPost" cp
+        WHERE cp."campaignId" = a.id AND cp.status = 'ELIGIBLE'
+        ORDER BY cp.views DESC
+        LIMIT ${TICKER_POSTS_PER_CAMPAIGN}
+      ) p
+      ORDER BY a.rank, p.views DESC
+    `;
+
+    const postsByCampaign = new Map<number, HomeTickerPost[]>();
+    for (const { campaignRank, ...row } of rows) {
+      const posts = postsByCampaign.get(campaignRank) ?? [];
+      posts.push({ ...row, views: Number(row.views) });
+      postsByCampaign.set(campaignRank, posts);
+    }
+    return buildHomeTickerClips(
+      [...postsByCampaign.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, posts]) => posts),
+    );
+  });
+}
