@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createTRPCRouter, adminProcedure } from "@/server/api/trpc";
 import { TRPCError } from "@trpc/server";
-import { clerkClient } from "@clerk/nextjs/server";
+import { clerkClient, currentUser } from "@clerk/nextjs/server";
 import { Resend } from "resend";
 import {
   ClipPostStatus,
@@ -19,6 +19,7 @@ import {
   computeDailyPixPayoutSettledGate,
   computeDailyRankWalletPaidGate,
   getPrizeForPosition,
+  getPostedAtWindowUtc,
   getTotalViewsAtRankingCutoff,
   getUtcRankingDayBounds,
   loadDailyRankingDateContext,
@@ -49,12 +50,15 @@ import {
   getTopClippersPrize,
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
+import { canRejoinCompetition, rankingApplicationWhere } from "@/lib/competition-participation";
 import { disconnectGoogleCalendar } from "@/server/google-calendar";
 import {
   DEFAULT_REFERENCE_CPM,
   getCampaignPerformance,
 } from "@/server/performance/get-campaign-performance";
 import { buildOfficialProfileTargets } from "@/server/performance/profile-targets";
+import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
+import { buildCompetitionVideoEmail } from "@/lib/emails/competition-video";
 
 function getFirstName(name?: string | null) {
   return name?.trim().split(/\s+/)[0] || "";
@@ -328,19 +332,6 @@ const performanceProfilePlatformSchema = z.enum([
   Platform.YOUTUBE,
 ]);
 
-function escapePerformanceEmailHtml(value: string) {
-  return value.replace(/[&<>'"]/g, (character) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "'": "&#39;",
-      '"': "&quot;",
-    };
-    return entities[character] ?? character;
-  });
-}
-
 function assertPerformanceUrlMatchesPlatform(
   value: string | null | undefined,
   platform: Platform,
@@ -368,6 +359,7 @@ function assertPerformanceUrlMatchesPlatform(
 
 async function notifyCompetitionClippersAboutVideo(input: {
   campaignName: string;
+  campaignSlug: string;
   videoTitle: string;
   videoUrl: string;
   recipients: Array<{ email: string; name: string }>;
@@ -381,8 +373,14 @@ async function notifyCompetitionClippersAboutVideo(input: {
       chunk.map((recipient) => ({
         from: "ClipfyAI <noreply@league.clipfyai.com>",
         to: recipient.email,
-        subject: `Novo conteúdo para clipar — ${input.campaignName}`,
-        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#172033"><h1 style="font-size:24px">Chegou conteúdo novo para clipar</h1><p>Olá, ${escapePerformanceEmailHtml(recipient.name)}!</p><p>Um novo vídeo foi adicionado à competição <strong>${escapePerformanceEmailHtml(input.campaignName)}</strong>.</p><div style="padding:16px;border-radius:12px;background:#f4f7f8"><strong>${escapePerformanceEmailHtml(input.videoTitle)}</strong></div><p style="margin-top:24px"><a href="${escapePerformanceEmailHtml(input.videoUrl)}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#14f7ff;color:#04222a;font-weight:700;text-decoration:none">Ver conteúdo para clipar</a></p><p style="font-size:12px;color:#667085">Você recebeu este aviso porque está aprovado nesta competição.</p></div>`,
+        ...buildCompetitionVideoEmail({
+          recipientName: recipient.name,
+          campaignName: input.campaignName,
+          campaignSlug: input.campaignSlug,
+          videoTitle: input.videoTitle,
+          videoUrl: input.videoUrl,
+          appUrl: process.env.NEXT_PUBLIC_APP_URL,
+        }),
       })),
     );
     if (error) errors.push(error.message);
@@ -1035,7 +1033,7 @@ export const adminRouter = createTRPCRouter({
       assertPerformanceUrlMatchesPlatform(input.originalUrl, input.platform);
       const campaign = await ctx.db.campaign.findUnique({
         where: { id: input.campaignId },
-        select: { name: true },
+        select: { name: true, slug: true },
       });
       if (!campaign) {
         throw new TRPCError({
@@ -1088,6 +1086,7 @@ export const adminRouter = createTRPCRouter({
       try {
         const notification = await notifyCompetitionClippersAboutVideo({
           campaignName: campaign.name,
+          campaignSlug: campaign.slug,
           videoTitle: input.title || "Novo conteúdo",
           videoUrl: input.originalUrl,
           recipients: [...uniqueRecipients.values()],
@@ -1225,9 +1224,10 @@ export const adminRouter = createTRPCRouter({
         });
       }
 
+      const clerkUser = await currentUser();
       const triggeredByUserEmail =
-        ctx.user.emailAddresses?.[0]?.emailAddress ||
-        ctx.user.primaryEmailAddress?.emailAddress;
+        clerkUser?.emailAddresses?.[0]?.emailAddress ||
+        clerkUser?.primaryEmailAddress?.emailAddress;
 
       const result = await leagueFetch<CampaignMetricsExtractionStatus>(
         `/api/v1/metrics-extractions/campaigns/${input.campaignId}/trigger`,
@@ -4382,8 +4382,8 @@ export const adminRouter = createTRPCRouter({
         }
 
         // Atualizar status da aplicação
-        await ctx.db.clipperApplication.update({
-          where: { id: input.applicationId },
+        const changed = await ctx.db.clipperApplication.updateMany({
+          where: { id: input.applicationId, status: { not: "WITHDRAWN" } },
           data: {
             status: "APPROVED",
             approvedAt: new Date(),
@@ -4392,6 +4392,10 @@ export const adminRouter = createTRPCRouter({
             reviewNotes: input.reviewNotes,
           },
         });
+
+        if (changed.count !== 1) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "O clipador saiu desta competição. A inscrição não pode ser reativada." });
+        }
 
         // Buscar todos os MonthlyRanking da campanha
         const monthlyRankings = await ctx.db.monthlyRanking.findMany({
@@ -4604,8 +4608,8 @@ export const adminRouter = createTRPCRouter({
         for (const application of pendingApplications) {
           try {
             // Atualizar status da aplicação
-            await ctx.db.clipperApplication.update({
-              where: { id: application.id },
+            const changed = await ctx.db.clipperApplication.updateMany({
+              where: { id: application.id, status: "PENDING" },
               data: {
                 status: "APPROVED",
                 approvedAt: new Date(),
@@ -4613,6 +4617,8 @@ export const adminRouter = createTRPCRouter({
                 reviewedAt: new Date(),
               },
             });
+
+            if (changed.count !== 1) continue;
 
             // Buscar todos os MonthlyRanking da campanha
             const monthlyRankings = await ctx.db.monthlyRanking.findMany({
@@ -4811,8 +4817,8 @@ export const adminRouter = createTRPCRouter({
         }
 
         // Atualizar status da aplicação
-        await ctx.db.clipperApplication.update({
-          where: { id: input.applicationId },
+        const changed = await ctx.db.clipperApplication.updateMany({
+          where: { id: input.applicationId, status: { not: "WITHDRAWN" } },
           data: {
             status: "REJECTED",
             reviewedBy: ctx.userId,
@@ -4820,6 +4826,10 @@ export const adminRouter = createTRPCRouter({
             rejectionReason: input.rejectionReason,
           },
         });
+
+        if (changed.count !== 1) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "O clipador já saiu desta competição." });
+        }
 
         // Log de auditoria
         await ctx.db.auditLog.create({
@@ -4880,7 +4890,7 @@ export const adminRouter = createTRPCRouter({
         // Verificar se a campanha existe
         const campaign = await ctx.db.campaign.findUnique({
           where: { id: campaignId },
-          select: { id: true, name: true, isPrivate: true },
+          select: { id: true, name: true, isPrivate: true, status: true, startDate: true, endDate: true },
         });
 
         if (!campaign) {
@@ -4894,7 +4904,9 @@ export const adminRouter = createTRPCRouter({
         const existingApplications = await ctx.db.clipperApplication.findMany({
           where: {
             campaignId,
-            status: { not: "REJECTED" }, // Excluir rejeitados para permitir reinscrição
+            status: canRejoinCompetition("WITHDRAWN", campaign.status, campaign.startDate, campaign.endDate)
+              ? { notIn: ["REJECTED", "WITHDRAWN"] }
+              : { not: "REJECTED" },
           },
           select: {
             clipperProfileId: true,
@@ -5079,6 +5091,24 @@ export const adminRouter = createTRPCRouter({
           },
         });
 
+        if (existingApplication?.status === "WITHDRAWN") {
+          const socialAccountIds = input.socialAccountIds?.length
+            ? input.socialAccountIds
+            : clipperProfile.socialAccounts.map((account) => account.id);
+          const application = await reenrollWithdrawnApplication(ctx.db, {
+            campaignId: input.campaignId,
+            clipperProfileId: input.clipperProfileId,
+            actorUserId: ctx.userId,
+            socialAccountIds,
+            byAdmin: true,
+          });
+          return {
+            success: true,
+            application,
+            message: `${clipperProfile.fullName} reinscrito antes do início (pendente de aprovação)`,
+          };
+        }
+
         if (existingApplication) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -5187,6 +5217,7 @@ export const adminRouter = createTRPCRouter({
             slug: true,
             isPrivate: true,
             requiresApproval: true,
+            status: true,
             startDate: true,
             endDate: true,
           },
@@ -5216,11 +5247,14 @@ export const adminRouter = createTRPCRouter({
           },
           select: {
             clipperProfileId: true,
+            status: true,
           },
         });
 
         const alreadyEnrolledIds = new Set(
-          existingApplications.map((a) => a.clipperProfileId),
+          existingApplications
+            .filter((application) => !canRejoinCompetition(application.status, campaign.status, campaign.startDate, campaign.endDate))
+            .map((application) => application.clipperProfileId),
         );
 
         // Filtrar apenas os que ainda não estão inscritos
@@ -5261,10 +5295,26 @@ export const adminRouter = createTRPCRouter({
         let enrolledCount = 0;
         const errors: string[] = [];
 
+        const withdrawnProfileIds = new Set(
+          existingApplications.filter((application) => application.status === "WITHDRAWN").map((application) => application.clipperProfileId),
+        );
+
         // Inscrever cada clipador
         for (const clipper of clipperProfiles) {
           try {
             const socialAccountIds = clipper.socialAccounts.map((sa) => sa.id);
+
+            if (withdrawnProfileIds.has(clipper.id)) {
+              await reenrollWithdrawnApplication(ctx.db, {
+                campaignId: input.campaignId,
+                clipperProfileId: clipper.id,
+                actorUserId: ctx.userId,
+                socialAccountIds,
+                byAdmin: true,
+              });
+              enrolledCount++;
+              continue;
+            }
 
             await ctx.db.clipperApplication.create({
               data: {
@@ -5736,6 +5786,7 @@ export const adminRouter = createTRPCRouter({
               where: {
                 campaignId: campaign.id,
                 postedAt: { gte: todayStartUTC, lt: todayEndUTC },
+                application: rankingApplicationWhere(todayEndUTC),
               },
             }),
             ctx.db.clipPost.findMany({
@@ -5743,6 +5794,7 @@ export const adminRouter = createTRPCRouter({
                 campaignId: campaign.id,
                 status: "ELIGIBLE",
                 postedAt: { gte: todayStartUTC, lt: todayEndUTC },
+                application: rankingApplicationWhere(todayEndUTC),
               },
               include: {
                 application: {
@@ -6042,7 +6094,7 @@ export const adminRouter = createTRPCRouter({
       z.object({
         slug: z.string(),
         status: z
-          .enum(["PENDING", "APPROVED", "REJECTED", "UNDER_REVIEW"])
+          .enum(["PENDING", "APPROVED", "REJECTED", "UNDER_REVIEW", "REVOKED", "WITHDRAWN"])
           .optional(),
         search: z.string().max(200).optional(),
         page: z.number().min(1).default(1),
@@ -6264,6 +6316,7 @@ export const adminRouter = createTRPCRouter({
             id: app.id,
             clipperProfileId: app.clipperProfileId,
             status: app.status,
+            withdrawnAt: app.withdrawnAt?.toISOString() ?? null,
             clipperName: app.clipperProfile.fullName,
             clipperArtisticName: app.clipperProfile.artisticName,
             clipperImageUrl: app.clipperProfile.user?.imageUrl,
@@ -10270,6 +10323,7 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
+            application: rankingApplicationWhere(endDate),
             applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
@@ -10447,6 +10501,7 @@ export const adminRouter = createTRPCRouter({
               campaignId: input.campaignId,
               status: "ELIGIBLE",
               postedAt: { gte: startDate, lt: endDate },
+              application: rankingApplicationWhere(endDate),
             },
           }),
           ctx.db.clipPost.aggregate({
@@ -10454,6 +10509,7 @@ export const adminRouter = createTRPCRouter({
               campaignId: input.campaignId,
               status: "ELIGIBLE",
               postedAt: { gte: startDate, lt: endDate },
+              application: rankingApplicationWhere(endDate),
             },
             _sum: { views: true },
           }),
@@ -10578,7 +10634,7 @@ export const adminRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       const entry = await ctx.db.topClippersDailyRankingEntry.findUnique({
         where: { id: input.rankingEntryId },
-        include: { ranking: { select: { campaignId: true } } },
+        include: { ranking: { select: { campaignId: true, rankingDate: true } } },
       });
       if (!entry) {
         throw new TRPCError({
@@ -10601,6 +10657,13 @@ export const adminRouter = createTRPCRouter({
             code: "CONFLICT",
             message: "Não é possível alterar uma entrada já paga.",
           });
+        }
+        const cutoff = getPostedAtWindowUtc(entry.ranking.rankingDate.toISOString().slice(0, 10)).endDate;
+        const eligible = await tx.clipperApplication.count({
+          where: { id: entry.applicationId, ...rankingApplicationWhere(cutoff) },
+        });
+        if (!eligible) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "A saída voluntária impede a participação neste período." });
         }
         await tx.topClippersDailyRankingEntry.update({
           where: { id: entry.id },
@@ -10698,6 +10761,7 @@ export const adminRouter = createTRPCRouter({
             campaignId: input.campaignId,
             status: "ELIGIBLE",
             postedAt: { gte: startDate, lt: endDate },
+            application: rankingApplicationWhere(endDate),
             applicationId: { notIn: snapshot.disqualifiedApplicationIds },
           },
           _count: { applicationId: true },
@@ -11262,6 +11326,7 @@ export const adminRouter = createTRPCRouter({
           campaignId: input.campaignId,
           status: ClipPostStatus.ELIGIBLE,
           postedAt: { gte: startDate, lt: endDate },
+          application: rankingApplicationWhere(endDate),
         },
         select: {
           campaignId: true,
@@ -12071,6 +12136,19 @@ export const adminRouter = createTRPCRouter({
           try {
             let newTransactionId = "";
             await ctx.db.$transaction(async (tx) => {
+              await tx.$executeRaw`
+                SELECT id FROM "ClipperApplication"
+                WHERE "campaignId" = ${input.campaignId} AND "clipperProfileId" = ${line.clipperProfileId}
+                FOR UPDATE
+              `;
+              const stillParticipating = await tx.clipperApplication.findFirst({
+                where: { campaignId: input.campaignId, clipperProfileId: line.clipperProfileId, status: "APPROVED" },
+                select: { id: true },
+              });
+              if (!stillParticipating) {
+                throw new TRPCError({ code: "CONFLICT", message: "O clipador não participa mais da competição. Recalcule o ranking antes de pagar." });
+              }
+
               let wallet = await tx.wallet.findUnique({
                 where: { clipperProfileId: line.clipperProfileId },
               });
@@ -13895,6 +13973,15 @@ export const adminRouter = createTRPCRouter({
         }
 
         await ctx.db.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "DailyRankingEntry" WHERE id = ${entry.id} FOR UPDATE`;
+          const cutoff = getPostedAtWindowUtc(entry.dailyRanking.rankingDate.toISOString().slice(0, 10)).endDate;
+          const eligible = await tx.clipperApplication.count({
+            where: { id: entry.applicationId, ...rankingApplicationWhere(cutoff) },
+          });
+          if (!eligible) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "A saída voluntária impede a participação neste período." });
+          }
+
           await tx.dailyRankingEntry.update({
             where: { id: input.dailyRankingEntryId },
             data: { isDisqualified: false },
@@ -14633,6 +14720,7 @@ export const adminRouter = createTRPCRouter({
                   campaignId: input.campaignId,
                   status: "ELIGIBLE",
                   postedAt: { gte: startDate, lt: endDate },
+                  application: rankingApplicationWhere(endDate),
                   applicationId: {
                     notIn: topClippersDisqualified.map(
                       (entry) => entry.applicationId,

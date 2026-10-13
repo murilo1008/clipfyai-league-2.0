@@ -4,7 +4,6 @@ import {
   DiscordLogo,
   DownloadSimple,
   FilmSlate,
-  Sparkle,
   GearSix,
   GraduationCap,
   // Handshake, // volta junto com o item "Indicações"
@@ -234,15 +233,6 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
   ],
 };
 
-export function getMenuByRole(
-  role: string,
-  options: { aiClipsEnabled?: boolean } = {},
-): NavItem[] {
-  const items = MENU_BY_ROLE[role] ?? MENU_BY_ROLE.CLIPPER!;
-  if (!options.aiClipsEnabled) return items;
-  return [
-    items[0]!,
-    { title: "AI Clips", url: "/ai-clips", icon: Sparkle, items: [] },
-    ...items.slice(1),
-  ];
+export function getMenuByRole(role: string): NavItem[] {
+  return MENU_BY_ROLE[role] ?? MENU_BY_ROLE.CLIPPER!;
 }

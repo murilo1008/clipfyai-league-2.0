@@ -142,6 +142,14 @@ export interface DailyRankResultModalProps {
    Helpers locais
    ============================================================ */
 
+/** Intervalo de polling do status de PIX conforme a fase do pagamento. */
+function pixStatusPollMs(status: string | undefined): number | false {
+  if (status === "COMPLETED") return false;
+  if (status === undefined || status === "PROCESSING" || status === "QUEUED")
+    return 5_000;
+  return 30_000;
+}
+
 function slugifyCampaignName(name: string | null | undefined): string {
   return (name ?? "ranking")
     .toLowerCase()
@@ -353,7 +361,10 @@ export function DailyRankResultModal({
           data.campaign.dailyPix &&
           Boolean(campaignId) &&
           Boolean(preview?.date),
-        refetchInterval: open ? 5_000 : false,
+        // Cada consulta recalcula o contexto do ranking do dia: 5s só com
+        // pagamento em andamento, 30s nos estados de espera, nada ao concluir.
+        refetchInterval: (query) =>
+          open ? pixStatusPollMs(query.state.data?.status) : false,
       },
     );
   const { data: topPostersPixStatus, isLoading: isLoadingTopPostersPixStatus } =
@@ -368,7 +379,10 @@ export function DailyRankResultModal({
           data.campaign.dailyPix &&
           Boolean(topPostersPreviewData?.campaignId) &&
           Boolean(topPostersPreviewData?.date),
-        refetchInterval: topPostersModalOpen ? 5_000 : false,
+        refetchInterval: (query) =>
+          topPostersModalOpen
+            ? pixStatusPollMs(query.state.data?.status)
+            : false,
       },
     );
 
@@ -619,6 +633,10 @@ export function DailyRankResultModal({
       setDailyPixPayoutModalOpen(false);
       setDailyPixPreviewPayload(null);
       refreshPreviewSilently();
+      await utils.admin.getDailyRankingPixPayoutStatus.invalidate({
+        campaignId,
+        date: preview?.date ?? "",
+      });
       await utils.admin.getDailyRankPaymentTransactions.invalidate({
         campaignId,
         date: preview?.date ?? "",
@@ -657,6 +675,10 @@ export function DailyRankResultModal({
           },
         );
         refreshPreviewSilently();
+        await utils.admin.getDailyRankingPixPayoutStatus.invalidate({
+          campaignId,
+          date: preview?.date ?? "",
+        });
         await utils.admin.getDailyRankPaymentTransactions.invalidate({
           campaignId,
           date: preview?.date ?? "",

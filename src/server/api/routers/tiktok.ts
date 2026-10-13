@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, privateProcedure } from "@/server/api/trpc";
+import { createTRPCRouter, privateProcedure, privateProcedureWithUser } from "@/server/api/trpc";
 import { env } from "@/env";
 import { assertCanUseSocialIntegrations } from "@/server/api/utils/social-integrations-access";
 
@@ -139,7 +139,7 @@ export const tiktokRouter = createTRPCRouter({
       return account.tiktokAuth;
     }),
 
-  startConnection: privateProcedure
+  startConnection: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });
@@ -170,7 +170,7 @@ export const tiktokRouter = createTRPCRouter({
       });
     }),
 
-  disconnect: privateProcedure
+  disconnect: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });
@@ -196,7 +196,7 @@ export const tiktokRouter = createTRPCRouter({
       });
     }),
 
-  syncNow: privateProcedure
+  syncNow: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });

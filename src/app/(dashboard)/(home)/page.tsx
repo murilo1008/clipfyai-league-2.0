@@ -4,9 +4,7 @@ import { auth } from "@clerk/nextjs/server"
 
 import { db } from "@/server/db"
 
-import Home from "./home"
-import HomeClient from "./home-client"
-import HomeClipper from "./home-clipper"
+import { HomeByRole } from "./home-by-role"
 
 export default async function HomePage() {
   const { userId } = await auth()
@@ -24,11 +22,5 @@ export default async function HomePage() {
     },
   })
 
-  if (user?.role === "CLIPPER") {
-    return <HomeClipper />
-  } else if (user?.role === "CLIENT") {
-    return <HomeClient />
-  } else {
-    return <Home />
-  }
+  return <HomeByRole role={user?.role} />
 }

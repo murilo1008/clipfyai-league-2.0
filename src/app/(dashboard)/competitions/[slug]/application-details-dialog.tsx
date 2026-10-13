@@ -217,6 +217,11 @@ export function ApplicationDetailsDialog({
                   { locale: ptBR },
                 )}{" "}
                 · Há {daysSince} dias
+                {application.withdrawnAt && (
+                  <span className="block">
+                    Saiu em {format(new Date(application.withdrawnAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                  </span>
+                )}
               </DialogDescription>
             </div>
           </div>

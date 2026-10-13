@@ -42,6 +42,7 @@ import {
 } from "recharts"
 
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
+import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import { DarkScope } from "@/components/shared/dark-scope"
 import { Reveal } from "@/components/shared/reveal"
 import { Badge } from "@/components/ui/badge"
@@ -72,6 +73,7 @@ import {
 import { AddAccountsDialog, CreateAccountDialog } from "./add-accounts-dialog"
 import { AffiliateLinksDialog } from "./affiliate-links-dialog"
 import { CompetitionSkeleton } from "./competition-skeleton"
+import { RequiredVideos } from "./required-videos"
 import { RulesDialog } from "./rules-dialog"
 import { parseBrlNumber } from "./shared"
 import { AccountsTab } from "./tab-accounts"
@@ -559,6 +561,12 @@ export default function Competition({
 
                   {/* Ações */}
                   <div className="ml-auto flex flex-wrap items-center gap-2">
+                    <LeaveCompetitionButton
+                      competition={competition}
+                      applicationStatus={competition.applicationStatus}
+                      postedVideoCount={competition.postedVideoCount}
+                      onSuccess={() => router.replace("/my-competitions")}
+                    />
                     <Button
                       variant="outline"
                       size="sm"
@@ -678,6 +686,8 @@ export default function Competition({
           </section>
         </Reveal>
       </DarkScope>
+
+      <RequiredVideos videos={competition.requiredVideos} />
 
       {/* ===== Meta de Views ===== */}
       {viewsGoal > 0 && (

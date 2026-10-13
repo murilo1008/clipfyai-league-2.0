@@ -3,7 +3,6 @@ import "@/styles/globals.css"
 import { type Metadata } from "next"
 import { Geologica } from "next/font/google"
 
-import { ptBR } from "@clerk/localizations"
 import { ClerkProvider } from "@clerk/nextjs"
 import { ThemeProvider } from "next-themes"
 
@@ -26,7 +25,9 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <ClerkProvider localization={ptBR}>
+    // Sem `localization`: o app não usa componentes prontos do Clerk (só
+    // hooks), e o objeto ptBR (~13 kB gz) era serializado em todo HTML.
+    <ClerkProvider>
       <html lang="pt-BR" className={geologica.variable} suppressHydrationWarning>
         <body suppressHydrationWarning>
           <ThemeProvider

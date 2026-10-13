@@ -94,6 +94,33 @@ export const clientRouter = createTRPCRouter({
     return hasInvestedAmountInEveryCampaign(campaigns)
   }),
 
+  // Lista leve das campanhas do cliente (sidebar). Mesmo filtro e ordem do
+  // getDashboard, sem as ~13 queries de métricas por campanha.
+  getMyCampaignOptions: privateProcedure.query(async ({ ctx }) => {
+    const dbUser = await ctx.db.user.findUnique({
+      where: { id: ctx.userId },
+      select: { role: true },
+    })
+
+    if (!dbUser || dbUser.role !== "CLIENT") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Você não tem permissão para acessar esta funcionalidade",
+      })
+    }
+
+    return ctx.db.campaign.findMany({
+      where: {
+        clientId: ctx.userId,
+        status: {
+          in: ["ACTIVE", "COMPLETED", "SCHEDULED"],
+        },
+      },
+      select: { id: true, name: true, slug: true, status: true },
+      orderBy: { startDate: "desc" },
+    })
+  }),
+
   getPerformance: privateProcedure
     .input(z.object({ campaignId: z.string().optional() }).optional())
     .query(async ({ ctx, input }) => {

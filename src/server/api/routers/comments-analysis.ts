@@ -4,7 +4,11 @@ import type { CommentAnalysisAggregate, Prisma } from "@prisma/client";
 
 import { env } from "@/env";
 import type { db as prismaClient } from "@/server/db";
-import { createTRPCRouter, privateProcedure } from "@/server/api/trpc";
+import {
+  createTRPCRouter,
+  privateProcedure,
+  privateProcedureWithUser,
+} from "@/server/api/trpc";
 
 /** Subconjunto do contexto do tRPC usado pelos helpers deste router. */
 type AnalysisContext = {
@@ -263,7 +267,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
       );
     }),
 
-  triggerPost: privateProcedure
+  triggerPost: privateProcedureWithUser
     .input(z.object({ postId: z.string() }).merge(triggerInput))
     .mutation(async ({ ctx, input }) => {
       await assertAdmin(ctx);
@@ -299,7 +303,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
       );
     }),
 
-  triggerCampaign: privateProcedure
+  triggerCampaign: privateProcedureWithUser
     .input(z.object({ campaignId: z.string() }).merge(triggerInput))
     .mutation(async ({ ctx, input }) => {
       await assertAdmin(ctx);

@@ -74,6 +74,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api, type RouterOutputs } from "@/trpc/react"
 
 import {
@@ -447,9 +448,13 @@ export function TikTokBrowserEmbed({
   thumbnailUrl?: string | null
 }) {
   const [isLoading, setIsLoading] = React.useState(true)
-  const [hasFailed, setHasFailed] = React.useState(false)
+  const [failure, setFailure] = React.useState<"timeout" | "blocked" | null>(
+    null,
+  )
   const [attempt, setAttempt] = React.useState(0)
   const loadTimeoutRef = React.useRef<number | undefined>(undefined)
+  const silentPlayerTimeoutRef = React.useRef<number | undefined>(undefined)
+  const playerMessageCountRef = React.useRef(0)
   const playerUrl = React.useMemo(() => getPostEmbedUrl(url), [url])
 
   React.useEffect(() => {
@@ -458,16 +463,34 @@ export function TikTokBrowserEmbed({
       return
     }
 
+    playerMessageCountRef.current = 0
     setIsLoading(true)
-    setHasFailed(false)
+    setFailure(null)
     // O load chega em ~1 s. Vídeo removido ou privado o próprio player
     // informa; sem load, o iframe nem chegou a abrir.
     loadTimeoutRef.current = window.setTimeout(() => {
       setIsLoading(false)
-      setHasFailed(true)
+      setFailure("timeout")
     }, 15000)
-    return () => window.clearTimeout(loadTimeoutRef.current)
+    return () => {
+      window.clearTimeout(loadTimeoutRef.current)
+      window.clearTimeout(silentPlayerTimeoutRef.current)
+    }
   }, [playerUrl, attempt])
+
+  // O player avisa a página por postMessage ("[tea-sdk]ready" chega ~1 s
+  // depois do load). Bloqueadores como os do Vivaldi, Brave e uBlock trocam o
+  // iframe pela página de erro do navegador: o load dispara e nada chega.
+  React.useEffect(() => {
+    const handlePlayerMessage = (event: MessageEvent) => {
+      if (/^https:\/\/([\w-]+\.)*(tiktok|ttwstatic)\.com$/.test(event.origin)) {
+        playerMessageCountRef.current += 1
+      }
+    }
+
+    window.addEventListener("message", handlePlayerMessage)
+    return () => window.removeEventListener("message", handlePlayerMessage)
+  }, [])
 
   return (
     <div className="relative flex h-full w-full items-center justify-center bg-black">
@@ -488,10 +511,17 @@ export function TikTokBrowserEmbed({
           </span>
         </div>
       )}
-      {hasFailed && (
+      {failure && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center text-white">
           <Warning className="size-8 text-amber-400" weight="fill" />
           <p className="font-semibold">Não foi possível carregar este vídeo</p>
+          {failure === "blocked" && (
+            <p className="max-w-sm text-sm text-white/65">
+              O player do TikTok não respondeu. Bloqueadores de anúncios e
+              rastreadores, como os do Vivaldi, Brave e uBlock, podem impedir o
+              vídeo: libere este site no bloqueador ou abra o vídeo no TikTok.
+            </p>
+          )}
           <button
             type="button"
             onClick={() => setAttempt((current) => current + 1)}
@@ -521,6 +551,10 @@ export function TikTokBrowserEmbed({
           onLoad={() => {
             window.clearTimeout(loadTimeoutRef.current)
             setIsLoading(false)
+            window.clearTimeout(silentPlayerTimeoutRef.current)
+            silentPlayerTimeoutRef.current = window.setTimeout(() => {
+              if (playerMessageCountRef.current === 0) setFailure("blocked")
+            }, 8000)
           }}
         />
       ) : (
@@ -755,7 +789,10 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
     !!postedAtFrom ||
     !!postedAtTo
 
-  /* ===== Query paginada (sem debounce — filtros server-side) ===== */
+  /* ===== Query paginada (filtros server-side; buscas com debounce) ===== */
+  const debouncedClipperSearch = useDebouncedValue(clipperSearch.trim(), 300)
+  const debouncedAccountSearch = useDebouncedValue(accountSearch.trim(), 300)
+  const debouncedLinkSearch = useDebouncedValue(linkSearch.trim(), 300)
   const {
     data: postsData,
     isLoading: isLoadingPosts,
@@ -769,9 +806,9 @@ export function PostsTab({ slug, data, active, refetch }: CompetitionTabProps) {
       sortBy,
       status: statusFilter !== "all" ? statusFilter : undefined,
       platform: platformFilter !== "all" ? platformFilter : undefined,
-      clipperSearch: clipperSearch || undefined,
-      accountSearch: accountSearch || undefined,
-      linkSearch: linkSearch || undefined,
+      clipperSearch: debouncedClipperSearch || undefined,
+      accountSearch: debouncedAccountSearch || undefined,
+      linkSearch: debouncedLinkSearch || undefined,
       postedAtFrom: toPostedAtIso(postedAtFrom),
       postedAtTo: toPostedAtIso(postedAtTo),
     },

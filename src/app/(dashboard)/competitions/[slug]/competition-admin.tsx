@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import Link from "next/link"
 import {
@@ -33,9 +34,7 @@ import {
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
-import { generateCompetitionExcel } from "@/components/excel/competition-excel-generator"
 import { ExportCompetitionPostsCsvDialog } from "@/components/posts/export-competition-posts-csv-dialog"
-import { generateCompetitionReport } from "@/components/pdf/competition-report-generator"
 import { StatTile } from "@/components/home/stat-tile"
 import { Reveal } from "@/components/shared/reveal"
 import { DarkScope } from "@/components/shared/dark-scope"
@@ -43,6 +42,7 @@ import {
   Bone,
   ChartSkeleton,
   StatTilesGridSkeleton,
+  TableSkeleton,
 } from "@/components/shared/skeletons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -69,22 +69,52 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import { ApplicationsTab } from "./tab-applications"
-import { CompetitionCommentsAnalysisPanel } from "./competition-comments-analysis-panel"
-import { DailyTab } from "./tab-daily"
-import { EditCompetitionDialog } from "./edit-competition-dialog"
-import { FinancialTab } from "./tab-financial"
-import { MonthlyTab } from "./tab-monthly"
 import { OverviewTab } from "./tab-overview"
-import { PostsTab } from "./tab-posts"
-import { PerformanceTab } from "./tab-performance"
-import { PrizesDialog } from "./prizes-dialog"
 import {
   CAMPAIGN_STATUS_CONFIG,
   formatDateLong,
   formatNumber,
   useFormatCurrency,
 } from "./shared"
+
+/* Só a aba ativa é montada (Radix Tabs), então cada aba vira um chunk
+   carregado sob demanda — a Visão Geral (aba inicial) segue no bundle. */
+const tabFallback = () => <TableSkeleton />
+const ApplicationsTab = dynamic(
+  () => import("./tab-applications").then((m) => m.ApplicationsTab),
+  { loading: tabFallback },
+)
+const FinancialTab = dynamic(
+  () => import("./tab-financial").then((m) => m.FinancialTab),
+  { loading: tabFallback },
+)
+const PerformanceTab = dynamic(
+  () => import("./tab-performance").then((m) => m.PerformanceTab),
+  { loading: tabFallback },
+)
+const MonthlyTab = dynamic(
+  () => import("./tab-monthly").then((m) => m.MonthlyTab),
+  { loading: tabFallback },
+)
+const DailyTab = dynamic(
+  () => import("./tab-daily").then((m) => m.DailyTab),
+  { loading: tabFallback },
+)
+const PostsTab = dynamic(
+  () => import("./tab-posts").then((m) => m.PostsTab),
+  { loading: tabFallback },
+)
+const CompetitionCommentsAnalysisPanel = dynamic(() =>
+  import("./competition-comments-analysis-panel").then(
+    (m) => m.CompetitionCommentsAnalysisPanel,
+  ),
+)
+const EditCompetitionDialog = dynamic(() =>
+  import("./edit-competition-dialog").then((m) => m.EditCompetitionDialog),
+)
+const PrizesDialog = dynamic(() =>
+  import("./prizes-dialog").then((m) => m.PrizesDialog),
+)
 
 const TABS = [
   { value: "overview", icon: ChartBar, label: "Visão Geral", short: "Geral" },
@@ -187,6 +217,16 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
   /* ===== Dialogs: editar e prêmios ===== */
   const [isEditOpen, setIsEditOpen] = React.useState(false)
   const [isPrizesOpen, setIsPrizesOpen] = React.useState(false)
+  // Os dialogs só entram na árvore (e baixam seu chunk) na primeira abertura;
+  // depois ficam montados para manter a animação de fechar.
+  const [hasOpenedEdit, setHasOpenedEdit] = React.useState(false)
+  const [hasOpenedPrizes, setHasOpenedPrizes] = React.useState(false)
+  React.useEffect(() => {
+    if (isEditOpen) setHasOpenedEdit(true)
+  }, [isEditOpen])
+  React.useEffect(() => {
+    if (isPrizesOpen) setHasOpenedPrizes(true)
+  }, [isPrizesOpen])
 
   /* ===== Exports ===== */
   const [isGeneratingPDF, setIsGeneratingPDF] = React.useState(false)
@@ -283,6 +323,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
     if (!payload) return
     setIsGeneratingPDF(true)
     try {
+      // jspdf (~100 kB gz) só é baixado quando o usuário exporta
+      const { generateCompetitionReport } = await import(
+        "@/components/pdf/competition-report-generator"
+      )
       await generateCompetitionReport(payload)
     } finally {
       setIsGeneratingPDF(false)
@@ -294,6 +338,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
     if (!payload) return
     setIsGeneratingExcel(true)
     try {
+      // xlsx (~90 kB gz) só é baixado quando o usuário exporta
+      const { generateCompetitionExcel } = await import(
+        "@/components/excel/competition-excel-generator"
+      )
       await generateCompetitionExcel(payload)
     } finally {
       setIsGeneratingExcel(false)
@@ -1001,17 +1049,21 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
       </Dialog>
 
       {/* ===== Dialogs: editar + prêmios ===== */}
-      <EditCompetitionDialog
-        open={isEditOpen}
-        onOpenChange={setIsEditOpen}
-        campaign={campaign}
-        onSuccess={() => void refetchDetails()}
-      />
-      <PrizesDialog
-        open={isPrizesOpen}
-        onOpenChange={setIsPrizesOpen}
-        campaignId={campaign.id}
-      />
+      {(isEditOpen || hasOpenedEdit) && (
+        <EditCompetitionDialog
+          open={isEditOpen}
+          onOpenChange={setIsEditOpen}
+          campaign={campaign}
+          onSuccess={() => void refetchDetails()}
+        />
+      )}
+      {(isPrizesOpen || hasOpenedPrizes) && (
+        <PrizesDialog
+          open={isPrizesOpen}
+          onOpenChange={setIsPrizesOpen}
+          campaignId={campaign.id}
+        />
+      )}
     </div>
   )
 }

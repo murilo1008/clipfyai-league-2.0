@@ -60,6 +60,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { api, type RouterOutputs } from "@/trpc/react";
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
@@ -282,14 +283,18 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
   }, [campaigns, campaignId]);
 
   /* ── Vídeos e downloads ──────────────────────────────────────────────── */
+  // Filtros numéricos também esperam o usuário parar de digitar
+  const debouncedMinViews = useDebouncedValue(minViews, 300);
+  const debouncedMinLikes = useDebouncedValue(minLikes, 300);
+  const debouncedMinComments = useDebouncedValue(minComments, 300);
   const postsInput = {
     campaignId,
     platform,
     sortBy,
     search: debouncedSearch || undefined,
-    minViews: minViews ? Number(minViews) : undefined,
-    minLikes: minLikes ? Number(minLikes) : undefined,
-    minComments: minComments ? Number(minComments) : undefined,
+    minViews: debouncedMinViews ? Number(debouncedMinViews) : undefined,
+    minLikes: debouncedMinLikes ? Number(debouncedMinLikes) : undefined,
+    minComments: debouncedMinComments ? Number(debouncedMinComments) : undefined,
     limit: RESULTS_LIMIT,
   } as const;
 

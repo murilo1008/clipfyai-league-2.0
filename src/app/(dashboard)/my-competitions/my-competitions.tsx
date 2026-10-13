@@ -28,6 +28,8 @@ import {
 
 import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
+import { canRejoinCompetition } from "@/lib/competition-participation"
+import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import { HomeHero } from "@/components/home/home-hero"
 import { StatTile } from "@/components/home/stat-tile"
 import { JourneyHeroViz, JourneyHeroVizSkeleton } from "@/components/my-competitions/journey-hero-viz"
@@ -560,7 +562,7 @@ export default function MyCompetitions() {
                       )}
 
                       {/* CTAs por status de inscrição */}
-                      {competition.applicationStatus === null ? (
+                      {competition.applicationStatus === null || (!competition.isPrivate && canRejoinCompetition(competition.applicationStatus, competition.status, competition.startDate, competition.endDate)) ? (
                         <div className="mt-auto pt-1">
                           <Button
                             className="btn-gradient-auth h-10 w-full cursor-pointer rounded-xl font-semibold"
@@ -582,7 +584,7 @@ export default function MyCompetitions() {
                             ) : (
                               <>
                                 <Plus className="size-4" weight="bold" />
-                                Inscrever-se
+                                {competition.applicationStatus === "WITHDRAWN" ? "Reinscrever-se" : "Inscrever-se"}
                               </>
                             )}
                           </Button>
@@ -627,10 +629,18 @@ export default function MyCompetitions() {
                                 "UNDER_REVIEW" && "Inscrição em análise"}
                               {competition.applicationStatus === "REVOKED" &&
                                 "Inscrição revogada"}
+                              {competition.applicationStatus === "WITHDRAWN" &&
+                                "Você saiu desta competição"}
                             </p>
                           </div>
                         </div>
                       )}
+                      <LeaveCompetitionButton
+                        competition={competition}
+                        applicationStatus={competition.applicationStatus}
+                        postedVideoCount={competition.postedVideoCount}
+                        className="w-full"
+                      />
                     </div>
                   </div>
                 </article>

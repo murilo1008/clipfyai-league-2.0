@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createTRPCRouter, privateProcedure } from "@/server/api/trpc";
+import { createTRPCRouter, privateProcedure, privateProcedureWithUser } from "@/server/api/trpc";
 import { env } from "@/env";
 import { assertCanUseSocialIntegrations } from "@/server/api/utils/social-integrations-access";
 
@@ -154,7 +154,7 @@ export const instagramRouter = createTRPCRouter({
       return account.instagramAuth;
     }),
 
-  startConnection: privateProcedure
+  startConnection: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });
@@ -185,7 +185,7 @@ export const instagramRouter = createTRPCRouter({
       });
     }),
 
-  disconnect: privateProcedure
+  disconnect: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });
@@ -212,7 +212,7 @@ export const instagramRouter = createTRPCRouter({
       );
     }),
 
-  syncNow: privateProcedure
+  syncNow: privateProcedureWithUser
     .input(z.object({ socialAccountId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       assertCanUseSocialIntegrations({ userId: ctx.userId, user: ctx.user });

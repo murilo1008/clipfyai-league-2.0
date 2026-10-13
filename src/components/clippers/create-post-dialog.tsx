@@ -182,13 +182,15 @@ export function CreatePostDialog({
 
   const utils = api.useUtils()
 
+  // O dialog fica montado na sidebar em todas as páginas do clipador: só
+  // busca os dados quando está aberto.
   // Competições ativas do clipador
   const { data: competitions = [], isLoading: isLoadingCompetitions } =
-    api.clipper.getMyCompetitions.useQuery()
+    api.clipper.getMyCompetitions.useQuery(undefined, { enabled: open })
 
   // Contas sociais do clipador
   const { data: socialAccounts = [], isLoading: isLoadingSocialAccounts } =
-    api.clipper.getMySocialAccounts.useQuery()
+    api.clipper.getMySocialAccounts.useQuery(undefined, { enabled: open })
 
   // Verificação de duplicidade em tempo real (debounce enquanto digita/cola)
   const validatePostUrlMutation = api.clipper.validatePostUrl.useMutation()
@@ -361,9 +363,11 @@ export function CreatePostDialog({
       await Promise.all([
         // Queries do clipper
         utils.clipper.getMyCompetitions.invalidate(),
+        utils.clipper.getMyApplications.invalidate(),
         utils.clipper.getMySocialAccounts.invalidate(),
 
         // Queries de campanha
+        utils.campaign.getAllActiveCompetitions.invalidate(),
         utils.campaign.getMyActiveAndCompletedCompetitions.invalidate(),
         utils.campaign.getCompetitionDetails.invalidate(),
         utils.campaign.getScheduled.invalidate(),

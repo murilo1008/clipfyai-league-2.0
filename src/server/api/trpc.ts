@@ -6,13 +6,13 @@
  * TL;DR - This is where all the tRPC server stuff is created and plugged in. The pieces you will
  * need to use are documented accordingly near the end.
  */
+import { type UserRole } from "@prisma/client";
 import { initTRPC } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
-import { LeagueErrorCause } from "@/server/league-clips/errors";
 
 import { db } from "@/server/db";
-import { currentUser } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
 
 /**
  * 1. CONTEXT
@@ -47,15 +47,6 @@ const t = initTRPC.context<typeof createTRPCContext>().create({
       ...shape,
       data: {
         ...shape.data,
-        leagueError:
-          error.cause instanceof LeagueErrorCause
-            ? {
-                code: error.cause.leagueCode,
-                message: error.cause.leagueMessage,
-                details: error.cause.details,
-                status: error.cause.status,
-              }
-            : null,
         zodError:
           error.cause instanceof ZodError ? error.cause.flatten() : null,
       },
@@ -77,13 +68,35 @@ export const createCallerFactory = t.createCallerFactory;
  * "/src/server/api/routers" directory.
  */
 
-export const middleware = t.middleware
+export const middleware = t.middleware;
 
+/**
+ * `auth()` valida o token da sessão localmente (sem rede). Já `currentUser()`
+ * faz uma requisição HTTP à API do Clerk, e o middleware roda uma vez por
+ * procedure — num batch com 9 queries seriam 9 chamadas ao Clerk.
+ * Só use `privateProcedureWithUser` quando precisar do objeto completo do
+ * usuário (ex.: e-mail).
+ */
 const isAuth = middleware(async (opts) => {
-  const user = await currentUser()
+  const { userId } = await auth();
+
+  if (!userId) {
+    throw new Error("Unauthorized");
+  }
+
+  return opts.next({
+    ctx: {
+      ...opts.ctx, // Propagar o contexto original (incluindo db)
+      userId,
+    },
+  });
+});
+
+const isAuthWithUser = middleware(async (opts) => {
+  const user = await currentUser();
 
   if (!user) {
-    throw new Error("Unauthorized")
+    throw new Error("Unauthorized");
   }
 
   return opts.next({
@@ -92,35 +105,50 @@ const isAuth = middleware(async (opts) => {
       userId: user.id,
       user,
     },
-  })
-})
+  });
+});
+
+// O contexto é criado uma vez por requisição HTTP e compartilhado pelas
+// procedures do mesmo batch: o role é buscado no banco uma única vez.
+const roleCache = new WeakMap<object, Map<string, Promise<UserRole | null>>>();
+
+function getCachedUserRole(ctx: { db: typeof db }, userId: string) {
+  let byUser = roleCache.get(ctx);
+  if (!byUser) {
+    byUser = new Map();
+    roleCache.set(ctx, byUser);
+  }
+  let role = byUser.get(userId);
+  if (!role) {
+    role = ctx.db.user
+      .findUnique({ where: { id: userId }, select: { role: true } })
+      .then((dbUser) => dbUser?.role ?? null);
+    byUser.set(userId, role);
+  }
+  return role;
+}
 
 const isAdmin = middleware(async (opts) => {
-  const user = await currentUser()
+  const { userId } = await auth();
 
-  if (!user) {
-    throw new Error("Unauthorized")
+  if (!userId) {
+    throw new Error("Unauthorized");
   }
 
-  // Buscar role do usuário no banco
-  const dbUser = await opts.ctx.db.user.findUnique({
-    where: { id: user.id },
-    select: { role: true },
-  })
+  const role = await getCachedUserRole(opts.ctx, userId);
 
-  if (!dbUser || dbUser.role !== "ADMIN") {
-    throw new Error("Forbidden: Admin access required")
+  if (role !== "ADMIN") {
+    throw new Error("Forbidden: Admin access required");
   }
 
   return opts.next({
     ctx: {
       ...opts.ctx, // Propagar o contexto original (incluindo db)
-      userId: user.id,
-      user,
-      userRole: dbUser.role,
+      userId,
+      userRole: role,
     },
-  })
-})
+  });
+});
 
 /**
  * This is how you create new routers and sub-routers in your tRPC API.
@@ -152,6 +180,15 @@ const timingMiddleware = t.middleware(async ({ next, path }) => {
   return result;
 });
 
+// Mesmo log de tempo, sem o atraso artificial de dev (procedures privadas
+// nunca tiveram esse atraso).
+const durationLogMiddleware = t.middleware(async ({ next, path }) => {
+  const start = Date.now();
+  const result = await next();
+  console.log(`[TRPC] ${path} took ${Date.now() - start}ms to execute`);
+  return result;
+});
+
 /**
  * Public (unauthenticated) procedure
  *
@@ -160,5 +197,11 @@ const timingMiddleware = t.middleware(async ({ next, path }) => {
  * are logged in.
  */
 export const publicProcedure = t.procedure.use(timingMiddleware);
-export const privateProcedure = t.procedure.use(isAuth);
+export const privateProcedure = t.procedure
+  .use(durationLogMiddleware)
+  .use(isAuth);
+/** Igual ao `privateProcedure`, mas busca o usuário completo no Clerk (rede). */
+export const privateProcedureWithUser = t.procedure
+  .use(durationLogMiddleware)
+  .use(isAuthWithUser);
 export const adminProcedure = t.procedure.use(timingMiddleware).use(isAdmin);

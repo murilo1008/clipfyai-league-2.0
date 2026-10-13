@@ -203,31 +203,9 @@ export const KIWIFY_WEBHOOK_EVENTS = {
 // FUNÇÕES DE VALIDAÇÃO
 // ============================================
 
-/**
- * Valida a assinatura do webhook da Kiwify usando HMAC-SHA1
- * A Kiwify envia a assinatura na query string: ?signature=xxx
- * 
- * signature = hmac_sha1(JSON.stringify(request.body), secretKey)
- */
-export function validateKiwifyWebhook(
-  signature: string | null,
-  body: string,
-  secret: string
-): boolean {
-  if (!signature || !secret || !body) return false
-  
-  // Importar crypto para HMAC
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require('crypto')
-  
-  // Calcular HMAC-SHA1
-  const calculatedSignature = crypto
-    .createHmac('sha1', secret)
-    .update(body)
-    .digest('hex')
-  
-  return signature === calculatedSignature
-}
+// validateKiwifyWebhook fica em "@/lib/kiwify.server": este arquivo também é
+// importado por componentes client, e o crypto do Node viraria um polyfill
+// de ~100 kB no bundle do navegador.
 
 // ============================================
 // MAPEAMENTO DE STATUS

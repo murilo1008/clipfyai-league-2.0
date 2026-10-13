@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const currentUser = vi.hoisted(() => vi.fn());
-vi.mock("@clerk/nextjs/server", () => ({ currentUser }));
+vi.mock("@clerk/nextjs/server", () => ({
+  currentUser,
+  // privateProcedure autentica via auth(); deriva do mesmo mock de currentUser
+  auth: async () => ({ userId: ((await currentUser()) as { id?: string } | null)?.id ?? null }),
+}));
 vi.mock("@/server/db", () => ({ db: {} }));
 
 import { campaignRouter } from "./competition";
@@ -38,7 +42,7 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
       findUnique: vi.fn().mockResolvedValue({ id: "clipper-2" }),
     },
     clipperApplication: {
-      findUnique: vi.fn().mockResolvedValue({ id: "app-2" }),
+      findUnique: vi.fn().mockResolvedValue({ id: "app-2", status: "APPROVED" }),
       count: vi.fn().mockResolvedValue(2),
       findMany: vi.fn().mockResolvedValue(apps),
     },

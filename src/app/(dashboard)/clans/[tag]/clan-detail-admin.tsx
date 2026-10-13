@@ -62,6 +62,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/trpc/react"
 
 import { EmptyState } from "../../competitions/[slug]/shared"
@@ -121,10 +122,11 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
 
   const { data: clan, isLoading } = api.clan.getByTag.useQuery({ tag })
 
+  const debouncedOwnerSearch = useDebouncedValue(ownerSearch.trim(), 300)
   const { data: clipperResults, isFetching: searchingClippers } =
     api.clan.searchClippers.useQuery(
-      { search: ownerSearch },
-      { enabled: ownerSearch.length >= 1 },
+      { search: debouncedOwnerSearch },
+      { enabled: debouncedOwnerSearch.length >= 1 },
     )
 
   const { data: pendingApps, isLoading: appsLoading } =

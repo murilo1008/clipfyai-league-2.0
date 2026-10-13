@@ -130,6 +130,12 @@ export const APPLICATION_STATUS_CONFIG: Record<
       "border-orange-500/30 bg-orange-500/15 text-orange-600 dark:text-orange-400",
     dot: "bg-orange-400",
   },
+  WITHDRAWN: {
+    label: "Desistiu",
+    icon: Prohibit,
+    badge: "border-zinc-500/30 bg-zinc-500/15 text-zinc-600 dark:text-zinc-400",
+    dot: "bg-zinc-400",
+  },
 }
 
 export const CLIP_POST_STATUS_CONFIG: Record<

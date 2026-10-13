@@ -61,6 +61,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/trpc/react"
 
 /* ============================================================
@@ -275,9 +276,11 @@ export default function ClansClipper() {
   const [isRankingDialogOpen, setIsRankingDialogOpen] = React.useState(false)
 
   // ===== Queries =====
-  const { data: clans, isLoading } = api.clan.listPublic.useQuery({
-    search: search || undefined,
-  })
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
+  const { data: clans, isLoading } = api.clan.listPublic.useQuery(
+    { search: debouncedSearch || undefined },
+    { placeholderData: (prev) => prev },
+  )
   const { data: rankingData, isLoading: isLoadingRanking } =
     api.clan.getClanRanking.useQuery(undefined, {
       enabled: isRankingDialogOpen,

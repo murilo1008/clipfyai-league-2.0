@@ -96,7 +96,9 @@ type StatusFilter =
   | "PENDING"
   | "APPROVED"
   | "REJECTED"
-  | "UNDER_REVIEW";
+  | "UNDER_REVIEW"
+  | "REVOKED"
+  | "WITHDRAWN";
 type ApproveAllStep = "confirm" | "processing" | "done";
 type ApproveClipperStep = "approving" | "ranking" | "email" | "done";
 type CloneStep = "select" | "confirm" | "processing" | "done";
@@ -107,6 +109,8 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "APPROVED", label: "Aprovados" },
   { value: "REJECTED", label: "Rejeitados" },
   { value: "UNDER_REVIEW", label: "Em Revisão" },
+  { value: "REVOKED", label: "Revogados" },
+  { value: "WITHDRAWN", label: "Desistiram" },
 ];
 
 const APPROVE_STEP_SEQUENCE: ApproveClipperStep[] = [

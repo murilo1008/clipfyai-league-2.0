@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const currentUser = vi.hoisted(() => vi.fn());
 const getCampaignPerformance = vi.hoisted(() => vi.fn());
 
-vi.mock("@clerk/nextjs/server", () => ({ currentUser, clerkClient: vi.fn() }));
+vi.mock("@clerk/nextjs/server", () => ({
+  currentUser,
+  // privateProcedure autentica via auth(); deriva do mesmo mock de currentUser
+  auth: async () => ({ userId: ((await currentUser()) as { id?: string } | null)?.id ?? null }),
+  clerkClient: vi.fn(),
+}));
 vi.mock("@/server/db", () => ({ db: {} }));
 vi.mock(
   "@/server/performance/get-campaign-performance",

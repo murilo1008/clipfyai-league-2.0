@@ -1,5 +1,7 @@
 "use client"
 
+import { canRejoinCompetition } from "@/lib/competition-participation"
+import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import * as React from "react"
 import Image from "next/image"
 import {
@@ -381,6 +383,18 @@ export default function Schedule() {
           iconWeight: "fill" as const,
           disabled: true,
         }
+      case "WITHDRAWN": {
+        const competition = competitions.find((candidate) => candidate.id === campaignId)
+        const canRejoin = !!competition && !competition.isPrivate && canRejoinCompetition(application.status, competition.status, competition.startDate, competition.endDate)
+        return {
+          label: canRejoin ? "Reinscrever-se" : "Você saiu desta competição",
+          icon: canRejoin ? Lightning : X,
+          iconWeight: "bold" as const,
+          disabled: !canRejoin,
+        }
+      }
+      case "REVOKED":
+        return { label: "Inscrição Revogada", icon: X, iconWeight: "bold" as const, disabled: true }
       case "REJECTED":
         return {
           label: "Inscrição Rejeitada",
@@ -830,6 +844,12 @@ export default function Schedule() {
 
                     {/* Ações */}
                     <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+                      <LeaveCompetitionButton
+                        competition={competition}
+                        applicationStatus={getApplicationStatus(competition.id)?.status}
+                        postedVideoCount={getApplicationStatus(competition.id)?.postedVideoCount ?? 0}
+                        className="h-10"
+                      />
                       {competition.registrationOpen ? (
                         <Button
                           className={cn(
@@ -1100,7 +1120,12 @@ export default function Schedule() {
                   )
                   const ButtonIcon = buttonConfig.icon
                   return (
-                    <div className="border-border/60 shrink-0 border-t p-4">
+                    <div className="border-border/60 flex shrink-0 flex-col gap-2 border-t p-4">
+                      <LeaveCompetitionButton
+                        competition={selectedCompetition}
+                        applicationStatus={getApplicationStatus(selectedCompetition.id)?.status}
+                        postedVideoCount={getApplicationStatus(selectedCompetition.id)?.postedVideoCount ?? 0}
+                      />
                       <Button
                         className={cn(
                           "h-11 w-full cursor-pointer rounded-xl text-sm font-semibold",

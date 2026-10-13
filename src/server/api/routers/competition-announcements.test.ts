@@ -5,7 +5,11 @@ const { currentUser, sendEmails } = vi.hoisted(() => ({
   sendEmails: vi.fn(),
 }));
 
-vi.mock("@clerk/nextjs/server", () => ({ currentUser }));
+vi.mock("@clerk/nextjs/server", () => ({
+  currentUser,
+  // privateProcedure autentica via auth(); deriva do mesmo mock de currentUser
+  auth: async () => ({ userId: ((await currentUser()) as { id?: string } | null)?.id ?? null }),
+}));
 vi.mock("@/server/db", () => ({ db: {} }));
 vi.mock("@/server/competition-announcement-emails", () => ({
   sendCompetitionAnnouncementEmails: sendEmails,
@@ -492,7 +496,7 @@ describe("clipador: acesso ao mural", () => {
     },
   );
 
-  it.each([null, { status: "REJECTED" }, { status: "REVOKED" }])(
+  it.each([null, { status: "REJECTED" }, { status: "REVOKED" }, { status: "WITHDRAWN" }])(
     "bloqueia não participantes: %j",
     async (application) => {
       const { api, db } = setup("CLIPPER");
