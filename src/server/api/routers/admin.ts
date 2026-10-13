@@ -7211,10 +7211,10 @@ export const adminRouter = createTRPCRouter({
         conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
       const orderByMap: Record<string, string> = {
-        newest: `sa."createdAt" DESC`,
-        oldest: `sa."createdAt" ASC`,
-        followers_desc: `sa."followers" DESC NULLS LAST`,
-        followers_asc: `sa."followers" ASC NULLS LAST`,
+        newest: `sa."createdAt" DESC, sa."id" DESC`,
+        oldest: `sa."createdAt" ASC, sa."id" ASC`,
+        followers_desc: `sa."followers" DESC NULLS LAST, sa."createdAt" DESC, sa."id" DESC`,
+        followers_asc: `sa."followers" ASC NULLS LAST, sa."createdAt" DESC, sa."id" DESC`,
       };
       const statsSortKey =
         sortBy === "totalViews_desc"
@@ -7269,7 +7269,7 @@ export const adminRouter = createTRPCRouter({
           ctx.db.$queryRawUnsafe<Array<{ id: string }>>(
             `SELECT sa.id ${accountFromSql}
         ${whereClause}
-        ORDER BY sa."createdAt" DESC`,
+        ORDER BY sa."createdAt" DESC, sa."id" DESC`,
             ...filterParams,
           ),
           getCachedSocialAccountPostStats(ctx.db),
