@@ -606,7 +606,9 @@ export default function ClansClipper() {
                       <img
                         src={clan.imageUrl}
                         alt={clan.name}
-                        loading="eager"
+                        // Só a primeira linha da grade (até 4 colunas) carrega
+                        // de imediato; as demais capas carregam ao rolar.
+                        loading={index < 4 ? "eager" : "lazy"}
                         decoding="async"
                         className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
                       />

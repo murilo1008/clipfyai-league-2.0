@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
@@ -20,10 +20,7 @@ import {
   VideoCamera,
   YoutubeLogo,
 } from "@phosphor-icons/react";
-import { Area, AreaChart, ResponsiveContainer } from "recharts";
-
 import { HomeHero } from "@/components/home/home-hero";
-import { CpmComparisonChart } from "@/components/performance/cpm-comparison-chart";
 import { Reveal } from "@/components/shared/reveal";
 import {
   Bone,
@@ -41,14 +38,28 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
+import {
+  CpmComparisonChart,
+  ProfileFollowersSparkline,
+  VideoViewsSparkline,
+} from "./performance-charts";
+
 /*
  * Contrato lido de customers.getPerformance:
  *
  * O endpoint aceita { campaignId?: string } e retorna
- * { campaigns, selected, aggregate }. `selected` usa o shape de
- * getCampaignPerformance; `aggregate` traz o resumo consolidado. A camada de
- * normalização abaixo deixa a apresentação independente desses nomes de API.
+ * { campaigns, selected, overall, aggregate }. `selected` usa o shape de
+ * getCampaignPerformance. Sem competição escolhida, `overall` traz a visão
+ * consolidada de todas; com uma escolhida, só ela é calculada e `overall` e
+ * `aggregate` vêm nulos. A camada de normalização abaixo deixa a
+ * apresentação independente desses nomes de API.
  */
+
+/**
+ * Os números mudam com as coletas (duas vezes ao dia) e o total de views é
+ * recalculado no servidor: atualizar a cada 10 minutos basta.
+ */
+const PERFORMANCE_REFRESH_MS = 10 * 60_000;
 export type ClientPerformanceResponse = {
   campaigns: PerformanceCampaign[];
   summary: PerformanceSummary;
@@ -413,22 +424,11 @@ function SummaryCard({
 export default function ClientPerformance() {
   const router = useRouter();
   const [selectedId, setSelectedId] = React.useState("");
-  const performanceRouter = api.customers as unknown as {
-    getPerformance: {
-      useQuery: (
-        input: { campaignId?: string },
-        options?: { refetchInterval?: number },
-      ) => { data: unknown; isLoading: boolean; isError: boolean };
-    };
-  };
-  const query = performanceRouter.getPerformance.useQuery(
+  const query = api.customers.getPerformance.useQuery(
     { campaignId: selectedId || undefined },
-    { refetchInterval: 60_000 },
+    { refetchInterval: PERFORMANCE_REFRESH_MS },
   );
-  const data = normalizeResponse(
-    query.data as PerformanceApiResponse | undefined,
-    selectedId,
-  );
+  const data = normalizeResponse(query.data, selectedId);
   const campaigns = React.useMemo(
     () => data?.campaigns ?? [],
     [data?.campaigns],
@@ -796,38 +796,10 @@ export default function ClientPerformance() {
                             Aguardando próxima coleta para mostrar a evolução
                           </div>
                         ) : (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={profile.history}>
-                              <defs>
-                                <linearGradient
-                                  id={`profile-${profile.id}`}
-                                  x1="0"
-                                  y1="0"
-                                  x2="0"
-                                  y2="1"
-                                >
-                                  <stop
-                                    offset="5%"
-                                    stopColor="#14b8a6"
-                                    stopOpacity={0.28}
-                                  />
-                                  <stop
-                                    offset="95%"
-                                    stopColor="#14b8a6"
-                                    stopOpacity={0}
-                                  />
-                                </linearGradient>
-                              </defs>
-                              <Area
-                                type="monotone"
-                                dataKey="followers"
-                                stroke="#14b8a6"
-                                fill={`url(#profile-${profile.id})`}
-                                strokeWidth={2}
-                                dot={false}
-                              />
-                            </AreaChart>
-                          </ResponsiveContainer>
+                          <ProfileFollowersSparkline
+                            id={profile.id}
+                            data={profile.history ?? []}
+                          />
                         )}
                       </div>
                       <p className="text-muted-foreground mt-3 text-[11px]">
@@ -874,13 +846,12 @@ function VideoCard({ video }: { video: RequiredVideo }) {
       <div className="flex gap-4 p-4 sm:p-5">
         <div className="bg-muted relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl sm:size-24">
           {video.thumbnailUrl ? (
-            <Image
+            <ClipThumbnail
               src={video.thumbnailUrl}
               alt=""
               fill
               sizes="(min-width: 640px) 96px, 80px"
               className="object-cover"
-              unoptimized={video.thumbnailUrl.startsWith("http://")}
             />
           ) : (
             <PlayCircle
@@ -936,18 +907,7 @@ function VideoCard({ video }: { video: RequiredVideo }) {
               Aguardando próxima coleta para mostrar a evolução
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={video.history}>
-                <Area
-                  type="monotone"
-                  dataKey="views"
-                  stroke="#8b5cf6"
-                  fill="#8b5cf622"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <VideoViewsSparkline data={video.history ?? []} />
           )}
         </div>
       </div>

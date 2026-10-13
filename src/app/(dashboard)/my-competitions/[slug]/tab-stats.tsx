@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ChatCircle,
   Eye,
@@ -38,29 +38,19 @@ export function StatsTab({
   const goalPct =
     viewsGoal > 0 ? (competition.myTotalViews / viewsGoal) * 100 : 0
 
-  /* Views por plataforma */
+  /* Views por plataforma (todos os meus posts, agregados no servidor) */
   const platformRows = React.useMemo(() => {
-    const totals = competition.myPosts.reduce<Record<string, number>>(
-      (acc, post) => {
-        acc[post.platform] = (acc[post.platform] ?? 0) + post.views
-        return acc
-      },
-      {},
+    const entries = competition.myPostsByPlatform.map(
+      (group) => [group.platform, group.views] as [string, number],
     )
-    const totalViews = Object.values(totals).reduce(
-      (sum, views) => sum + views,
-      0,
-    )
+    const totalViews = entries.reduce((sum, [, views]) => sum + views, 0)
     return {
       totalViews,
-      rows: Object.entries(totals).sort((a, b) => b[1] - a[1]),
+      rows: entries.sort((a, b) => b[1] - a[1]),
     }
-  }, [competition.myPosts])
+  }, [competition.myPostsByPlatform])
 
-  const bestPost = React.useMemo(() => {
-    if (competition.myPosts.length === 0) return null
-    return [...competition.myPosts].sort((a, b) => b.views - a.views)[0] ?? null
-  }, [competition.myPosts])
+  const bestPost = competition.topViralPost
 
   return (
     <div className="flex flex-col gap-4">
@@ -225,7 +215,7 @@ export function StatsTab({
           <div className="flex items-center gap-3 sm:gap-4">
             <div className="bg-muted relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl sm:size-24">
               {bestPost.thumbnailUrl ? (
-                <Image
+                <ClipThumbnail
                   src={bestPost.thumbnailUrl}
                   alt="Melhor post"
                   fill

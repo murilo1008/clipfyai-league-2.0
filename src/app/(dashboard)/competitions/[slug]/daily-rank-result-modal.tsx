@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import {
   ArrowCounterClockwise,
   ArrowSquareOut,
@@ -135,18 +135,46 @@ export interface DailyRankResultModalProps {
    * `fallbackErrorMessage` vira toast extra caso o refresh falhe.
    */
   refreshPreviewSilently: (options?: { fallbackErrorMessage?: string }) => void;
-  refetch: () => void;
 }
 
 /* ============================================================
    Helpers locais
    ============================================================ */
 
-/** Intervalo de polling do status de PIX conforme a fase do pagamento. */
-function pixStatusPollMs(status: string | undefined): number | false {
+/** Teto do polling do status de PIX enquanto o status não muda. */
+const PIX_STATUS_POLL_MAX_MS = 10 * 60_000;
+/** Depois deste tempo no mesmo status, o polling de 5s passa para 15s. */
+const PIX_STATUS_FAST_POLL_MS = 2 * 60_000;
+/** Intervalo de nova tentativa depois de uma leitura com erro. */
+const PIX_STATUS_ERROR_POLL_MS = 30_000;
+
+type PixStatusPollState = { status: string | undefined; since: number };
+
+/**
+ * Intervalo de polling do status de PIX conforme a fase do pagamento.
+ * Para ao concluir e depois de 10 min sem mudança de status. Com erro, tenta
+ * de novo a cada 30 s dentro do mesmo teto (uma falha passageira logo após
+ * executar o PIX não congela o status na tela). Sem status e sem erro não
+ * consulta de novo: a primeira leitura já acontece pelo `enabled`.
+ */
+function pixStatusPollMs(
+  query: {
+    state: { status: string; data?: { status: string } | undefined };
+  },
+  poll: React.MutableRefObject<PixStatusPollState>,
+): number | false {
+  const status = query.state.data?.status;
+  if (poll.current.status !== status) {
+    poll.current = { status, since: Date.now() };
+  }
   if (status === "COMPLETED") return false;
-  if (status === undefined || status === "PROCESSING" || status === "QUEUED")
-    return 5_000;
+  const elapsed = Date.now() - poll.current.since;
+  if (elapsed >= PIX_STATUS_POLL_MAX_MS) return false;
+  if (query.state.status === "error") return PIX_STATUS_ERROR_POLL_MS;
+  if (status === undefined) return false;
+  if (status === "PROCESSING" || status === "QUEUED") {
+    return elapsed < PIX_STATUS_FAST_POLL_MS ? 5_000 : 15_000;
+  }
   return 30_000;
 }
 
@@ -268,7 +296,6 @@ export function DailyRankResultModal({
   markAnnouncedOnPay,
   onMarkAnnouncedChange,
   refreshPreviewSilently,
-  refetch,
 }: DailyRankResultModalProps) {
   const formatCurrency = useFormatCurrency();
   const utils = api.useUtils();
@@ -347,6 +374,25 @@ export function DailyRankResultModal({
   }, [open]);
 
   /* ===== Queries ===== */
+  // Início do polling de PIX: reinicia ao abrir o modal (e a cada mudança de
+  // status, dentro de pixStatusPollMs).
+  const dailyPixPoll = React.useRef<PixStatusPollState>({
+    status: undefined,
+    since: Date.now(),
+  });
+  const topPostersPixPoll = React.useRef<PixStatusPollState>({
+    status: undefined,
+    since: Date.now(),
+  });
+  React.useEffect(() => {
+    if (open) dailyPixPoll.current = { status: undefined, since: Date.now() };
+  }, [open]);
+  React.useEffect(() => {
+    if (topPostersModalOpen) {
+      topPostersPixPoll.current = { status: undefined, since: Date.now() };
+    }
+  }, [topPostersModalOpen]);
+
   const { data: paymentTransactions, isLoading: isLoadingTransactions } =
     api.admin.getDailyRankPaymentTransactions.useQuery(
       { campaignId, date: preview?.date ?? "" },
@@ -362,9 +408,10 @@ export function DailyRankResultModal({
           Boolean(campaignId) &&
           Boolean(preview?.date),
         // Cada consulta recalcula o contexto do ranking do dia: 5s só com
-        // pagamento em andamento, 30s nos estados de espera, nada ao concluir.
+        // pagamento em andamento (15s após 2 min), 30s nos estados de espera,
+        // nada ao concluir, com erro ou após 10 min sem mudança.
         refetchInterval: (query) =>
-          open ? pixStatusPollMs(query.state.data?.status) : false,
+          open ? pixStatusPollMs(query, dailyPixPoll) : false,
       },
     );
   const { data: topPostersPixStatus, isLoading: isLoadingTopPostersPixStatus } =
@@ -381,7 +428,7 @@ export function DailyRankResultModal({
           Boolean(topPostersPreviewData?.date),
         refetchInterval: (query) =>
           topPostersModalOpen
-            ? pixStatusPollMs(query.state.data?.status)
+            ? pixStatusPollMs(query, topPostersPixPoll)
             : false,
       },
     );
@@ -522,7 +569,6 @@ export function DailyRankResultModal({
         }
 
         await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-        refetch();
       },
       onError: (err, variables) => {
         toast.error(err.message || "Erro ao pagar Top Postadores");
@@ -609,7 +655,6 @@ export function DailyRankResultModal({
       setPayRankPlan(null);
       refreshPreviewSilently();
       await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-      refetch();
     },
     onError: (err) => {
       toast.error(err.message || "Erro ao processar pagamento do rank");
@@ -633,17 +678,18 @@ export function DailyRankResultModal({
       setDailyPixPayoutModalOpen(false);
       setDailyPixPreviewPayload(null);
       refreshPreviewSilently();
-      await utils.admin.getDailyRankingPixPayoutStatus.invalidate({
-        campaignId,
-        date: preview?.date ?? "",
-      });
-      await utils.admin.getDailyRankPaymentTransactions.invalidate({
-        campaignId,
-        date: preview?.date ?? "",
-      });
-      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-      refetch();
+      await Promise.all([
+        utils.admin.getDailyRankingPixPayoutStatus.invalidate({
+          campaignId,
+          date: preview?.date ?? "",
+        }),
+        utils.admin.getDailyRankPaymentTransactions.invalidate({
+          campaignId,
+          date: preview?.date ?? "",
+        }),
+        utils.admin.getDailyRankingCalendar.invalidate({ campaignId }),
+        utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
+      ]);
     },
     onError: (err) => {
       toast.error(err.message || "Erro ao executar pagamento PIX");
@@ -675,17 +721,18 @@ export function DailyRankResultModal({
           },
         );
         refreshPreviewSilently();
-        await utils.admin.getDailyRankingPixPayoutStatus.invalidate({
-          campaignId,
-          date: preview?.date ?? "",
-        });
-        await utils.admin.getDailyRankPaymentTransactions.invalidate({
-          campaignId,
-          date: preview?.date ?? "",
-        });
-        await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
-        await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-        refetch();
+        await Promise.all([
+          utils.admin.getDailyRankingPixPayoutStatus.invalidate({
+            campaignId,
+            date: preview?.date ?? "",
+          }),
+          utils.admin.getDailyRankPaymentTransactions.invalidate({
+            campaignId,
+            date: preview?.date ?? "",
+          }),
+          utils.admin.getDailyRankingCalendar.invalidate({ campaignId }),
+          utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
+        ]);
       },
       onError: (err) => {
         toast.error(err.message || "Erro ao reconciliar PIX");
@@ -709,9 +756,10 @@ export function DailyRankResultModal({
       setUndoRankDialogOpen(false);
       setUndoRankPlan(null);
       refreshPreviewSilently();
-      await utils.admin.getDailyRankingCalendar.invalidate({ campaignId });
-      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-      refetch();
+      await Promise.all([
+        utils.admin.getDailyRankingCalendar.invalidate({ campaignId }),
+        utils.admin.getCompetitionDetailsAdmin.invalidate({ slug }),
+      ]);
     },
     onError: (err) => {
       toast.error(err.message || "Erro ao desfazer pagamento do rank");
@@ -730,7 +778,6 @@ export function DailyRankResultModal({
             "Vídeo desqualificado, mas não foi possível atualizar a lista do preview.",
         });
         await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-        refetch();
       },
       onError: (err) => {
         toast.error(err.message || "Erro ao desqualificar vídeo");
@@ -746,7 +793,6 @@ export function DailyRankResultModal({
             "Desclassificação revertida, mas não foi possível atualizar a lista.",
         });
         await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
-        refetch();
       },
       onError: (err) => {
         toast.error(err.message || "Erro ao reverter desclassificação");
@@ -1066,7 +1112,7 @@ export function DailyRankResultModal({
             )}
           >
             {entry.thumbnailUrl ? (
-              <Image
+              <ClipThumbnail
                 src={entry.thumbnailUrl}
                 alt={`Post por @${entry.username ?? ""}`}
                 fill

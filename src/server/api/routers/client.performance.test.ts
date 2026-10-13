@@ -86,6 +86,7 @@ describe("visibilidade da performance do cliente", () => {
     expect(getCampaignPerformance).toHaveBeenCalledWith(
       expect.anything(),
       "campaign-1",
+      { snapshotResolution: "daily" },
     );
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { clientId: "client-1" } }),
@@ -121,7 +122,107 @@ describe("visibilidade da performance do cliente", () => {
       "campaign-1",
       "campaign-2",
     ]);
-    expect(result.overall.summary.investedAmount).toBe(200);
+    expect(result.overall?.summary.investedAmount).toBe(200);
     expect(getCampaignPerformance).toHaveBeenCalledTimes(2);
+  });
+
+  it("calcula só a competição escolhida", async () => {
+    const { api } = caller([
+      linkedCampaign("campaign-1", 100),
+      linkedCampaign("campaign-2", 200),
+      linkedCampaign("campaign-3", 300),
+    ]);
+    const result = await api.getPerformance({ campaignId: "campaign-2" });
+
+    expect(getCampaignPerformance).toHaveBeenCalledOnce();
+    expect(getCampaignPerformance).toHaveBeenCalledWith(
+      expect.anything(),
+      "campaign-2",
+      { snapshotResolution: "daily" },
+    );
+    expect(result.selected?.campaign.id).toBe("campaign-2");
+    expect(result.campaigns.map((campaign) => campaign.id)).toEqual([
+      "campaign-1",
+      "campaign-2",
+      "campaign-3",
+    ]);
+    expect(result.overall).toBeNull();
+    expect(result.aggregate).toBeNull();
+  });
+
+  it("recusa a competição de outro cliente sem calculá-la", async () => {
+    const { api, findMany } = caller([
+      linkedCampaign("campaign-1", 100),
+      linkedCampaign("campaign-2", 200),
+    ]);
+
+    await expect(
+      api.getPerformance({ campaignId: "campaign-de-outro-cliente" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(getCampaignPerformance).not.toHaveBeenCalled();
+    // A lista que autoriza é sempre a do cliente logado.
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { clientId: "client-1" } }),
+    );
+  });
+
+  it("recusa quem não é cliente", async () => {
+    const findMany = vi.fn();
+    const api = clientRouter.createCaller({
+      db: {
+        user: { findUnique: vi.fn().mockResolvedValue({ role: "CLIPPER" }) },
+        campaign: { findMany },
+      },
+      headers: new Headers(),
+    } as never);
+
+    await expect(
+      api.getPerformance({ campaignId: "campaign-1" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(findMany).not.toHaveBeenCalled();
+    expect(getCampaignPerformance).not.toHaveBeenCalled();
+  });
+});
+
+describe("posts do cliente", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentUser.mockResolvedValue({ id: "client-1" });
+  });
+
+  function postsCaller(campaigns: TestCampaign[]) {
+    const postsFindMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(0);
+    const api = clientRouter.createCaller({
+      db: {
+        user: { findUnique: vi.fn().mockResolvedValue({ role: "CLIENT" }) },
+        campaign: { findMany: vi.fn().mockResolvedValue(campaigns) },
+        clipPost: { findMany: postsFindMany, count },
+      },
+      headers: new Headers(),
+    } as never);
+    return { api, postsFindMany };
+  }
+
+  it("recusa a competição de outro cliente vinda da URL", async () => {
+    const { api, postsFindMany } = postsCaller([linkedCampaign("camp-a", 100)]);
+
+    await expect(api.getAllPosts({ campaignId: "camp-outro" })).rejects.toThrow(
+      "Esta competição não está vinculada à sua conta",
+    );
+    expect(postsFindMany).not.toHaveBeenCalled();
+  });
+
+  it("filtra pela competição do cliente quando ela é informada", async () => {
+    const { api, postsFindMany } = postsCaller([
+      linkedCampaign("camp-a", 100),
+      linkedCampaign("camp-b", 100),
+    ]);
+
+    await api.getAllPosts({ campaignId: "camp-b" });
+
+    expect(postsFindMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { campaignId: "camp-b" },
+    });
   });
 });

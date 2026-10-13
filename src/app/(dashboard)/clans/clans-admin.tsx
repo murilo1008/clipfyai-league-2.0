@@ -197,6 +197,7 @@ function MembersDialog({
               <div className="border-border/60 relative size-12 shrink-0 overflow-hidden rounded-xl border">
                 <Image
                   src={clan.imageUrl}
+                  unoptimized
                   alt={clan.name}
                   fill
                   className="object-cover"
@@ -644,6 +645,7 @@ export default function ClansAdmin() {
                   {clan.imageUrl ? (
                     <Image
                       src={clan.imageUrl}
+                      unoptimized
                       alt={clan.name}
                       fill
                       sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 25vw"
@@ -904,6 +906,7 @@ export default function ClansAdmin() {
                       <div className="border-border/60 relative size-12 shrink-0 overflow-hidden rounded-xl border">
                         <Image
                           src={editFormData.imageUrl}
+                          unoptimized
                           alt={editFormData.name}
                           fill
                           className="object-cover"

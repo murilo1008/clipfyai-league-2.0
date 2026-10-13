@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import { Eye, Heart } from "@phosphor-icons/react"
 
 import { formatCompact } from "@/components/shared/count-up"
@@ -58,7 +58,7 @@ function TickerCard({ clip }: { clip: TickerClip }) {
 
   return (
     <div className="relative h-24 w-[54px] shrink-0 overflow-hidden rounded-xl ring-1 ring-white/12 xl:h-28 xl:w-16">
-      <Image
+      <ClipThumbnail
         src={clip.thumbnail}
         alt={clip.username ? `@${clip.username}` : "Corte em destaque"}
         fill

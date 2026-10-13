@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   CalendarBlank,
@@ -124,8 +124,10 @@ export default function DataMetrics() {
 
   const monthOptions = React.useMemo(() => getMonthOptions(), [])
 
+  // Só id e nome das competições: a lista com estatísticas era pesada e
+  // atrasava a consulta das métricas.
   const { data: campaigns, isLoading: loadingCampaigns } =
-    api.admin.getAllCampaignsWithStats.useQuery()
+    api.admin.getLibraryCampaigns.useQuery()
 
   // Hidrata a seleção do localStorage (mantendo só ids existentes);
   // fallback: todas as competições selecionadas.
@@ -725,13 +727,12 @@ export default function DataMetrics() {
                             {/* Thumbnail */}
                             {video.thumbnailUrl && (
                               <span className="bg-muted/30 relative block size-12 shrink-0 overflow-hidden rounded-xl sm:size-14">
-                                <Image
+                                <ClipThumbnail
                                   src={video.thumbnailUrl}
                                   alt=""
                                   fill
                                   sizes="56px"
                                   className="object-cover"
-                                  unoptimized
                                 />
                               </span>
                             )}

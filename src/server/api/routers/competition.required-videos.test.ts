@@ -10,6 +10,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 vi.mock("@/server/db", () => ({ db: {} }));
 
 import { campaignRouter } from "./competition";
+import { invalidateCachedQueries } from "@/server/memory-cache";
 
 const requiredVideo = {
   id: "video-1",
@@ -59,6 +60,7 @@ function caller(
       clipPost: {
         count: vi.fn().mockResolvedValue(0),
         findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(null),
         groupBy: vi.fn().mockResolvedValue([]),
         aggregate: vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 } }),
       },
@@ -69,6 +71,8 @@ function caller(
         findMany: vi.fn().mockResolvedValue([]),
       },
       clipPostMetrics: { findMany: vi.fn().mockResolvedValue([]) },
+      applicationSocialAccount: { count: vi.fn().mockResolvedValue(0) },
+      $queryRaw: vi.fn().mockResolvedValue([]),
     },
     headers: new Headers(),
   } as never);
@@ -81,6 +85,7 @@ describe("vídeos obrigatórios na competição do clipador", () => {
   });
 
   beforeEach(() => {
+    invalidateCachedQueries("");
     vi.clearAllMocks();
     currentUser.mockResolvedValue({ id: "user-1" });
     vi.spyOn(console, "error").mockImplementation(() => undefined);

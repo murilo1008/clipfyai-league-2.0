@@ -60,6 +60,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
+import { useBoundedPolling } from "@/hooks/use-bounded-polling";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { api, type RouterOutputs } from "@/trpc/react";
 
@@ -80,6 +81,19 @@ type CampaignItem =
 
 /** Teto do router (`limit` aceita no máximo 100). */
 const RESULTS_LIMIT = 100;
+
+/**
+ * Acompanhamento da fila: consulta só o status dos itens em andamento, a cada
+ * 5 s recuando até 30 s, por no máximo 10 min (depois, botão "Atualizar").
+ */
+const PENDING_POLLING = {
+  initialMs: 5_000,
+  maxIntervalMs: 30_000,
+  maxDurationMs: 10 * 60_000,
+};
+
+const isPendingStatus = (status: string | null | undefined) =>
+  status === "QUEUED" || status === "PROCESSING";
 
 /* ── Configuração visual por status do download ────────────────────────── */
 const STATUS_CONFIG: Record<
@@ -300,26 +314,11 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
 
   const hasCampaign = Boolean(campaignId);
 
-  /*
-   * Enquanto houver item na fila/processando, as listas ficam em polling
-   * (5s); quando tudo assenta o polling para sozinho.
-   */
-  const pollWhilePending = (items: PostItem[] | undefined) =>
-    items?.some(
-      (item) =>
-        item.bucketVideo?.status === "QUEUED" ||
-        item.bucketVideo?.status === "PROCESSING",
-    )
-      ? 5_000
-      : (false as const);
-
   const adminPosts = api.videoDownloads.admin.posts.useQuery(postsInput, {
     enabled: isAdmin && hasCampaign,
-    refetchInterval: (query) => pollWhilePending(query.state.data),
   });
   const clientPosts = api.videoDownloads.client.posts.useQuery(postsInput, {
     enabled: !isAdmin && hasCampaign,
-    refetchInterval: (query) => pollWhilePending(query.state.data),
   });
   const postsQuery = isAdmin ? adminPosts : clientPosts;
   const posts: PostItem[] = React.useMemo(
@@ -345,18 +344,94 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
   }, [posts]);
 
   const pending = counts.QUEUED + counts.PROCESSING;
-  const pollInterval = pending > 0 ? 5_000 : (false as const);
 
   const adminDownloads = api.videoDownloads.admin.downloads.useQuery(
     { campaignId, status: downloadStatus, limit: RESULTS_LIMIT },
-    { enabled: isAdmin && hasCampaign, refetchInterval: pollInterval },
+    { enabled: isAdmin && hasCampaign },
   );
   const clientDownloads = api.videoDownloads.client.downloads.useQuery(
     { campaignId, status: "SUCCEEDED", limit: RESULTS_LIMIT },
-    { enabled: !isAdmin && hasCampaign, refetchInterval: pollInterval },
+    { enabled: !isAdmin && hasCampaign },
   );
   const downloadsQuery = isAdmin ? adminDownloads : clientDownloads;
   const downloads: DownloadItem[] = downloadsQuery.data ?? [];
+
+  /*
+   * Enquanto houver item na fila/processando, só o status desses itens fica
+   * em polling (consulta leve); as duas listas são buscadas de novo apenas
+   * quando algum status muda. O polling recua até 30 s, para em erro e depois
+   * de 10 min — aí a tela oferece "Atualizar".
+   */
+  const pendingPostIds = React.useMemo(
+    () =>
+      posts
+        .filter((post) => isPendingStatus(post.bucketVideo?.status))
+        .map((post) => post.id),
+    [posts],
+  );
+  const pendingPolling = useBoundedPolling(
+    campaignId || null,
+    PENDING_POLLING,
+  );
+  // Fila zerada: a próxima pendência começa um acompanhamento novo.
+  const hasPendingPosts = pendingPostIds.length > 0;
+  const restartPendingPolling = pendingPolling.restart;
+  React.useEffect(() => {
+    if (!hasPendingPosts) restartPendingPolling();
+  }, [hasPendingPosts, restartPendingPolling]);
+  const statusesInput = { campaignId, clipPostIds: pendingPostIds };
+  const canPollStatuses =
+    hasCampaign && pendingPostIds.length > 0 && !pendingPolling.expired;
+  const adminStatuses = api.videoDownloads.admin.statuses.useQuery(
+    statusesInput,
+    {
+      enabled: isAdmin && canPollStatuses,
+      refetchInterval: (query) =>
+        pendingPolling.interval(query, hasPendingPosts),
+    },
+  );
+  const clientStatuses = api.videoDownloads.client.statuses.useQuery(
+    statusesInput,
+    {
+      enabled: !isAdmin && canPollStatuses,
+      refetchInterval: (query) =>
+        pendingPolling.interval(query, hasPendingPosts),
+    },
+  );
+  const statusesQuery = isAdmin ? adminStatuses : clientStatuses;
+  const statusesData = statusesQuery.data;
+  // Parou de acompanhar (prazo ou erro) com item ainda em andamento.
+  const showRefreshPending =
+    pending > 0 && (pendingPolling.expired || statusesQuery.isError);
+  const refetchPosts = postsQuery.refetch;
+  const refetchDownloads = downloadsQuery.refetch;
+
+  // Cada leitura de status é comparada uma vez com as listas (a busca
+  // das listas não dispara outra comparação com a mesma leitura).
+  const comparedStatusesRef = React.useRef<typeof statusesData>(undefined);
+  React.useEffect(() => {
+    if (!statusesData || comparedStatusesRef.current === statusesData) return;
+    comparedStatusesRef.current = statusesData;
+    const listed = new Map(
+      posts.map((post) => [post.id, post.bucketVideo?.status ?? null]),
+    );
+    const changed =
+      statusesData.length !== pendingPostIds.length ||
+      statusesData.some(
+        (item) => listed.get(item.clipPostId) !== item.status,
+      );
+    if (changed) {
+      void refetchPosts();
+      void refetchDownloads();
+    }
+  }, [statusesData, posts, pendingPostIds, refetchPosts, refetchDownloads]);
+
+  const refreshPending = () => {
+    pendingPolling.restart();
+    void refetchPosts();
+    void refetchDownloads();
+    if (statusesQuery.isError) void statusesQuery.refetch();
+  };
 
   const filteredPosts = React.useMemo(() => {
     if (videoStatus === "ALL") return posts;
@@ -401,6 +476,7 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
   const adminEnqueue = api.videoDownloads.admin.enqueue.useMutation({
     onSuccess: async () => {
       toast.success("Vídeo adicionado à fila de download");
+      pendingPolling.restart();
       await invalidateAll();
     },
     onError: (error) => toast.error(error.message),
@@ -409,6 +485,7 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
   const clientEnqueue = api.videoDownloads.client.enqueue.useMutation({
     onSuccess: async () => {
       toast.success("Vídeo adicionado à fila de download");
+      pendingPolling.restart();
       await invalidateAll();
     },
     onError: (error) => toast.error(error.message),
@@ -420,6 +497,7 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
       toast.success(
         `${result.processed} item(ns) enviado(s) para processamento`,
       );
+      pendingPolling.restart();
       await invalidateAll();
     },
     onError: (error) => toast.error(error.message),
@@ -783,6 +861,32 @@ export function VideoDownloadsView({ mode }: { mode: Mode }) {
                     : "Baixe em .mp4 os vídeos já processados pela Clipfy."
                 }
               />
+
+              {showRefreshPending && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3.5 py-2.5">
+                  <p className="text-muted-foreground text-xs sm:text-sm">
+                    Ainda há vídeos na fila. Paramos de acompanhar
+                    automaticamente — atualize para ver o andamento.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 cursor-pointer rounded-xl text-xs"
+                    onClick={refreshPending}
+                    disabled={postsQuery.isFetching}
+                  >
+                    <ArrowsClockwise
+                      className={cn(
+                        "size-3.5",
+                        postsQuery.isFetching &&
+                          "animate-spin motion-reduce:animate-none",
+                      )}
+                      weight="bold"
+                    />
+                    Atualizar
+                  </Button>
+                </div>
+              )}
 
               <Tabs
                 defaultValue="videos"

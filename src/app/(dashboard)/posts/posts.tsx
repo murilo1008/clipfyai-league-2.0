@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import dynamic from "next/dynamic";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData } from "@tanstack/react-query";
 import {
@@ -45,7 +46,14 @@ import { api } from "@/trpc/react";
 
 import { ExportCompetitionPostsCsvDialog } from "@/components/posts/export-competition-posts-csv-dialog";
 
-import { PostMetricsHistoryDialog } from "./post-metrics-history-dialog";
+// recharts só entra no bundle quando o histórico de um post é aberto.
+const PostMetricsHistoryDialog = dynamic(
+  () =>
+    import("./post-metrics-history-dialog").then(
+      (mod) => mod.PostMetricsHistoryDialog,
+    ),
+  { ssr: false },
+);
 
 type Platform = PlatformKey;
 type OrderBy = "views" | "likes" | "comments" | "shares" | "createdAt";
@@ -100,13 +108,17 @@ export default function Posts() {
   const searchParams = useSearchParams();
   const [page, setPage] = React.useState(1);
   const [platform, setPlatform] = React.useState<"ALL" | Platform>("ALL");
+  // A competição da URL já vale na primeira renderização: sem ela, a lista
+  // era buscada para todas as competições e logo depois de novo.
   const [campaignId, setCampaignId] = React.useState<string | undefined>(
-    undefined,
+    () => searchParams.get("campaignId") ?? undefined,
   );
   const [search, setSearch] = React.useState("");
   const [debouncedSearch, setDebouncedSearch] = React.useState("");
   const [orderBy, setOrderBy] = React.useState<OrderBy>("views");
-  const [hasAutoSelected, setHasAutoSelected] = React.useState(false);
+  const [hasAutoSelected, setHasAutoSelected] = React.useState(() =>
+    Boolean(searchParams.get("campaignId")),
+  );
   const [metricsPostId, setMetricsPostId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -124,10 +136,23 @@ export default function Posts() {
     return () => clearTimeout(timeout);
   }, [search]);
 
-  const { data: dashboard, isLoading: isLoadingDashboard } =
-    api.customers.getDashboard.useQuery();
+  const heroStatsQuery = api.customers.getHeroStats.useQuery();
+  const heroStats = heroStatsQuery.data;
+  const heroStatsFailed = heroStatsQuery.isError;
 
-  const { data, isLoading, isFetching } = api.customers.getAllPosts.useQuery(
+  // Auto-seleciona a primeira competição do cliente (mesmo fluxo do original)
+  // antes de buscar a lista, para não buscá-la duas vezes.
+  React.useEffect(() => {
+    if (hasAutoSelected || campaignId) return;
+    if (heroStats) {
+      setCampaignId(heroStats.postFilterCampaigns[0]?.id);
+      setHasAutoSelected(true);
+    } else if (heroStatsFailed) {
+      setHasAutoSelected(true);
+    }
+  }, [heroStats, heroStatsFailed, hasAutoSelected, campaignId]);
+
+  const postsQuery = api.customers.getAllPosts.useQuery(
     {
       page,
       limit: 24,
@@ -138,18 +163,14 @@ export default function Posts() {
       orderBy,
       orderDirection: "desc",
     },
-    { placeholderData: keepPreviousData },
+    { placeholderData: keepPreviousData, enabled: hasAutoSelected },
   );
+  const { data, isFetching } = postsQuery;
+  // Enquanto a competição padrão não é escolhida a lista fica desabilitada;
+  // o skeleton continua até a primeira resposta.
+  const isLoading = postsQuery.isLoading || !hasAutoSelected;
 
-  // Auto-seleciona a primeira competição do cliente (mesmo fluxo do original)
-  React.useEffect(() => {
-    if (data?.campaigns?.length && !hasAutoSelected && !campaignId) {
-      setCampaignId(data.campaigns[0]!.id);
-      setHasAutoSelected(true);
-    }
-  }, [data, hasAutoSelected, campaignId]);
-
-  const heroTotals = (dashboard?.campaigns ?? []).reduce(
+  const heroTotals = (heroStats?.campaigns ?? []).reduce(
     (acc, campaign) => ({
       views: acc.views + campaign.totalViews,
       posts: acc.posts + campaign.totalPosts,
@@ -194,7 +215,7 @@ export default function Posts() {
           </>
         }
         subtitle="Explore cada vídeo publicado nas suas competições — com métricas, ranking e histórico completo de crescimento."
-        isLoading={isLoadingDashboard}
+        isLoading={heroStatsQuery.isLoading}
         viz={<PostsMosaicHeroViz />}
         vizSkeleton={<PostsMosaicHeroVizSkeleton />}
         stats={[
@@ -213,7 +234,7 @@ export default function Posts() {
           {
             icon: <Trophy className="size-3.5" weight="fill" />,
             label: "Competições",
-            value: dashboard?.campaigns.length ?? 0,
+            value: heroStats?.campaigns.length ?? 0,
             kind: "int",
           },
         ]}
@@ -628,13 +649,15 @@ export default function Posts() {
       )}
 
       {/* ===== Dialog de histórico de métricas ===== */}
-      <PostMetricsHistoryDialog
-        postId={metricsPostId}
-        open={!!metricsPostId}
-        onOpenChange={(open) => {
-          if (!open) setMetricsPostId(null);
-        }}
-      />
+      {metricsPostId && (
+        <PostMetricsHistoryDialog
+          postId={metricsPostId}
+          open
+          onOpenChange={(open) => {
+            if (!open) setMetricsPostId(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -705,7 +728,7 @@ function PostCard({
     <div className="group ring-border/60 hover:ring-brand-cyan/60 not-dark:hover:ring-primary/50 relative block aspect-[9/16] overflow-hidden rounded-2xl ring-1 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-[color-mix(in_oklab,var(--brand-cyan)_22%,transparent)] motion-reduce:transition-none motion-reduce:hover:translate-y-0">
       {/* Thumbnail */}
       {post.thumbnail ? (
-        <Image
+        <ClipThumbnail
           src={post.thumbnail}
           alt={`Corte de ${username}`}
           fill

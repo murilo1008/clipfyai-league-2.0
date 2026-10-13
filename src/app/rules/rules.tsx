@@ -1,5 +1,3 @@
-"use client"
-
 import * as React from "react"
 import Link from "next/link"
 import {
@@ -7,20 +5,22 @@ import {
   Clock,
   CurrencyDollar,
   FileText,
-  List,
   Scales,
   Shield,
   Target,
   UsersThree,
   Warning,
-  X,
-  type Icon,
-} from "@phosphor-icons/react"
+} from "@phosphor-icons/react/dist/ssr"
+import type { Icon } from "@phosphor-icons/react"
 
 import { Logo } from "@/components/logo"
 import { DarkScope } from "@/components/shared/dark-scope"
+import {
+  LegalMobileMenu,
+  LegalSectionNav,
+  type LegalNavSection,
+} from "@/components/shared/legal-section-nav"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
 const sections: Array<{ id: string; title: string; icon: Icon }> = [
@@ -86,47 +86,18 @@ function InfoCell({
   )
 }
 
+/** Sumário com o ícone já renderizado: o menu é client component. */
+const navSections: LegalNavSection[] = sections.map(
+  ({ id, title, icon: SectionIcon }) => ({
+    id,
+    title,
+    icon: (
+      <SectionIcon className="text-brand-cyan size-4 shrink-0" weight="duotone" />
+    ),
+  }),
+)
+
 export default function Rules() {
-  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
-
-  const scrollToSection = (id: string) => {
-    const element = document.getElementById(id)
-    if (element) {
-      const offset = 100
-      const bodyRect = document.body.getBoundingClientRect().top
-      const elementRect = element.getBoundingClientRect().top
-      const elementPosition = elementRect - bodyRect
-      const offsetPosition = elementPosition - offset
-
-      window.scrollTo({
-        top: offsetPosition,
-        behavior: "smooth",
-      })
-      setMobileMenuOpen(false)
-    }
-  }
-
-  const navigation = (
-    <div className="space-y-1">
-      {sections.map((section) => {
-        const SectionIcon = section.icon
-        return (
-          <button
-            key={section.id}
-            onClick={() => scrollToSection(section.id)}
-            className="hover:bg-brand-cyan/10 flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors"
-          >
-            <SectionIcon
-              className="text-brand-cyan size-4 shrink-0"
-              weight="duotone"
-            />
-            <span className="truncate">{section.title}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
-
   return (
     <DarkScope className="text-foreground relative min-h-svh overflow-x-clip bg-[#030d18]">
       {/* ===== Ambiente fixo: grade + auroras da marca ===== */}
@@ -144,58 +115,14 @@ export default function Rules() {
         style={{ animationDelay: "-7s" }}
       />
 
-      {/* ===== Botão do menu mobile ===== */}
-      <div className="fixed top-4 right-4 z-50 lg:hidden">
-        <Button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          size="icon"
-          aria-label={mobileMenuOpen ? "Fechar navegação" : "Abrir navegação"}
-          className="btn-gradient-auth size-11 cursor-pointer rounded-full text-[#04222A] shadow-[0_8px_30px_-8px_rgba(20,247,254,0.5)]"
-        >
-          {mobileMenuOpen ? (
-            <X className="size-5" weight="bold" />
-          ) : (
-            <List className="size-5" weight="bold" />
-          )}
-        </Button>
-      </div>
-
-      {/* ===== Overlay do menu mobile ===== */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-40 overflow-y-auto bg-[#030d18]/95 pt-20 backdrop-blur-md lg:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-        >
-          <div className="p-6">
-            <h3 className="mb-4 text-lg font-bold">Navegação</h3>
-            <div className="space-y-2">
-              {sections.map((section) => {
-                const SectionIcon = section.icon
-                return (
-                  <button
-                    key={section.id}
-                    onClick={() => scrollToSection(section.id)}
-                    className="hover:bg-brand-cyan/10 flex w-full cursor-pointer items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors"
-                  >
-                    <SectionIcon
-                      className="text-brand-cyan size-4 shrink-0"
-                      weight="duotone"
-                    />
-                    <span className="text-sm">{section.title}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      <LegalMobileMenu sections={navSections} />
 
       <div className="relative mx-auto flex max-w-7xl gap-6 px-4 sm:px-6">
         {/* ===== Sumário lateral (desktop) ===== */}
         <aside className="hidden w-64 shrink-0 py-10 lg:block">
           <div className="glass-card sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded-3xl p-5">
             <h3 className="mb-4 text-lg font-bold">Navegação</h3>
-            {navigation}
+            <LegalSectionNav sections={navSections} />
           </div>
         </aside>
 

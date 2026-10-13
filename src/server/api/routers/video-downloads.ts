@@ -41,14 +41,60 @@ const downloadsInput = z.object({
   limit: z.number().int().min(1).max(100).default(50),
 });
 
+const statusesInput = z.object({
+  campaignId: z.string(),
+  // Só os itens em andamento que a tela está mostrando (lista de até 100).
+  clipPostIds: z.array(z.string()).min(1).max(100),
+});
+
 const campaignSelect = {
   id: true,
   name: true,
   slug: true,
   status: true,
   downloadVideos: true,
-  _count: { select: { clipPosts: true, bucketVideos: true } },
 } satisfies Prisma.CampaignSelect;
+
+type CampaignPayload = Prisma.CampaignGetPayload<{
+  select: typeof campaignSelect;
+}>;
+
+/**
+ * Mesmo `_count` de antes (posts e downloads por competição), mas em groupBy
+ * restrito às competições listadas: o `_count` de relação no findMany agrega
+ * as tabelas filhas inteiras (ClipPost tem centenas de milhares de linhas).
+ */
+async function withCampaignCounts(db: DbClient, campaigns: CampaignPayload[]) {
+  const ids = campaigns.map((campaign) => campaign.id);
+  if (ids.length === 0) return [];
+
+  const [clipPosts, bucketVideos] = await Promise.all([
+    db.clipPost.groupBy({
+      by: ["campaignId"],
+      where: { campaignId: { in: ids } },
+      _count: { _all: true },
+    }),
+    db.clipPostBucketVideo.groupBy({
+      by: ["campaignId"],
+      where: { campaignId: { in: ids } },
+      _count: { _all: true },
+    }),
+  ]);
+  const postsByCampaign = new Map(
+    clipPosts.map((row) => [row.campaignId, row._count._all]),
+  );
+  const downloadsByCampaign = new Map(
+    bucketVideos.map((row) => [row.campaignId, row._count._all]),
+  );
+
+  return campaigns.map((campaign) => ({
+    ...campaign,
+    _count: {
+      clipPosts: postsByCampaign.get(campaign.id) ?? 0,
+      bucketVideos: downloadsByCampaign.get(campaign.id) ?? 0,
+    },
+  }));
+}
 
 const postSelect = {
   id: true,
@@ -161,6 +207,21 @@ function selectPosts(db: DbClient, input: z.infer<typeof postsInput>) {
   });
 }
 
+/**
+ * Status atual dos downloads em andamento (polling leve da tela). Filtra pela
+ * competição do post (a mesma das listas): o `campaignId` do download não
+ * acompanha um post movido de competição pelo admin.
+ */
+function selectStatuses(db: DbClient, input: z.infer<typeof statusesInput>) {
+  return db.clipPostBucketVideo.findMany({
+    where: {
+      clipPostId: { in: input.clipPostIds },
+      clipPost: { campaignId: input.campaignId },
+    },
+    select: { clipPostId: true, status: true },
+  });
+}
+
 function selectDownloads(
   db: DbClient,
   where: Prisma.ClipPostBucketVideoWhereInput,
@@ -265,7 +326,7 @@ export const videoDownloadsRouter = createTRPCRouter({
           .default({}),
       )
       .query(async ({ ctx, input }) => {
-        return ctx.db.campaign.findMany({
+        const campaigns = await ctx.db.campaign.findMany({
           where: {
             ...(input.downloadStatus === "ENABLED"
               ? { downloadVideos: true }
@@ -278,6 +339,7 @@ export const videoDownloadsRouter = createTRPCRouter({
           select: campaignSelect,
           orderBy: { createdAt: "desc" },
         });
+        return withCampaignCounts(ctx.db, campaigns);
       }),
 
     setCampaignEnabled: adminProcedure
@@ -294,6 +356,10 @@ export const videoDownloadsRouter = createTRPCRouter({
       const posts = await selectPosts(ctx.db, input);
       return posts.map(serializePost);
     }),
+
+    statuses: adminProcedure
+      .input(statusesInput)
+      .query(async ({ ctx, input }) => selectStatuses(ctx.db, input)),
 
     downloads: adminProcedure
       .input(downloadsInput)
@@ -324,7 +390,7 @@ export const videoDownloadsRouter = createTRPCRouter({
 
   client: createTRPCRouter({
     campaigns: privateProcedure.query(async ({ ctx }) => {
-      return ctx.db.campaign.findMany({
+      const campaigns = await ctx.db.campaign.findMany({
         where: {
           clientId: ctx.userId,
           downloadVideos: true,
@@ -333,6 +399,7 @@ export const videoDownloadsRouter = createTRPCRouter({
         select: campaignSelect,
         orderBy: { createdAt: "desc" },
       });
+      return withCampaignCounts(ctx.db, campaigns);
     }),
 
     posts: privateProcedure.input(postsInput).query(async ({ ctx, input }) => {
@@ -340,6 +407,17 @@ export const videoDownloadsRouter = createTRPCRouter({
       const posts = await selectPosts(ctx.db, input);
       return posts.map(serializePost);
     }),
+
+    statuses: privateProcedure
+      .input(statusesInput)
+      .query(async ({ ctx, input }) => {
+        await assertClientCanViewCampaign(
+          ctx.db,
+          ctx.userId,
+          input.campaignId,
+        );
+        return selectStatuses(ctx.db, input);
+      }),
 
     downloads: privateProcedure
       .input(downloadsInput)

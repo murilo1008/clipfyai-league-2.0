@@ -11,9 +11,13 @@ vi.mock("@/trpc/react", () => ({
   api: { customers: { getPerformance: { useQuery: performanceQuery } } },
 }));
 vi.mock("@/components/home/home-hero", () => ({ HomeHero: () => null }));
-vi.mock("@/components/performance/cpm-comparison-chart", () => ({
+// Os gráficos carregam sob demanda (next/dynamic); no teste, o módulo que
+// os expõe devolve marcadores síncronos.
+vi.mock("./performance-charts", () => ({
   CpmComparisonChart: () =>
     createElement("div", { "data-testid": "cpm-chart" }),
+  ProfileFollowersSparkline: () => null,
+  VideoViewsSparkline: () => null,
 }));
 
 import ClientPerformance from "./performance";

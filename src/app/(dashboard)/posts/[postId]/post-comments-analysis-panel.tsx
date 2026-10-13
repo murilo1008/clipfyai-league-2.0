@@ -17,6 +17,7 @@ import {
   type CommentsAnalysisAggregateData,
 } from "@/components/comments-analysis/comments-analysis-results-panel";
 import { Button } from "@/components/ui/button";
+import { useBoundedPolling } from "@/hooks/use-bounded-polling";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
@@ -32,6 +33,16 @@ import { api } from "@/trpc/react";
 const MAX_COMMENTS = 3_000;
 
 const TERMINAL_JOB_STATUSES = ["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"];
+
+/**
+ * Polling do job de análise: 3 s, recuando até 30 s, por no máximo 2 h.
+ * Depois do prazo, voltar para a aba consulta o job de novo.
+ */
+const JOB_POLLING = {
+  initialMs: 3_000,
+  maxIntervalMs: 30_000,
+  maxDurationMs: 2 * 60 * 60_000,
+};
 
 interface PostCommentsAnalysisPanelProps {
   postId: string;
@@ -56,17 +67,25 @@ export function PostCommentsAnalysisPanel({
 
   const estimateQuery = api.commentsAnalysis.estimatePost.useQuery(
     { postId, maxComments: MAX_COMMENTS },
-    { refetchOnWindowFocus: false },
+    // Cada tentativa é uma carga no League: sem repetição automática.
+    { refetchOnWindowFocus: false, retry: false },
   );
 
+  // Para em erro e depois do prazo: um job travado não fica sendo
+  // consultado para sempre.
+  const jobPolling = useBoundedPolling(jobId, JOB_POLLING);
   const jobQuery = api.commentsAnalysis.getJob.useQuery(
     { jobId: jobId ?? "" },
     {
       enabled: Boolean(jobId),
+      refetchOnWindowFocus: true,
       refetchInterval: (query) => {
         const status = (query.state.data as CommentsAnalysisJob | undefined)
           ?.status;
-        return status === "PENDING" || status === "RUNNING" ? 3000 : false;
+        return jobPolling.interval(
+          query,
+          status === "PENDING" || status === "RUNNING",
+        );
       },
     },
   );
@@ -117,13 +136,19 @@ export function PostCommentsAnalysisPanel({
   const estimate = estimateQuery.data as Record<string, unknown> | undefined;
   const job = jobQuery.data as CommentsAnalysisJob | undefined;
 
-  const isRunning =
-    job?.status === "PENDING" || job?.status === "RUNNING" || trigger.isPending;
+  // Depois do prazo do polling o job pode seguir rodando no League: o botão
+  // volta e a tela avisa, em vez de ficar em "Analisando…" para sempre.
+  const jobActive = job?.status === "PENDING" || job?.status === "RUNNING";
+  const isRunning = (jobActive && !jobPolling.expired) || trigger.isPending;
   const exceedsLimit = Boolean(estimate?.exceedsLimit);
   const canTrigger = !isRunning && !estimateQuery.isLoading && !exceedsLimit;
 
   const actionErrorMessage =
-    trigger.error?.message ?? jobQuery.error?.message ?? null;
+    trigger.error?.message ??
+    jobQuery.error?.message ??
+    (jobActive && jobPolling.expired
+      ? "A análise ainda está em processamento. Volte mais tarde ou recarregue a página."
+      : null);
 
   return (
     <CommentsAnalysisResultsPanel

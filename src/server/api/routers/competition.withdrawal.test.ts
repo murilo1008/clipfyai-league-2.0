@@ -9,6 +9,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 vi.mock("@/server/db", () => ({ db: {} }));
 
 import { campaignRouter } from "./competition";
+import { invalidateCachedQueries } from "@/server/memory-cache";
 
 const now = new Date("2026-10-09T18:00:00.000Z");
 
@@ -29,6 +30,7 @@ function fixture() {
   const db = {
     $transaction: vi.fn(),
     $executeRaw: vi.fn().mockResolvedValue(1),
+    $queryRaw: vi.fn().mockResolvedValue([]),
     user: {
       findUnique: vi.fn().mockResolvedValue({
         role: "CLIPPER",
@@ -92,6 +94,7 @@ function fixture() {
 }
 
 beforeEach(() => {
+  invalidateCachedQueries("");
   // Só congela Date; os timers do middleware tRPC continuam funcionando.
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(now);
@@ -169,8 +172,6 @@ describe("saída voluntária da competição", () => {
           id: application.id,
           campaignId: "campaign-1",
           status: "APPROVED",
-          _count: { clipPosts: 1 },
-          clipPosts: [],
         },
       ]);
     Object.assign(db, {
@@ -193,8 +194,15 @@ describe("saída voluntária da competição", () => {
       findMany,
       groupBy: vi.fn().mockResolvedValue([]),
     });
+    // Um vídeo não elegível: conta em postedVideoCount (todos os status),
+    // não em myPosts (só elegíveis).
+    const clipPostGroupBy = vi.fn().mockImplementation(async ({ by, where }) =>
+      by[0] === "applicationId" && !where.status
+        ? [{ applicationId: application.id, _count: { id: 1 } }]
+        : [],
+    );
     Object.assign(db.clipPost, {
-      groupBy: vi.fn().mockResolvedValue([]),
+      groupBy: clipPostGroupBy,
       findMany: vi.fn().mockResolvedValue([]),
     });
     Object.assign(db.transaction, { findMany: vi.fn().mockResolvedValue([]) });
@@ -202,13 +210,11 @@ describe("saída voluntária da competição", () => {
     expect(await api.getAllActiveCompetitions()).toEqual([
       expect.objectContaining({ myPosts: 0, postedVideoCount: 1 }),
     ]);
-    expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        select: expect.objectContaining({
-          _count: { select: { clipPosts: true } },
-        }),
-      }),
-    );
+    expect(clipPostGroupBy).toHaveBeenCalledWith({
+      by: ["applicationId"],
+      where: { applicationId: { in: [application.id] } },
+      _count: { id: true },
+    });
   });
 
   it("mantém acesso ao histórico encerrado antes da saída", async () => {
@@ -254,12 +260,16 @@ describe("saída voluntária da competição", () => {
       campaign: {
         findUnique: vi.fn().mockResolvedValue({
           id: "campaign-1",
+          startDate: new Date("2026-10-01T00:00:00Z"),
           rankingMetricType: "VIEWS",
           activeRankingRule: null,
         }),
       },
       dailyRanking: { findFirst: vi.fn().mockResolvedValue(null) },
-      clipPost: { findMany: vi.fn().mockResolvedValue([]) },
+      clipPost: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+      },
     });
     expect(
       await api.getDailyRankingByDate({
@@ -282,11 +292,15 @@ describe("saída voluntária da competição", () => {
       campaign: {
         findUnique: vi.fn().mockResolvedValue({
           id: "campaign-1",
+          startDate: new Date("2026-10-01T00:00:00Z"),
           rankingMetricType: "VIEWS",
           activeRankingRule: null,
         }),
       },
-      clipPost: { findMany: vi.fn().mockResolvedValue([]) },
+      clipPost: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+      },
     });
 
     expect(
@@ -499,5 +513,79 @@ describe("saída voluntária da competição", () => {
     await expect(
       api.getCompetitionDetails({ slug: "competicao" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+describe("ranking diário: cache, ADMIN e datas aceitas", () => {
+  const campaignStart = new Date("2026-10-01T03:00:00Z");
+
+  function rankingFixture() {
+    const setup = fixture();
+    const dailyRankingFindFirst = vi.fn().mockResolvedValue(null);
+    const clipPostGroupBy = vi.fn().mockResolvedValue([]);
+    Object.assign(setup.db, {
+      dailyRanking: { findFirst: dailyRankingFindFirst },
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "campaign-1",
+          name: "Competição",
+          startDate: campaignStart,
+          rankingMetricType: "VIEWS",
+          activeRankingRule: null,
+          topClippersRankingEnabled: true,
+          topClippersPrizeTable: null,
+        }),
+      },
+      clipPost: {
+        count: vi.fn().mockResolvedValue(0),
+        groupBy: clipPostGroupBy,
+      },
+      topClippersDailyRankingEntry: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    });
+    return { ...setup, dailyRankingFindFirst, clipPostGroupBy };
+  }
+
+  it("clipador usa o cache do dia; ADMIN lê direto do banco", async () => {
+    const { api, db } = rankingFixture();
+    const input = { campaignId: "campaign-1", date: "2026-10-08" };
+
+    await api.getDailyRankingByDate(input);
+    await api.getDailyRankingByDate(input);
+    // Ranking ao vivo (SQL) calculado uma vez para os clipadores.
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+
+    db.user.findUnique.mockResolvedValue({ role: "ADMIN", clipperProfile: null });
+    await api.getDailyRankingByDate(input);
+    await api.getDailyRankingByDate(input);
+    expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
+  it("Top Clipadores: clipador usa o cache do dia; ADMIN lê direto do banco", async () => {
+    const { api, db, clipPostGroupBy } = rankingFixture();
+    const input = { campaignId: "campaign-1", date: "2026-10-08" };
+
+    await api.getDailyTopClippersByPostedVideos(input);
+    await api.getDailyTopClippersByPostedVideos(input);
+    expect(clipPostGroupBy).toHaveBeenCalledTimes(1);
+
+    db.user.findUnique.mockResolvedValue({ role: "ADMIN", clipperProfile: null });
+    await api.getDailyTopClippersByPostedVideos(input);
+    await api.getDailyTopClippersByPostedVideos(input);
+    expect(clipPostGroupBy).toHaveBeenCalledTimes(3);
+  });
+
+  it("recusa datas que não existem no calendário", async () => {
+    const { api } = rankingFixture();
+    await expect(
+      api.getDailyRankingByDate({ campaignId: "campaign-1", date: "2026-02-31" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      api.getDailyTopClippersByPostedVideos({
+        campaignId: "campaign-1",
+        date: "2026-13-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

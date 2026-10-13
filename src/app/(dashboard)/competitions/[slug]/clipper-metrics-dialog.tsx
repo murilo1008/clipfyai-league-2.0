@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   ChartBar,
@@ -407,12 +407,11 @@ export function ClipperMetricsDialog({
                   <div className="flex items-start gap-3 sm:gap-4">
                     {bestPost.thumbnailUrl && (
                       <div className="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl border border-amber-500/30 sm:h-32 sm:w-24">
-                        <Image
+                        <ClipThumbnail
                           src={bestPost.thumbnailUrl}
                           alt=""
                           fill
                           className="object-cover"
-                          unoptimized
                         />
                       </div>
                     )}

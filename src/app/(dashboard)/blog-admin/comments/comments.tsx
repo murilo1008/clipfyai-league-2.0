@@ -237,7 +237,8 @@ export default function BlogComments() {
 
   const { data: stats, isLoading: isLoadingStats } =
     api.blog.getCommentsStats.useQuery()
-  const { data: posts } = api.blog.getPosts.useQuery()
+  // Só id e título para o filtro (a lista completa de posts não é usada).
+  const { data: posts } = api.blog.getPostOptions.useQuery()
 
   const firstPage = pageQueries[0]
   const lastPage = pageQueries[pageQueries.length - 1]

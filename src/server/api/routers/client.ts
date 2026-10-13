@@ -10,6 +10,10 @@ import {
 import { getCampaignPerformance } from "@/server/performance/get-campaign-performance"
 import { aggregateCampaignPerformance } from "@/server/performance/aggregate-campaign-performance"
 import { hasInvestedAmountInEveryCampaign } from "@/server/performance/visibility"
+import {
+  getCampaignDashboardMetrics,
+  getCampaignTotals,
+} from "@/server/client-dashboard"
 
 // Client status enum
 const ClientStatusEnum = z.enum(["ACTIVE", "INACTIVE", "PENDING"])
@@ -82,6 +86,12 @@ function getClientCreationClerkError(error: unknown): TRPCError {
       "Não foi possível validar os dados do cliente.",
   })
 }
+
+/** Coletas mais recentes devolvidas no detalhe do post (gráfico e tabela). */
+const POST_DETAIL_METRICS_LIMIT = 120
+
+/** Prazo de cada chamada à API da Kiwify. */
+const KIWIFY_FETCH_TIMEOUT_MS = 15_000
 
 export const clientRouter = createTRPCRouter({
   hasPerformance: privateProcedure.query(async ({ ctx }) => {
@@ -164,29 +174,50 @@ export const clientRouter = createTRPCRouter({
         })
       }
 
+      // Os gráficos do cliente desenham um ponto por dia: as coletas de
+      // perfis e vídeos chegam resumidas (totais e crescimento iguais).
+      const loadPerformance = (campaignId: string) =>
+        getCampaignPerformance(ctx.db, campaignId, {
+          snapshotResolution: "daily",
+        })
+      const forClient = (
+        performance: Awaited<ReturnType<typeof loadPerformance>>,
+      ) =>
+        performance
+          ? {
+              ...performance,
+              profiles: performance.profiles.filter(
+                (profile) =>
+                  profile.lastCollectedAt !== null &&
+                  profile.history.length > 0,
+              ),
+            }
+          : null
+
+      // Competição escolhida (já validada acima): só ela é calculada. A
+      // visão geral consolidada só aparece sem competição escolhida.
+      if (input?.campaignId) {
+        return {
+          campaigns,
+          selected: forClient(await loadPerformance(input.campaignId)),
+          overall: null,
+          aggregate: null,
+        }
+      }
+
       const performances = await Promise.all(
-        campaigns.map((campaign) =>
-          getCampaignPerformance(ctx.db, campaign.id),
-        ),
+        campaigns.map((campaign) => loadPerformance(campaign.id)),
       )
       const available = performances.filter(
         (performance): performance is NonNullable<typeof performance> =>
           Boolean(performance),
       )
-      const selectedId = input?.campaignId ?? campaigns[0]?.id
+      const selectedId = campaigns[0]?.id
       const selected =
         available.find(
           (performance) => performance.campaign.id === selectedId,
         ) ?? null
-      const selectedForClient = selected
-        ? {
-            ...selected,
-            profiles: selected.profiles.filter(
-              (profile) =>
-                profile.lastCollectedAt !== null && profile.history.length > 0,
-            ),
-          }
-        : null
+      const selectedForClient = forClient(selected)
 
       const totals = available.reduce(
         (result, performance) => ({
@@ -353,7 +384,9 @@ export const clientRouter = createTRPCRouter({
             performanceSettings: { select: { investedAmount: true } },
           },
         },
-        // Buscar organizações associadas
+        // Organização associada: só os campos usados como fallback do
+        // perfil (as campanhas da organização e o `_count` — que agregava a
+        // tabela de campanhas inteira — não eram usados).
         organizations: {
           select: {
             organization: {
@@ -362,17 +395,6 @@ export const clientRouter = createTRPCRouter({
                 name: true,
                 website: true,
                 country: true,
-                _count: {
-                  select: {
-                    campaigns: true,
-                  },
-                },
-                campaigns: {
-                  select: {
-                    id: true,
-                    status: true,
-                  },
-                },
               },
             },
           },
@@ -479,25 +501,14 @@ export const clientRouter = createTRPCRouter({
               performanceSettings: { select: { investedAmount: true } },
             },
           },
+          // Organização: só os campos usados como fallback do perfil.
           organizations: {
-            include: {
+            select: {
               organization: {
-                include: {
-                  _count: {
-                    select: {
-                      campaigns: true,
-                    },
-                  },
-                  campaigns: {
-                    select: {
-                      id: true,
-                      name: true,
-                      status: true,
-                      startDate: true,
-                      endDate: true,
-                      createdAt: true,
-                    },
-                  },
+                select: {
+                  name: true,
+                  website: true,
+                  country: true,
                 },
               },
             },
@@ -1044,17 +1055,17 @@ export const clientRouter = createTRPCRouter({
       })
     }
 
-    const totalClients = await ctx.db.user.count({
-      where: { role: "CLIENT" },
-    })
-
-    const totalOrganizations = await ctx.db.organization.count()
-
-    const totalCampaigns = await ctx.db.campaign.count()
-
-    const activeCampaigns = await ctx.db.campaign.count({
-      where: { status: "ACTIVE" },
-    })
+    const [totalClients, totalOrganizations, totalCampaigns, activeCampaigns] =
+      await Promise.all([
+        ctx.db.user.count({
+          where: { role: "CLIENT" },
+        }),
+        ctx.db.organization.count(),
+        ctx.db.campaign.count(),
+        ctx.db.campaign.count({
+          where: { status: "ACTIVE" },
+        }),
+      ])
 
     return {
       totalClients,
@@ -1260,274 +1271,17 @@ export const clientRouter = createTRPCRouter({
         platforms: true,
         requiredHashtags: true,
         prizeInfo: true,
-        _count: {
-          select: {
-            applications: {
-              where: {
-                status: "APPROVED",
-              },
-            },
-            clipPosts: true, // ✅ Conta TODOS os posts, independente do status
-          },
-        },
       },
       orderBy: {
         startDate: "desc",
       },
     })
 
-    // Para cada campanha, buscar métricas
+    // Métricas agregadas no banco por competição (cache de 60 s por
+    // competição). As competições já vêm filtradas pelo cliente logado.
     const campaignsWithMetrics = await Promise.all(
       campaigns.map(async (campaign) => {
-        // ⚠️ FILTRO ESPECIAL: Competição Tarcísio De Freitas - Novembro
-        // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
-        const isTarcisioCompetition =
-          campaign.slug === "tarcisio-de-freitas-novembro"
-        const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00") // 07/11/2025 22:00 BRT
-
-        const postDateFilter = isTarcisioCompetition
-          ? { postedAt: { gte: tarcisioStartDate } }
-          : {}
-
-        // Buscar contagem real de posts (TODOS, independente do status)
-        const totalPostsCount = isTarcisioCompetition
-          ? await ctx.db.clipPost.count({
-              where: {
-                campaignId: campaign.id,
-                // ✅ Removido filtro de status - conta TODOS os posts
-                ...postDateFilter,
-              },
-            })
-          : await ctx.db.clipPost.count({
-              where: {
-                campaignId: campaign.id,
-                // ✅ Removido filtro de status - conta TODOS os posts
-              },
-            })
-
-        // Buscar métricas totais da campanha apenas em posts elegíveis
-        const metrics = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-        })
-
-        // Buscar crescimento nos últimos 7 dias apenas em posts elegíveis
-        const sevenDaysAgo = new Date()
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-
-        const recentMetrics = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            createdAt: {
-              gte: sevenDaysAgo,
-            },
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-          },
-        })
-
-        // Crescimento acumulado por plataforma (do início ao fim da competição)
-        const now = new Date()
-        const growthStartDate = new Date(campaign.startDate)
-        growthStartDate.setHours(0, 0, 0, 0)
-        const growthEndDate =
-          campaign.endDate < now ? new Date(campaign.endDate) : now
-        growthEndDate.setHours(23, 59, 59, 999)
-
-        const [postsInRange, allCampaignPlatforms] = await Promise.all([
-          ctx.db.clipPost.findMany({
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              createdAt: { gte: growthStartDate, lte: growthEndDate },
-              ...(isTarcisioCompetition
-                ? { postedAt: { gte: tarcisioStartDate } }
-                : {}),
-            },
-            select: { platform: true, views: true, createdAt: true },
-          }),
-          ctx.db.clipPost.groupBy({
-            by: ["platform"],
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              ...(isTarcisioCompetition
-                ? { postedAt: { gte: tarcisioStartDate } }
-                : {}),
-            },
-            _sum: { views: true },
-          }),
-        ])
-
-        const growthPlatforms = allCampaignPlatforms
-          .map((p) => p.platform)
-          .sort()
-
-        const totalDays = Math.ceil(
-          (growthEndDate.getTime() - growthStartDate.getTime()) /
-            (1000 * 60 * 60 * 24),
-        )
-        const dayMap = new Map<string, Record<string, number>>()
-        for (let i = 0; i < totalDays; i++) {
-          const d = new Date(growthStartDate)
-          d.setDate(d.getDate() + i)
-          const key = d.toISOString().slice(0, 10)
-          const row: Record<string, number> = { total: 0 }
-          growthPlatforms.forEach((p) => (row[p] = 0))
-          dayMap.set(key, row)
-        }
-
-        for (const post of postsInRange) {
-          const key = post.createdAt.toISOString().slice(0, 10)
-          const row = dayMap.get(key)
-          if (!row) continue
-          const views = Number(post.views || 0)
-          row.total = (row.total || 0) + views
-          row[post.platform] = (row[post.platform] || 0) + views
-        }
-
-        const cumTotals: Record<string, number> = {}
-        growthPlatforms.forEach((p) => (cumTotals[p] = 0))
-        let cumTotal = 0
-
-        const growthData = Array.from(dayMap.entries()).map(([date, row]) => {
-          cumTotal += row.total || 0
-          const entry: Record<string, number | string> = { total: cumTotal }
-          for (const p of growthPlatforms) {
-            cumTotals[p] = (cumTotals[p] || 0) + (row[p] || 0)
-            entry[p] = cumTotals[p]!
-          }
-          return { date, ...entry }
-        })
-
-        // Buscar top posts da campanha - apenas vídeos elegíveis
-        const topPosts = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            thumbnailUrl: true,
-            platform: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            postedAt: true,
-          },
-          orderBy: {
-            views: "desc",
-          },
-          take: 5,
-        })
-
-        // Buscar distribuição por plataforma
-        const platformStats = await ctx.db.clipPost.groupBy({
-          by: ["platform"],
-          where: {
-            campaignId: campaign.id,
-            status: {
-              equals: "ELIGIBLE",
-            },
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        })
-
-        // Buscar top accounts - APENAS vídeos elegíveis
-        const topAccountsGrouped = await ctx.db.clipPost.groupBy({
-          by: ["username"],
-          where: {
-            campaignId: campaign.id,
-            username: { not: null },
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-          },
-          _count: {
-            id: true,
-          },
-          orderBy: {
-            _sum: {
-              views: "desc",
-            },
-          },
-          take: 5,
-        })
-
-        // Para cada top account, buscar a plataforma principal
-        const topAccounts = await Promise.all(
-          topAccountsGrouped.map(async (acc) => {
-            const topPost = await ctx.db.clipPost.findFirst({
-              where: {
-                campaignId: campaign.id,
-                username: acc.username,
-                status: "ELIGIBLE",
-                ...postDateFilter,
-              },
-              select: {
-                platform: true,
-              },
-              orderBy: {
-                views: "desc",
-              },
-            })
-
-            return {
-              username: acc.username || "",
-              platform: topPost?.platform || "INSTAGRAM",
-              totalViews: Number(acc._sum.views || 0),
-              totalLikes: acc._sum.likes || 0,
-              totalComments: acc._sum.comments || 0,
-              postsCount: acc._count.id,
-            }
-          }),
-        )
-
-        // Calcular engagement rate
-        const totalViews = Number(metrics._sum.views || 0)
-        const totalLikes = metrics._sum.likes || 0
-        const totalComments = metrics._sum.comments || 0
-        const totalShares = metrics._sum.shares || 0
-        const totalSaves = metrics._sum.saves || 0
-        const engagementRate = calculateEngagementRate(
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalSaves,
-        )
+        const metrics = await getCampaignDashboardMetrics(ctx.db, campaign)
 
         return {
           id: campaign.id,
@@ -1541,38 +1295,20 @@ export const clientRouter = createTRPCRouter({
           platforms: campaign.platforms,
           requiredHashtags: campaign.requiredHashtags,
           prizeInfo: campaign.prizeInfo,
-          totalParticipants: campaign._count.applications,
-          totalPosts: totalPostsCount, // Usa contagem filtrada se for Tarcísio
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalSaves,
-          engagementRate,
-          recentViews: Number(recentMetrics._sum.views || 0),
-          growthData,
-          growthPlatforms,
-          platformStats: platformStats.map((stat) => ({
-            platform: stat.platform,
-            totalViews: Number(stat._sum.views || 0),
-            totalLikes: stat._sum.likes || 0,
-            totalComments: stat._sum.comments || 0,
-            totalShares: stat._sum.shares || 0,
-            postsCount: stat._count.id,
-          })),
-          topPosts: topPosts.map((post) => ({
-            id: post.id,
-            username: post.username || "",
-            url: post.submittedUrl,
-            thumbnailUrl: post.thumbnailUrl,
-            platform: post.platform,
-            views: Number(post.views),
-            likes: post.likes,
-            comments: post.comments,
-            shares: post.shares,
-            postedAt: post.postedAt?.toISOString(),
-          })),
-          topAccounts,
+          totalParticipants: metrics.totalParticipants,
+          totalPosts: metrics.totalPosts, // Usa contagem filtrada se for Tarcísio
+          totalViews: metrics.totalViews,
+          totalLikes: metrics.totalLikes,
+          totalComments: metrics.totalComments,
+          totalShares: metrics.totalShares,
+          totalSaves: metrics.totalSaves,
+          engagementRate: metrics.engagementRate,
+          recentViews: metrics.recentViews,
+          growthData: metrics.growthData,
+          growthPlatforms: metrics.growthPlatforms,
+          platformStats: metrics.platformStats,
+          topPosts: metrics.topPosts,
+          topAccounts: metrics.topAccounts,
         }
       }),
     )
@@ -1581,6 +1317,79 @@ export const clientRouter = createTRPCRouter({
       campaigns: campaignsWithMetrics,
       hasStore: dbUser.hasStore,
       hasKiwifyStore: dbUser.hasKiwifyStore,
+    }
+  }),
+
+  // Números do topo de /posts e /client-comments: só os totais por
+  // competição, sem gráfico, top posts e top contas do getDashboard.
+  getHeroStats: privateProcedure.query(async ({ ctx }) => {
+    const dbUser = await ctx.db.user.findUnique({
+      where: { id: ctx.userId },
+      select: { role: true },
+    })
+
+    if (!dbUser || dbUser.role !== "CLIENT") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Você não tem permissão para acessar esta funcionalidade",
+      })
+    }
+
+    const [campaigns, postFilterCampaigns] = await Promise.all([
+      // Mesmo filtro e ordem do getDashboard
+      ctx.db.campaign.findMany({
+        where: {
+          clientId: ctx.userId,
+          status: {
+            in: ["ACTIVE", "COMPLETED", "SCHEDULED"],
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          platforms: true,
+        },
+        orderBy: {
+          startDate: "desc",
+        },
+      }),
+      // Mesma lista (e ordem) do filtro de competição do getAllPosts
+      ctx.db.campaign.findMany({
+        where: { clientId: ctx.userId },
+        select: { id: true, name: true, slug: true },
+        orderBy: { createdAt: "desc" },
+      }),
+    ])
+
+    const campaignsWithTotals = await Promise.all(
+      campaigns.map(async (campaign) => {
+        const totals = await getCampaignTotals(ctx.db, campaign)
+        return {
+          id: campaign.id,
+          name: campaign.name,
+          slug: campaign.slug,
+          status: campaign.status,
+          startDate: campaign.startDate.toISOString(),
+          endDate: campaign.endDate.toISOString(),
+          platforms: campaign.platforms,
+          totalPosts: totals.totalPosts,
+          totalViews: totals.totalViews,
+          totalLikes: totals.totalLikes,
+          totalComments: totals.totalComments,
+          totalShares: totals.totalShares,
+          totalSaves: totals.totalSaves,
+          engagementRate: totals.engagementRate,
+        }
+      }),
+    )
+
+    return {
+      campaigns: campaignsWithTotals,
+      postFilterCampaigns,
     }
   }),
 
@@ -1699,6 +1508,13 @@ export const clientRouter = createTRPCRouter({
       }
 
       if (campaignId) {
+        // O id vem da URL (/posts?campaignId=...): só as competições do cliente
+        if (!clientCampaignIds.includes(campaignId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Esta competição não está vinculada à sua conta",
+          })
+        }
         where.campaignId = campaignId
       }
 
@@ -1791,73 +1607,77 @@ export const clientRouter = createTRPCRouter({
   getPostById: privateProcedure
     .input(z.object({ postId: z.string() }))
     .query(async ({ ctx, input }) => {
-      const dbUser = await ctx.db.user.findUnique({
-        where: { id: ctx.userId },
-        select: { role: true },
-      })
-
-      if (!dbUser || dbUser.role !== "CLIENT") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Você não tem permissão para acessar esta funcionalidade",
-        })
-      }
-
-      const post = await ctx.db.clipPost.findUnique({
-        where: { id: input.postId },
-        select: {
-          id: true,
-          submittedUrl: true,
-          normalizedUrl: true,
-          platformVideoId: true,
-          thumbnailUrl: true,
-          platform: true,
-          username: true,
-          caption: true,
-          hashtags: true,
-          mentions: true,
-          duration: true,
-          postedAt: true,
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-          status: true,
-          hasRequiredHashtags: true,
-          hasRequiredMentions: true,
-          isPublicProfile: true,
-          hasDuplicates: true,
-          ineligibilityReason: true,
-          lastMetricsUpdate: true,
-          createdAt: true,
-          updatedAt: true,
-          locationName: true,
-          campaign: {
+      // Role, post e histórico saem em paralelo; nada é devolvido antes das
+      // checagens de role e de dono da competição.
+      const [dbUser, post, metricsHistory, metricsHistoryCount, metricsPeak] =
+        await Promise.all([
+          ctx.db.user.findUnique({
+            where: { id: ctx.userId },
+            select: { role: true },
+          }),
+          ctx.db.clipPost.findUnique({
+            where: { id: input.postId },
             select: {
               id: true,
-              name: true,
-              slug: true,
-              clientId: true,
-            },
-          },
-          application: {
-            select: {
-              clipperProfile: {
+              submittedUrl: true,
+              normalizedUrl: true,
+              platformVideoId: true,
+              thumbnailUrl: true,
+              platform: true,
+              username: true,
+              caption: true,
+              hashtags: true,
+              mentions: true,
+              duration: true,
+              postedAt: true,
+              views: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+              status: true,
+              hasRequiredHashtags: true,
+              hasRequiredMentions: true,
+              isPublicProfile: true,
+              hasDuplicates: true,
+              ineligibilityReason: true,
+              lastMetricsUpdate: true,
+              createdAt: true,
+              updatedAt: true,
+              locationName: true,
+              campaign: {
                 select: {
-                  artisticName: true,
-                  fullName: true,
-                  user: {
+                  id: true,
+                  name: true,
+                  slug: true,
+                  clientId: true,
+                },
+              },
+              application: {
+                select: {
+                  clipperProfile: {
                     select: {
-                      imageUrl: true,
+                      artisticName: true,
+                      fullName: true,
+                      user: {
+                        select: {
+                          imageUrl: true,
+                        },
+                      },
                     },
                   },
                 },
               },
             },
-          },
-          metricsHistory: {
+          }),
+          // Só as coletas mais recentes (o gráfico da página); a série
+          // completa fica com o dialog, via getPostMetricsHistory. A consulta
+          // separada usa o índice (clipPostId, collectedAt) com LIMIT — o
+          // `take` de uma relação aninhada seria aplicado em memória.
+          ctx.db.clipPostMetrics.findMany({
+            where: { clipPostId: input.postId },
             orderBy: { collectedAt: "desc" },
+            take: POST_DETAIL_METRICS_LIMIT,
             select: {
               id: true,
               collectedAt: true,
@@ -1873,9 +1693,24 @@ export const clientRouter = createTRPCRouter({
               commentsDelta: true,
               sharesDelta: true,
             },
-          },
-        },
-      })
+          }),
+          ctx.db.clipPostMetrics.count({
+            where: { clipPostId: input.postId },
+          }),
+          // O pico entre coletas considera o histórico inteiro, não só as
+          // coletas devolvidas para o gráfico.
+          ctx.db.clipPostMetrics.aggregate({
+            where: { clipPostId: input.postId },
+            _max: { viewsDelta: true },
+          }),
+        ])
+
+      if (!dbUser || dbUser.role !== "CLIENT") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para acessar esta funcionalidade",
+        })
+      }
 
       if (!post) {
         throw new TRPCError({
@@ -1938,7 +1773,12 @@ export const clientRouter = createTRPCRouter({
           name: post.campaign.name,
           slug: post.campaign.slug,
         },
-        metricsHistory: post.metricsHistory.map((m) => ({
+        metricsHistoryCount,
+        peakViewsDelta:
+          metricsPeak._max.viewsDelta === null
+            ? null
+            : Number(metricsPeak._max.viewsDelta),
+        metricsHistory: metricsHistory.map((m) => ({
           id: m.id,
           collectedAt: m.collectedAt.toISOString(),
           views: Number(m.views),
@@ -2153,6 +1993,7 @@ export const clientRouter = createTRPCRouter({
               client_id: input.kiwifyClientId,
               client_secret: input.kiwifySecretKey,
             }),
+            signal: AbortSignal.timeout(KIWIFY_FETCH_TIMEOUT_MS),
           },
         )
 
@@ -2199,6 +2040,7 @@ export const clientRouter = createTRPCRouter({
               Authorization: `Bearer ${accessToken}`,
               "x-kiwify-account-id": input.kiwifyAccountId,
             },
+            signal: AbortSignal.timeout(KIWIFY_FETCH_TIMEOUT_MS),
           },
         )
 
@@ -2214,6 +2056,13 @@ export const clientRouter = createTRPCRouter({
       } catch (error: any) {
         if (error instanceof TRPCError) {
           throw error
+        }
+        if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+          throw new TRPCError({
+            code: "TIMEOUT",
+            message:
+              "A Kiwify não respondeu a tempo. Tente novamente em instantes.",
+          })
         }
         console.error("Erro ao validar credenciais:", error)
         throw new TRPCError({
@@ -2233,741 +2082,5 @@ export const clientRouter = createTRPCRouter({
       })
 
       return { success: true, message: "Credenciais salvas com sucesso!" }
-    }),
-
-  getSales: privateProcedure
-    .input(
-      z.object({
-        startDate: z.string(),
-        endDate: z.string(),
-        status: z
-          .enum([
-            "approved",
-            "authorized",
-            "chargedback",
-            "paid",
-            "pending",
-            "pending_refund",
-            "processing",
-            "refunded",
-            "refund_requested",
-            "refused",
-            "waiting_payment",
-            "all",
-          ])
-          .optional(),
-        paymentMethod: z
-          .enum(["boleto", "credit_card", "pix", "all"])
-          .optional(),
-        productId: z.string().optional(),
-        pageSize: z.number().min(1).max(100).default(50),
-        pageNumber: z.number().min(1).default(1),
-      }),
-    )
-    .query(async ({ ctx, input }) => {
-      // Buscar dados do usuário
-      const dbUser = await ctx.db.user.findUnique({
-        where: { id: ctx.userId },
-        select: {
-          role: true,
-          hasStore: true,
-          hasKiwifyStore: true,
-          kiwifyClientId: true,
-          kiwifySecretKey: true,
-          kiwifyAccountId: true,
-        },
-      })
-
-      // Apenas CLIENT com loja Kiwify pode ver vendas
-      if (!dbUser || dbUser.role !== "CLIENT") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Você não tem permissão para acessar esta funcionalidade",
-        })
-      }
-
-      if (!dbUser.hasStore || !dbUser.hasKiwifyStore) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Sua conta não possui loja Kiwify configurada",
-        })
-      }
-
-      if (
-        !dbUser.kiwifyClientId ||
-        !dbUser.kiwifySecretKey ||
-        !dbUser.kiwifyAccountId
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "Credenciais da Kiwify não configuradas. Entre em contato com o suporte.",
-        })
-      }
-
-      try {
-        // Obter token de acesso da Kiwify Public API v1
-        const tokenResponse = await fetch(
-          "https://public-api.kiwify.com/v1/oauth/token",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: new URLSearchParams({
-              client_id: dbUser.kiwifyClientId,
-              client_secret: dbUser.kiwifySecretKey,
-            }),
-          },
-        )
-
-        if (!tokenResponse.ok) {
-          const errorText = await tokenResponse.text()
-          console.error("Erro ao obter token Kiwify:", errorText)
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message:
-              "Erro ao autenticar com a Kiwify. Verifique suas credenciais.",
-          })
-        }
-
-        const tokenData = await tokenResponse.json()
-        const accessToken = tokenData.access_token
-
-        // Construir URL com parâmetros
-        const params = new URLSearchParams({
-          start_date: input.startDate,
-          end_date: input.endDate,
-          page_size: input.pageSize.toString(),
-          page_number: input.pageNumber.toString(),
-          view_full_sale_details: "true",
-        })
-
-        if (input.status && input.status !== "all") {
-          params.append("status", input.status)
-        }
-
-        if (input.paymentMethod && input.paymentMethod !== "all") {
-          params.append("payment_method", input.paymentMethod)
-        }
-
-        if (input.productId) {
-          params.append("product_id", input.productId)
-        }
-
-        // Buscar vendas, estatísticas e todas as vendas pagas em paralelo
-        const statsParams = new URLSearchParams({
-          start_date: input.startDate,
-          end_date: input.endDate,
-        })
-
-        // Parâmetros para buscar todas as vendas pagas (para calcular receita total)
-        const paidSalesParams = new URLSearchParams({
-          start_date: input.startDate,
-          end_date: input.endDate,
-          status: "paid",
-          page_size: "100", // Buscar mais para calcular receita
-          page_number: "1",
-        })
-
-        // Parâmetros para buscar vendas reembolsadas
-        const refundedSalesParams = new URLSearchParams({
-          start_date: input.startDate,
-          end_date: input.endDate,
-          status: "refunded",
-          page_size: "1",
-          page_number: "1",
-        })
-
-        // Parâmetros para buscar vendas pendentes
-        const pendingSalesParams = new URLSearchParams({
-          start_date: input.startDate,
-          end_date: input.endDate,
-          status: "waiting_payment",
-          page_size: "1",
-          page_number: "1",
-        })
-
-        const [
-          salesResponse,
-          statsResponse,
-          paidSalesResponse,
-          refundedSalesResponse,
-          pendingSalesResponse,
-        ] = await Promise.all([
-          // Buscar vendas da Kiwify Public API v1 (paginada para tabela)
-          fetch(`https://public-api.kiwify.com/v1/sales?${params}`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
-            },
-          }),
-          // Buscar estatísticas consolidadas do período
-          fetch(`https://public-api.kiwify.com/v1/stats?${statsParams}`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
-            },
-          }),
-          // Buscar vendas pagas para calcular receita total
-          fetch(`https://public-api.kiwify.com/v1/sales?${paidSalesParams}`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
-            },
-          }),
-          // Buscar contagem de vendas reembolsadas
-          fetch(
-            `https://public-api.kiwify.com/v1/sales?${refundedSalesParams}`,
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "x-kiwify-account-id": dbUser.kiwifyAccountId,
-              },
-            },
-          ),
-          // Buscar contagem de vendas pendentes
-          fetch(
-            `https://public-api.kiwify.com/v1/sales?${pendingSalesParams}`,
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "x-kiwify-account-id": dbUser.kiwifyAccountId,
-              },
-            },
-          ),
-        ])
-
-        if (!salesResponse.ok) {
-          console.error(
-            "Erro ao buscar vendas Kiwify:",
-            await salesResponse.text(),
-          )
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Erro ao buscar vendas da Kiwify",
-          })
-        }
-
-        const salesData = await salesResponse.json()
-
-        // Processar estatísticas (pode falhar silenciosamente)
-        let statsData: {
-          total_sales?: number
-          total_net_amount?: number
-          refund_rate?: number
-          chargeback_rate?: number
-          credit_card_approval_rate?: number
-          total_boleto_generated?: number
-          total_boleto_paid?: number
-          boleto_rate?: number
-        } = {}
-
-        if (statsResponse.ok) {
-          statsData = await statsResponse.json()
-        } else {
-          console.warn(
-            "Erro ao buscar estatísticas Kiwify:",
-            await statsResponse.text(),
-          )
-        }
-
-        // Processar vendas pagas para calcular receita total
-        let allPaidSalesData: any[] = []
-        let totalPaidCount = 0
-
-        if (paidSalesResponse.ok) {
-          const paidData = await paidSalesResponse.json()
-          allPaidSalesData = paidData.data || []
-          totalPaidCount = paidData.pagination?.count || allPaidSalesData.length
-
-          // Se há mais páginas de vendas pagas, buscar todas
-          const totalPages = Math.ceil(totalPaidCount / 100)
-          if (totalPages > 1) {
-            const additionalRequests = []
-            for (let page = 2; page <= Math.min(totalPages, 10); page++) {
-              // Limitar a 10 páginas (1000 vendas)
-              const pageParams = new URLSearchParams({
-                start_date: input.startDate,
-                end_date: input.endDate,
-                status: "paid",
-                page_size: "100",
-                page_number: page.toString(),
-              })
-              additionalRequests.push(
-                fetch(`https://public-api.kiwify.com/v1/sales?${pageParams}`, {
-                  method: "GET",
-                  headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    "x-kiwify-account-id": dbUser.kiwifyAccountId,
-                  },
-                }),
-              )
-            }
-
-            const additionalResponses = await Promise.all(additionalRequests)
-            for (const resp of additionalResponses) {
-              if (resp.ok) {
-                const data = await resp.json()
-                allPaidSalesData = [...allPaidSalesData, ...(data.data || [])]
-              }
-            }
-          }
-        }
-
-        // Calcular receita total a partir das vendas pagas
-        const calculatedTotalRevenue = allPaidSalesData.reduce(
-          (sum: number, sale: any) => sum + (sale.net_amount || 0),
-          0,
-        )
-
-        // Processar contagem de vendas reembolsadas
-        let refundedCount = 0
-        if (refundedSalesResponse.ok) {
-          const refundedData = await refundedSalesResponse.json()
-          refundedCount = refundedData.pagination?.count || 0
-        }
-
-        // Processar contagem de vendas pendentes
-        let pendingCount = 0
-        if (pendingSalesResponse.ok) {
-          const pendingData = await pendingSalesResponse.json()
-          pendingCount = pendingData.pagination?.count || 0
-        }
-
-        // Processar e retornar dados
-        const sales = salesData.data || []
-        const pagination = salesData.pagination || {
-          count: 0,
-          page_number: 1,
-          page_size: 50,
-        }
-
-        // Usar estatísticas da API para contagem, mas receita calculada das vendas
-        const totalSalesFromStats = statsData.total_sales ?? 0
-        const refundRate = statsData.refund_rate ?? 0
-        const chargebackRate = statsData.chargeback_rate ?? 0
-
-        console.log("📈 Métricas processadas:", {
-          totalSalesFromStats,
-          totalPaidCount,
-          calculatedTotalRevenue: calculatedTotalRevenue / 100,
-          refundRate,
-          chargebackRate,
-        })
-
-        // Métricas da página atual (para contagem local)
-        const paidSales = sales.filter((s: any) => s.status === "paid")
-        const refundedSales = sales.filter(
-          (s: any) => s.status === "refunded" || s.status === "chargedback",
-        )
-        const pendingSales = sales.filter(
-          (s: any) => s.status === "waiting_payment" || s.status === "pending",
-        )
-
-        // Agrupar vendas por dia para gráfico (usando TODAS as vendas pagas do período)
-        // Converter para fuso horário de Brasília (America/Sao_Paulo)
-        const salesByDate: Record<string, { count: number; revenue: number }> =
-          {}
-        allPaidSalesData.forEach((sale: any) => {
-          // Usar toLocaleString para converter para o fuso brasileiro
-          const saleDate = new Date(sale.created_at)
-          const brazilDate = saleDate.toLocaleDateString("sv-SE", {
-            timeZone: "America/Sao_Paulo",
-          }) // Formato yyyy-MM-dd
-          if (brazilDate) {
-            if (!salesByDate[brazilDate]) {
-              salesByDate[brazilDate] = { count: 0, revenue: 0 }
-            }
-            salesByDate[brazilDate].count += 1
-            salesByDate[brazilDate].revenue += sale.net_amount || 0
-          }
-        })
-
-        const chartData = Object.entries(salesByDate)
-          .map(([date, data]) => ({
-            date,
-            vendas: data.count,
-            receita: data.revenue / 100, // Converter centavos para reais
-          }))
-          .sort((a, b) => a.date.localeCompare(b.date))
-
-        // Agrupar por método de pagamento (usando TODAS as vendas pagas do período)
-        const salesByPaymentMethod: Record<string, number> = {}
-        allPaidSalesData.forEach((sale: any) => {
-          const method = sale.payment_method || "other"
-          salesByPaymentMethod[method] = (salesByPaymentMethod[method] || 0) + 1
-        })
-
-        // Agrupar por produto (usando TODAS as vendas pagas do período)
-        const salesByProduct: Record<
-          string,
-          { count: number; revenue: number; name: string }
-        > = {}
-        allPaidSalesData.forEach((sale: any) => {
-          const productId = sale.product?.id || "unknown"
-          const productName = sale.product?.name || "Produto"
-          if (!salesByProduct[productId]) {
-            salesByProduct[productId] = {
-              count: 0,
-              revenue: 0,
-              name: productName,
-            }
-          }
-          salesByProduct[productId].count += 1
-          salesByProduct[productId].revenue += sale.net_amount || 0
-        })
-
-        const productStats = Object.entries(salesByProduct)
-          .map(([id, data]) => ({
-            id,
-            name: data.name,
-            count: data.count,
-            revenue: data.revenue / 100,
-          }))
-          .sort((a, b) => b.revenue - a.revenue)
-
-        return {
-          sales: sales.map((sale: any) => ({
-            id: sale.id,
-            reference: sale.reference,
-            status: sale.status,
-            paymentMethod: sale.payment_method,
-            netAmount: (sale.net_amount || 0) / 100, // Converter centavos para reais
-            currency: sale.currency || "BRL",
-            createdAt: sale.created_at,
-            updatedAt: sale.updated_at,
-            product: sale.product
-              ? {
-                  id: sale.product.id,
-                  name: sale.product.name,
-                }
-              : null,
-            customer: sale.customer
-              ? {
-                  id: sale.customer.id,
-                  name: sale.customer.name,
-                  email: sale.customer.email,
-                }
-              : null,
-          })),
-          pagination: {
-            total: pagination.count,
-            pageNumber: pagination.page_number,
-            pageSize: pagination.page_size,
-            totalPages: Math.ceil(pagination.count / pagination.page_size),
-          },
-          metrics: {
-            // Estatísticas consolidadas do período inteiro
-            totalSales: totalSalesFromStats,
-            // Receita calculada a partir das vendas pagas
-            totalRevenue: calculatedTotalRevenue / 100, // Converter centavos para reais
-            // Ticket médio baseado nas vendas pagas
-            averageTicket:
-              totalPaidCount > 0
-                ? calculatedTotalRevenue / totalPaidCount / 100
-                : 0,
-            paidSalesCount: totalPaidCount,
-            refundRate,
-            chargebackRate,
-            // Contagens do período completo (não apenas da página atual)
-            paidSales: totalPaidCount,
-            refundedCount: refundedCount,
-            pendingCount: pendingCount,
-          },
-          chartData,
-          paymentMethodStats: Object.entries(salesByPaymentMethod).map(
-            ([method, count]) => ({
-              method,
-              count,
-            }),
-          ),
-          productStats,
-        }
-      } catch (error: any) {
-        console.error("Erro ao buscar vendas:", error)
-        if (error instanceof TRPCError) {
-          throw error
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao buscar vendas",
-        })
-      }
-    }),
-
-  // Buscar afiliados usando a API oficial da Kiwify
-  getAffiliates: privateProcedure
-    .input(
-      z.object({
-        pageSize: z.number().min(1).max(100).default(50),
-        pageNumber: z.number().min(1).default(1),
-        status: z.enum(["active", "inactive", "all"]).optional(),
-        productId: z.string().optional(),
-        search: z.string().optional(),
-      }),
-    )
-    .query(async ({ ctx, input }) => {
-      try {
-        // Verificar se usuário é CLIENT
-        const dbUser = await ctx.db.user.findUnique({
-          where: { id: ctx.userId },
-          select: {
-            id: true,
-            role: true,
-            hasStore: true,
-            hasKiwifyStore: true,
-            kiwifyClientId: true,
-            kiwifySecretKey: true,
-            kiwifyAccountId: true,
-          },
-        })
-
-        if (!dbUser) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Usuário não encontrado",
-          })
-        }
-
-        if (dbUser.role !== "CLIENT") {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "Acesso negado",
-          })
-        }
-
-        if (
-          !dbUser.kiwifyClientId ||
-          !dbUser.kiwifySecretKey ||
-          !dbUser.kiwifyAccountId
-        ) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Credenciais Kiwify não configuradas",
-          })
-        }
-
-        // Obter token de acesso
-        const tokenResponse = await fetch(
-          "https://public-api.kiwify.com/v1/oauth/token",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: new URLSearchParams({
-              client_id: dbUser.kiwifyClientId,
-              client_secret: dbUser.kiwifySecretKey,
-            }),
-          },
-        )
-
-        if (!tokenResponse.ok) {
-          const errorText = await tokenResponse.text()
-          console.error("Erro ao obter token Kiwify:", errorText)
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Erro ao autenticar com Kiwify",
-          })
-        }
-
-        const tokenData = await tokenResponse.json()
-        const accessToken = tokenData.access_token
-
-        // Construir parâmetros da query
-        const params = new URLSearchParams({
-          page_size: input.pageSize.toString(),
-          page_number: input.pageNumber.toString(),
-        })
-
-        if (input.status && input.status !== "all") {
-          params.append("status", input.status)
-        }
-
-        if (input.productId) {
-          params.append("product_id", input.productId)
-        }
-
-        if (input.search) {
-          params.append("search", input.search)
-        }
-
-        // Buscar afiliados da API oficial da Kiwify
-        const affiliatesResponse = await fetch(
-          `https://public-api.kiwify.com/v1/affiliates?${params}`,
-          {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
-            },
-          },
-        )
-
-        if (!affiliatesResponse.ok) {
-          const errorText = await affiliatesResponse.text()
-          console.error("Erro ao buscar afiliados Kiwify:", errorText)
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Erro ao buscar afiliados da Kiwify",
-          })
-        }
-
-        const affiliatesData = await affiliatesResponse.json()
-        const affiliates = affiliatesData.data || []
-        const pagination = affiliatesData.pagination || {
-          count: 0,
-          page_number: 1,
-          page_size: 50,
-        }
-
-        // Mapear dados para o formato do frontend
-        const formattedAffiliates = affiliates.map((affiliate: any) => ({
-          id: affiliate.affiliate_id,
-          name: affiliate.name || "Afiliado",
-          email: affiliate.email || "",
-          companyName: affiliate.company_name || "",
-          cpf: affiliate.director_cpf || "",
-          cnpj: affiliate.company_cnpj || "",
-          product: affiliate.product
-            ? {
-                id: affiliate.product.id,
-                name: affiliate.product.name,
-              }
-            : null,
-          commission: (affiliate.commission || 0) / 100, // Converter centavos para porcentagem (4600 = 46%)
-          status: affiliate.status || "inactive",
-          createdAt: affiliate.created_at,
-        }))
-
-        // Calcular métricas
-        const totalAffiliates = pagination.count || affiliates.length
-        const activeAffiliates = formattedAffiliates.filter(
-          (a: any) => a.status === "active",
-        ).length
-        const totalCommissions = formattedAffiliates.reduce(
-          (sum: number, a: any) => sum + a.commission,
-          0,
-        )
-        const averageCommission =
-          formattedAffiliates.length > 0
-            ? totalCommissions / formattedAffiliates.length
-            : 0
-
-        // Buscar também as vendas para ter dados de performance dos afiliados
-        // Vamos fazer isso em paralelo para vendas dos últimos 30 dias
-        const today = new Date()
-        const thirtyDaysAgo = new Date(today)
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-
-        const salesParams = new URLSearchParams({
-          start_date: thirtyDaysAgo.toISOString().split("T")[0] || "",
-          end_date: today.toISOString().split("T")[0] || "",
-          status: "paid",
-          page_size: "100",
-          page_number: "1",
-        })
-
-        // Buscar vendas com afiliados para calcular performance
-        const salesResponse = await fetch(
-          `https://public-api.kiwify.com/v1/sales?${salesParams}`,
-          {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "x-kiwify-account-id": dbUser.kiwifyAccountId,
-            },
-          },
-        )
-
-        // Processar vendas por afiliado
-        const affiliateSalesMap: Record<
-          string,
-          { salesCount: number; totalRevenue: number; totalCommission: number }
-        > = {}
-
-        if (salesResponse.ok) {
-          const salesData = await salesResponse.json()
-          const sales = salesData.data || []
-
-          sales.forEach((sale: any) => {
-            if (sale.affiliate?.document) {
-              const affiliateDoc = sale.affiliate.document
-              if (!affiliateSalesMap[affiliateDoc]) {
-                affiliateSalesMap[affiliateDoc] = {
-                  salesCount: 0,
-                  totalRevenue: 0,
-                  totalCommission: 0,
-                }
-              }
-              affiliateSalesMap[affiliateDoc].salesCount += 1
-              affiliateSalesMap[affiliateDoc].totalRevenue +=
-                (sale.net_amount || 0) / 100
-              affiliateSalesMap[affiliateDoc].totalCommission +=
-                (sale.affiliate_amount || 0) / 100
-            }
-          })
-        }
-
-        // Enriquecer dados dos afiliados com performance de vendas
-        const enrichedAffiliates = formattedAffiliates.map((affiliate: any) => {
-          const salesData = affiliateSalesMap[affiliate.cpf] ||
-            affiliateSalesMap[affiliate.cnpj] || {
-              salesCount: 0,
-              totalRevenue: 0,
-              totalCommission: 0,
-            }
-          return {
-            ...affiliate,
-            salesCount: salesData.salesCount,
-            totalRevenue: salesData.totalRevenue,
-            earnedCommission: salesData.totalCommission,
-          }
-        })
-
-        // Ordenar por vendas (maior primeiro)
-        enrichedAffiliates.sort((a: any, b: any) => b.salesCount - a.salesCount)
-
-        // Calcular total de vendas por afiliados
-        const totalSales = Object.values(affiliateSalesMap).reduce(
-          (sum, a) => sum + a.salesCount,
-          0,
-        )
-        const totalEarnedCommissions = Object.values(affiliateSalesMap).reduce(
-          (sum, a) => sum + a.totalCommission,
-          0,
-        )
-
-        return {
-          affiliates: enrichedAffiliates,
-          totalAffiliates,
-          activeAffiliates,
-          totalSales,
-          totalCommissions: totalEarnedCommissions,
-          averageCommission:
-            totalSales > 0 ? totalEarnedCommissions / totalSales : 0,
-          pagination: {
-            pageNumber: pagination.page_number,
-            pageSize: pagination.page_size,
-            total: pagination.count,
-            totalPages: Math.ceil(pagination.count / pagination.page_size),
-          },
-        }
-      } catch (error: any) {
-        console.error("Erro ao buscar afiliados:", error)
-        if (error instanceof TRPCError) {
-          throw error
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message || "Erro ao buscar afiliados",
-        })
-      }
     }),
 })

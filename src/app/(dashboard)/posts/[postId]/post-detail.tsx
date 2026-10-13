@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import dynamic from "next/dynamic";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -57,7 +58,14 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
-import { PostMetricsHistoryDialog } from "../post-metrics-history-dialog";
+// Só carrega quando o usuário abre o histórico completo.
+const PostMetricsHistoryDialog = dynamic(
+  () =>
+    import("../post-metrics-history-dialog").then(
+      (mod) => mod.PostMetricsHistoryDialog,
+    ),
+  { ssr: false },
+);
 
 /*
  * Cores das séries do gráfico — views usa o degradê da marca; as demais usam
@@ -198,6 +206,13 @@ export default function PostDetail({ postId }: PostDetailProps) {
     postId,
   });
 
+  // A análise de comentários só monta depois do post; buscá-la já agora tira
+  // uma ida e volta da cascata (mesma chave do painel, que reaproveita).
+  const utils = api.useUtils();
+  React.useEffect(() => {
+    void utils.commentsAnalysis.getPostAggregate.prefetch({ postId });
+  }, [postId, utils]);
+
   const copyUrl = () => {
     if (!post) return;
     navigator.clipboard
@@ -272,7 +287,7 @@ export default function PostDetail({ postId }: PostDetailProps) {
   /*
    * Delta null vira 0 para não sumir coleta do gráfico; só a primeira coleta
    * cronológica (que legitimamente não tem delta) fica de fora. O badge de
-   * "N coletas" segue contando chartData, igual ao gráfico de área.
+   * "N coletas" mostra o total do histórico (o gráfico recebe as mais recentes).
    */
   const deltaData = chartData
     .filter((point, index) => index > 0 || point.viewsDelta !== null)
@@ -298,9 +313,12 @@ export default function PostDetail({ postId }: PostDetailProps) {
       )
     : null;
   const avgViewsPerDay = daysLive ? post.views / daysLive : null;
-  const peakDelta = deltaData.length
-    ? Math.max(...deltaData.map((point) => point.delta))
-    : null;
+  // O gráfico recebe só as coletas mais recentes; o pico vem do histórico todo.
+  const peakDelta =
+    post.peakViewsDelta ??
+    (deltaData.length
+      ? Math.max(...deltaData.map((point) => point.delta))
+      : null);
 
   const miniTiles = [
     {
@@ -467,7 +485,7 @@ export default function PostDetail({ postId }: PostDetailProps) {
                 className="glass-card animate-glow group relative block aspect-[9/16] w-full overflow-hidden rounded-3xl p-0"
               >
                 {post.thumbnail ? (
-                  <Image
+                  <ClipThumbnail
                     src={post.thumbnail}
                     alt={`Thumbnail do post de ${username}`}
                     fill
@@ -647,8 +665,8 @@ export default function PostDetail({ postId }: PostDetailProps) {
                       className="border-brand-cyan/25 not-dark:border-primary/30 shrink-0 rounded-full text-[10px] font-bold"
                     >
                       <span className="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4]">
-                        {chartData.length}{" "}
-                        {chartData.length === 1 ? "coleta" : "coletas"}
+                        {post.metricsHistoryCount}{" "}
+                        {post.metricsHistoryCount === 1 ? "coleta" : "coletas"}
                       </span>
                     </Badge>
                   )}
@@ -1172,8 +1190,8 @@ export default function PostDetail({ postId }: PostDetailProps) {
                     className="border-brand-cyan/25 not-dark:border-primary/30 shrink-0 rounded-full text-[10px] font-bold"
                   >
                     <span className="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4]">
-                      {post.metricsHistory.length}{" "}
-                      {post.metricsHistory.length === 1 ? "coleta" : "coletas"}
+                      {post.metricsHistoryCount}{" "}
+                      {post.metricsHistoryCount === 1 ? "coleta" : "coletas"}
                     </span>
                   </Badge>
                 </div>
@@ -1274,9 +1292,9 @@ export default function PostDetail({ postId }: PostDetailProps) {
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  {post.metricsHistory.length > 10 ? (
+                  {post.metricsHistoryCount > 10 ? (
                     <p className="text-muted-foreground text-[11px]">
-                      Mostrando 10 de {post.metricsHistory.length} coletas
+                      Mostrando 10 de {post.metricsHistoryCount} coletas
                     </p>
                   ) : (
                     <span />
@@ -1307,11 +1325,13 @@ export default function PostDetail({ postId }: PostDetailProps) {
         </div>
       </div>
 
-      <PostMetricsHistoryDialog
-        postId={postId}
-        open={historyOpen}
-        onOpenChange={setHistoryOpen}
-      />
+      {historyOpen && (
+        <PostMetricsHistoryDialog
+          postId={postId}
+          open
+          onOpenChange={setHistoryOpen}
+        />
+      )}
     </div>
   );
 }

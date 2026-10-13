@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
   ArrowsClockwise,
@@ -21,16 +22,6 @@ import {
   Trophy,
   WarningCircle,
 } from "@phosphor-icons/react";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ReferenceDot,
-  ResponsiveContainer,
-  Tooltip as RechartsTooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { toast } from "sonner";
 
 import { SpotifyHeroViz, SpotifyHeroVizSkeleton } from "@/components/competitions/spotify-hero-viz";
@@ -83,14 +74,48 @@ const RANGE_HINT: Record<Range, string> = {
   all: "desde a primeira coleta",
 };
 
+/** Tempo máximo de polling enquanto uma coleta não termina. */
+const POLL_MAX_MS = 3 * 60_000;
+/** Polls seguidos sem a execução na lista até tratá-la como encerrada. */
+const MISSING_RUN_MAX_POLLS = 5;
+
+/**
+ * Intervalo com recuo: `baseMs` no 1º minuto, o dobro no 2º, o quádruplo no
+ * 3º; depois de POLL_MAX_MS o polling para.
+ */
+function backoffPollMs(startedAt: number, baseMs: number): number | false {
+  const elapsed = Date.now() - startedAt;
+  if (elapsed >= POLL_MAX_MS) return false;
+  return baseMs * 2 ** Math.floor(elapsed / 60_000);
+}
+
+/**
+ * Polling com teto enquanto `pending` for verdadeiro: o início fica no ref e
+ * é zerado quando a condição deixa de valer.
+ */
+function cappedPollMs(
+  pending: boolean,
+  startedAt: React.MutableRefObject<number | null>,
+  baseMs: number,
+): number | false {
+  if (!pending) {
+    startedAt.current = null;
+    return false;
+  }
+  startedAt.current ??= Date.now();
+  return backoffPollMs(startedAt.current, baseMs);
+}
+
 const dateTimeFormat = new Intl.DateTimeFormat("pt-BR", {
   dateStyle: "short",
   timeStyle: "short",
 });
-const chartDayFormat = new Intl.DateTimeFormat("pt-BR", {
-  day: "2-digit",
-  month: "2-digit",
-});
+
+// recharts só é baixado quando o gráfico de evolução aparece
+const PlaysEvolutionChart = dynamic(
+  () => import("./plays-evolution-chart").then((m) => m.PlaysEvolutionChart),
+  { loading: () => <ChartBones /> },
+);
 
 /** Nome dos artistas a partir do JSON cru salvo pelo coletor. */
 function artistsLabel(value: unknown): string {
@@ -131,6 +156,17 @@ export default function SpotifyMetrics() {
   const [refreshingRunId, setRefreshingRunId] = React.useState("");
   const [removalTargetId, setRemovalTargetId] = React.useState("");
 
+  /* ── Polling com teto (início de cada ciclo) ── */
+  const tracksPollStartedAt = React.useRef<number | null>(null);
+  const evolutionPollStartedAt = React.useRef<number | null>(null);
+  const runPollStartedAt = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    tracksPollStartedAt.current = null;
+  }, [campaignId, range]);
+  React.useEffect(() => {
+    evolutionPollStartedAt.current = null;
+  }, [selectedTrackId, range]);
+
   /* ── Queries ── */
   const { data: campaigns, isLoading: campaignsLoading } =
     api.admin.spotifyMetrics.campaigns.useQuery({
@@ -150,14 +186,18 @@ export default function SpotifyMetrics() {
     {
       enabled: Boolean(campaignId),
       refetchInterval: (query) =>
-        query.state.data?.some(
-          (item) =>
-            item.isActive &&
-            item.track.currentPlayCount == null &&
-            !item.track.lastError,
-        ) || Boolean(refreshingRunId)
-          ? 3_000
-          : false,
+        cappedPollMs(
+          Boolean(
+            query.state.data?.some(
+              (item) =>
+                item.isActive &&
+                item.track.currentPlayCount == null &&
+                !item.track.lastError,
+            ) || Boolean(refreshingRunId),
+          ),
+          tracksPollStartedAt,
+          3_000,
+        ),
     },
   );
 
@@ -182,8 +222,12 @@ export default function SpotifyMetrics() {
       {
         enabled: Boolean(selectedTrackId),
         refetchInterval: (query) => {
-          if (selectedTrackPending) return 3_000;
-          if (!selectedTrackLatestCollectedAt) return false;
+          if (selectedTrackPending) {
+            return cappedPollMs(true, evolutionPollStartedAt, 3_000);
+          }
+          if (!selectedTrackLatestCollectedAt) {
+            return cappedPollMs(false, evolutionPollStartedAt, 3_000);
+          }
           const graphLatestCollectedAt =
             query.state.data?.summary.latestCollectedAt;
           // Só é "desatualizado" quando o gráfico já carregou e está atrás da
@@ -192,19 +236,22 @@ export default function SpotifyMetrics() {
             graphLatestCollectedAt != null &&
             new Date(graphLatestCollectedAt).getTime() <
               new Date(selectedTrackLatestCollectedAt).getTime();
-          return graphIsOutdated ? 3_000 : false;
+          return cappedPollMs(graphIsOutdated, evolutionPollStartedAt, 3_000);
         },
       },
     );
 
-  const { data: runs } = api.admin.spotifyMetrics.runs.useQuery(
-    { campaignId },
-    {
-      enabled: Boolean(campaignId && refreshingRunId),
-      refetchInterval: refreshingRunId ? 2_000 : false,
-    },
-  );
+  const { data: runs, dataUpdatedAt: runsUpdatedAt } =
+    api.admin.spotifyMetrics.runs.useQuery(
+      { campaignId },
+      {
+        enabled: Boolean(campaignId && refreshingRunId),
+        refetchInterval: () =>
+          cappedPollMs(Boolean(refreshingRunId), runPollStartedAt, 2_000),
+      },
+    );
   const refreshingRun = runs?.find((run) => run.id === refreshingRunId);
+  const missingRunPolls = React.useRef(0);
 
   /* ── Invalidação compartilhada ── */
   const invalidate = React.useCallback(async () => {
@@ -283,6 +330,32 @@ export default function SpotifyMetrics() {
       toast.error(error.message);
     },
   });
+
+  /* ── Coleta manual sem resposta: some da lista ou passa do teto ── */
+  React.useEffect(() => {
+    missingRunPolls.current = 0;
+    if (!refreshingRunId) return;
+    const timeout = setTimeout(() => {
+      setRefreshingRunId("");
+      setRefreshingTrackId("");
+      void invalidate();
+      toast.info("A coleta segue em segundo plano", {
+        description: "Os dados aparecem aqui quando ela terminar.",
+      });
+    }, POLL_MAX_MS);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshingRunId]);
+
+  React.useEffect(() => {
+    if (!refreshingRunId || !runs || refreshingRun) return;
+    missingRunPolls.current += 1;
+    if (missingRunPolls.current < MISSING_RUN_MAX_POLLS) return;
+    setRefreshingRunId("");
+    setRefreshingTrackId("");
+    void invalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runsUpdatedAt]);
 
   /* ── Conclusão da coleta manual ── */
   React.useEffect(() => {
@@ -1199,172 +1272,6 @@ function RangePills({
           </button>
         );
       })}
-    </div>
-  );
-}
-
-/* ── Gráfico de evolução ───────────────────────────────────────────────── */
-
-function PlaysEvolutionChart({
-  points,
-}: {
-  points: { collectedAt: Date | string; playCount: number }[];
-}) {
-  const data = points.map((point) => ({
-    date: new Date(point.collectedAt).toISOString(),
-    playCount: point.playCount,
-  }));
-  const lastPoint = data[data.length - 1];
-
-  return (
-    <div className="h-[240px] w-full sm:h-[300px] lg:h-[320px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart
-          data={data}
-          margin={{ top: 12, right: 12, bottom: 0, left: 0 }}
-        >
-          <defs>
-            <linearGradient
-              id="spotify-plays-stroke"
-              x1="0"
-              y1="0"
-              x2="1"
-              y2="0"
-            >
-              <stop offset="0%" stopColor="var(--chart-growth-start)" />
-              <stop offset="100%" stopColor="var(--chart-growth-end)" />
-            </linearGradient>
-            <linearGradient id="spotify-plays-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop
-                offset="0%"
-                stopColor="var(--chart-growth-end)"
-                stopOpacity={0.28}
-              />
-              <stop
-                offset="55%"
-                stopColor="var(--chart-growth-end)"
-                stopOpacity={0.08}
-              />
-              <stop
-                offset="100%"
-                stopColor="var(--chart-growth-end)"
-                stopOpacity={0}
-              />
-            </linearGradient>
-          </defs>
-
-          <CartesianGrid
-            vertical={false}
-            stroke="color-mix(in oklab, var(--foreground) 7%, transparent)"
-            strokeDasharray="0"
-          />
-          <XAxis
-            dataKey="date"
-            tickFormatter={(value: string) =>
-              chartDayFormat.format(new Date(value))
-            }
-            axisLine={false}
-            tickLine={false}
-            minTickGap={40}
-            tickMargin={10}
-            tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
-          />
-          <YAxis
-            tickFormatter={(value: number) => formatCompact(value)}
-            axisLine={false}
-            tickLine={false}
-            width={48}
-            domain={["auto", "auto"]}
-            tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
-          />
-          <RechartsTooltip
-            content={<PlaysTooltip />}
-            cursor={{
-              stroke: "color-mix(in oklab, var(--foreground) 22%, transparent)",
-              strokeDasharray: "4 4",
-            }}
-          />
-
-          <Area
-            type="monotone"
-            dataKey="playCount"
-            stroke="url(#spotify-plays-stroke)"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            fill="url(#spotify-plays-fill)"
-            animationDuration={650}
-            activeDot={{
-              r: 4.5,
-              fill: "var(--chart-growth-end)",
-              stroke: "var(--card)",
-              strokeWidth: 2,
-            }}
-          />
-
-          {lastPoint && (
-            <ReferenceDot
-              x={lastPoint.date}
-              y={lastPoint.playCount}
-              shape={<EndDot />}
-            />
-          )}
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-function EndDot({ cx, cy }: { cx?: number; cy?: number }) {
-  if (cx === undefined || cy === undefined) return null;
-  return (
-    <g>
-      <circle
-        cx={cx}
-        cy={cy}
-        r={8}
-        fill="var(--chart-growth-end)"
-        opacity={0.15}
-      />
-      <circle
-        cx={cx}
-        cy={cy}
-        r={3.5}
-        fill="var(--chart-growth-end)"
-        stroke="var(--card)"
-        strokeWidth={2}
-      />
-    </g>
-  );
-}
-
-function PlaysTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: { value?: number | string }[];
-  label?: string | number;
-}) {
-  if (!active || !payload?.length || !label) return null;
-
-  return (
-    <div className="border-border bg-popover/95 min-w-44 rounded-xl border p-3 shadow-xl backdrop-blur-md">
-      <p className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wide uppercase">
-        {dateTimeFormat.format(new Date(String(label)))}
-      </p>
-      <div className="flex items-center justify-between gap-6 text-xs">
-        <span className="text-muted-foreground inline-flex items-center gap-1.5">
-          <span
-            className="size-2 rounded-full"
-            style={{ background: "var(--chart-growth-end)" }}
-          />
-          Plays
-        </span>
-        <span className="text-sm font-bold tabular-nums">
-          {Number(payload[0]?.value ?? 0).toLocaleString("pt-BR")}
-        </span>
-      </div>
     </div>
   );
 }

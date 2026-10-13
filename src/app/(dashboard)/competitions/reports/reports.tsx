@@ -104,6 +104,8 @@ type GrowthPoint = ReportsData["growthData"][number]
 type PlatformStat = ReportsData["platformStats"][number]
 type InfiniteAccount =
   RouterOutputs["campaign"]["getReportsAccounts"]["accounts"][number]
+type ReportPost =
+  RouterOutputs["campaign"]["getReportsPosts"]["posts"][number]
 
 type SortPostsBy = "views" | "likes" | "comments"
 type SortAccountsBy = "views" | "posts" | "engagement"
@@ -111,6 +113,13 @@ type SortAccountsBy = "views" | "posts" | "engagement"
 /* ============================================================
    Constantes
    ============================================================ */
+
+/** Posts por página da tabela (infinite scroll). */
+const POSTS_PAGE_SIZE = 50
+
+/** Export CSV: maior página aceita por getReportsPosts e páginas por rodada. */
+const EXPORT_PAGE_SIZE = 100
+const EXPORT_PARALLEL_PAGES = 5
 
 const PLATFORM_OPTIONS = [
   "INSTAGRAM",
@@ -229,6 +238,19 @@ const engagementRate = (likes: number, comments: number, views: number) =>
 const platformLabel = (platform: string) =>
   platformConfig[platform as PlatformKey]?.label ?? platform
 
+/**
+ * A paginação por offset pode repetir um post entre páginas quando há empate
+ * na métrica ordenada; mantém a primeira ocorrência.
+ */
+const uniquePostsById = (posts: ReportPost[]) => {
+  const seen = new Set<string>()
+  return posts.filter((post) => {
+    if (seen.has(post.id)) return false
+    seen.add(post.id)
+    return true
+  })
+}
+
 /* ============================================================
    Página
    ============================================================ */
@@ -245,9 +267,11 @@ export default function Reports() {
     React.useState<SortAccountsBy>("views")
 
   // Filtros da tabela de posts (independentes dos da tab de contas)
+  const [searchPostInput, setSearchPostInput] = React.useState("")
   const [searchPost, setSearchPost] = React.useState("")
   const [postPlatform, setPostPlatform] = React.useState("all")
   const [sortPostsBy, setSortPostsBy] = React.useState<SortPostsBy>("views")
+  const [isExporting, setIsExporting] = React.useState(false)
 
   // Debounce de 300ms na busca de contas
   React.useEffect(() => {
@@ -255,7 +279,18 @@ export default function Reports() {
     return () => clearTimeout(timer)
   }, [searchAccountInput])
 
+  // Debounce de 300ms na busca de posts
+  React.useEffect(() => {
+    const timer = setTimeout(() => setSearchPost(searchPostInput.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [searchPostInput])
+
   const observerTargetAccounts = React.useRef<HTMLDivElement | null>(null)
+  // Sentinela dos posts em state: a tabela só monta depois do relatório
+  const [postsSentinel, setPostsSentinel] =
+    React.useState<HTMLDivElement | null>(null)
+
+  const utils = api.useUtils()
 
   const { data: campaigns, isLoading: isLoadingCampaigns } =
     api.campaign.getAll.useQuery()
@@ -319,25 +354,114 @@ export default function Reports() {
     allAccounts.length,
   ])
 
-  // Posts filtrados/ordenados da tabela (e fonte do export CSV)
-  const filteredPosts = React.useMemo(() => {
-    const posts = reports?.allPosts ?? []
-    const query = searchPost.trim().toLowerCase()
-    return posts
-      .filter((post) => {
-        const matchesSearch = post.username.toLowerCase().includes(query)
-        const matchesPlatform =
-          postPlatform === "all" || post.platform === postPlatform
-        return matchesSearch && matchesPlatform
-      })
-      .sort((a, b) => b[sortPostsBy] - a[sortPostsBy])
-  }, [reports?.allPosts, searchPost, postPlatform, sortPostsBy])
+  // Tabela de posts: filtros, ordenação e busca aplicados no servidor
+  const postsFilters = {
+    campaignId: selectedCampaignId,
+    platform: postPlatform,
+    search: searchPost,
+    sortBy: sortPostsBy,
+  }
+
+  const {
+    data: postsData,
+    fetchNextPage: fetchNextPagePosts,
+    hasNextPage: hasNextPagePosts,
+    isFetchingNextPage: isFetchingNextPagePosts,
+    isLoading: isLoadingPosts,
+  } = api.campaign.getReportsPosts.useInfiniteQuery(
+    { ...postsFilters, limit: POSTS_PAGE_SIZE },
+    {
+      enabled: !!selectedCampaignId,
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+    },
+  )
+
+  const posts = React.useMemo(
+    () => uniquePostsById(postsData?.pages.flatMap((page) => page.posts) ?? []),
+    [postsData],
+  )
+
+  // Infinite scroll dos posts (sentinela + IntersectionObserver)
+  React.useEffect(() => {
+    if (!postsSentinel) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (
+          entries[0]?.isIntersecting &&
+          hasNextPagePosts &&
+          !isFetchingNextPagePosts
+        ) {
+          void fetchNextPagePosts()
+        }
+      },
+      { root: null, rootMargin: "200px", threshold: 0.1 },
+    )
+
+    observer.observe(postsSentinel)
+    return () => observer.disconnect()
+  }, [
+    postsSentinel,
+    hasNextPagePosts,
+    isFetchingNextPagePosts,
+    fetchNextPagePosts,
+  ])
 
   const totalStats = reports?.totalStats
 
-  const handleExportCsv = () => {
-    if (!selectedCampaignId) return
-    if (filteredPosts.length === 0) {
+  // Sem busca, o total da tabela já vem dos totais do relatório
+  const postsTotal = searchPost
+    ? undefined
+    : postPlatform === "all"
+      ? totalStats?.totalPosts
+      : (reports?.platformStats.find((stat) => stat.platform === postPlatform)
+          ?.postsCount ?? 0)
+  const postsCountLabel =
+    postsTotal !== undefined
+      ? postsTotal.toLocaleString("pt-BR")
+      : `${posts.length.toLocaleString("pt-BR")}${hasNextPagePosts ? "+" : ""}`
+
+  /**
+   * Todos os posts com os filtros da tabela, para o CSV. O cursor de
+   * getReportsPosts é o offset, então cada rodada pede várias páginas de uma
+   * vez (o batch link do tRPC junta as chamadas numa requisição).
+   */
+  const fetchPostsForExport = async () => {
+    const exported: ReportPost[] = []
+    for (let offset = 0; ; offset += EXPORT_PAGE_SIZE * EXPORT_PARALLEL_PAGES) {
+      const pages = await Promise.all(
+        Array.from({ length: EXPORT_PARALLEL_PAGES }, (_, index) =>
+          utils.client.campaign.getReportsPosts.query({
+            ...postsFilters,
+            limit: EXPORT_PAGE_SIZE,
+            cursor: offset + index * EXPORT_PAGE_SIZE,
+          }),
+        ),
+      )
+      for (const page of pages) exported.push(...page.posts)
+      if (pages.some((page) => page.nextCursor === undefined)) break
+    }
+    return uniquePostsById(exported)
+  }
+
+  const handleExportCsv = async () => {
+    if (!selectedCampaignId || isExporting) return
+
+    setIsExporting(true)
+    let exportPosts: ReportPost[]
+    try {
+      exportPosts = await fetchPostsForExport()
+    } catch (error) {
+      toast.error("Erro ao exportar", {
+        description:
+          error instanceof Error ? error.message : "Tente novamente.",
+      })
+      return
+    } finally {
+      setIsExporting(false)
+    }
+
+    if (exportPosts.length === 0) {
       toast.error("Nada para exportar", {
         description: "Nenhum post encontrado com os filtros atuais.",
       })
@@ -354,7 +478,7 @@ export default function Reports() {
       "Data",
       "URL",
     ]
-    const rows = filteredPosts.map((post) => [
+    const rows = exportPosts.map((post) => [
       post.username,
       platformLabel(post.platform),
       String(post.views),
@@ -380,7 +504,7 @@ export default function Reports() {
       true,
     )
     toast.success("CSV exportado!", {
-      description: `${filteredPosts.length} posts exportados com sucesso.`,
+      description: `${exportPosts.length} posts exportados com sucesso.`,
     })
   }
 
@@ -494,12 +618,16 @@ export default function Reports() {
 
             <div className="flex items-center gap-2.5">
               <Button
-                onClick={handleExportCsv}
-                disabled={!selectedCampaignId}
+                onClick={() => void handleExportCsv()}
+                disabled={!selectedCampaignId || isExporting}
                 className="btn-gradient-auth h-10 cursor-pointer rounded-xl px-4 font-semibold"
               >
-                <DownloadSimple className="size-4" weight="bold" />
-                Exportar
+                {isExporting ? (
+                  <CircleNotch className="size-4 animate-spin" weight="bold" />
+                ) : (
+                  <DownloadSimple className="size-4" weight="bold" />
+                )}
+                {isExporting ? "Exportando..." : "Exportar"}
               </Button>
               <Badge
                 variant="outline"
@@ -1400,7 +1528,7 @@ export default function Reports() {
                 description="Lista completa de posts da competição"
                 aside={
                   <Badge variant="outline" className="rounded-full">
-                    {filteredPosts.length.toLocaleString("pt-BR")} posts
+                    {postsCountLabel} posts
                   </Badge>
                 }
               />
@@ -1410,8 +1538,8 @@ export default function Reports() {
                 <div className="relative min-w-0 flex-1">
                   <MagnifyingGlass className="text-muted-foreground pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2" />
                   <Input
-                    value={searchPost}
-                    onChange={(e) => setSearchPost(e.target.value)}
+                    value={searchPostInput}
+                    onChange={(e) => setSearchPostInput(e.target.value)}
                     placeholder="Buscar por @username..."
                     className="focus-visible:ring-brand-cyan/40 h-10 rounded-xl pl-10"
                   />
@@ -1450,8 +1578,10 @@ export default function Reports() {
                 </Select>
               </div>
 
-              {/* Tabela */}
-              {filteredPosts.length > 0 ? (
+              {/* Tabela (infinite scroll) */}
+              {isLoadingPosts ? (
+                <ListRowsSkeleton rows={6} />
+              ) : posts.length > 0 ? (
                 <div className="border-border/60 overflow-hidden rounded-2xl border">
                   <div className="overflow-x-auto">
                     <Table>
@@ -1481,7 +1611,7 @@ export default function Reports() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {filteredPosts.map((post, index) => {
+                        {posts.map((post, index) => {
                           const config =
                             platformConfig[post.platform as PlatformKey]
                           const PlatformIcon = config?.icon
@@ -1575,6 +1705,25 @@ export default function Reports() {
                 </div>
               ) : (
                 <TabEmpty text="Nenhum post encontrado com os filtros selecionados." />
+              )}
+
+              {posts.length > 0 && (
+                <>
+                  {/* Sentinela do infinite scroll */}
+                  <div ref={setPostsSentinel} className="py-3">
+                    {isFetchingNextPagePosts && (
+                      <div className="flex justify-center">
+                        <CircleNotch className="text-brand-cyan not-dark:text-primary size-6 animate-spin" />
+                      </div>
+                    )}
+                  </div>
+
+                  {!hasNextPagePosts && (
+                    <p className="text-muted-foreground pb-1 text-center text-sm">
+                      Todos os posts foram carregados
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </Reveal>

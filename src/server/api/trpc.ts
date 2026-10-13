@@ -77,6 +77,29 @@ export const middleware = t.middleware;
  * Só use `privateProcedureWithUser` quando precisar do objeto completo do
  * usuário (ex.: e-mail).
  */
+// Mesmo princípio do role abaixo: o id do ClipperProfile do usuário é buscado
+// uma única vez por requisição, mesmo com várias procedures no batch.
+const clipperProfileIdCache = new WeakMap<
+  object,
+  Map<string, Promise<string | null>>
+>();
+
+function getCachedClipperProfileId(ctx: { db: typeof db }, userId: string) {
+  let byUser = clipperProfileIdCache.get(ctx);
+  if (!byUser) {
+    byUser = new Map();
+    clipperProfileIdCache.set(ctx, byUser);
+  }
+  let profileId = byUser.get(userId);
+  if (!profileId) {
+    profileId = ctx.db.clipperProfile
+      .findUnique({ where: { userId }, select: { id: true } })
+      .then((profile) => profile?.id ?? null);
+    byUser.set(userId, profileId);
+  }
+  return profileId;
+}
+
 const isAuth = middleware(async (opts) => {
   const { userId } = await auth();
 
@@ -84,10 +107,13 @@ const isAuth = middleware(async (opts) => {
     throw new Error("Unauthorized");
   }
 
+  const baseCtx = opts.ctx;
   return opts.next({
     ctx: {
       ...opts.ctx, // Propagar o contexto original (incluindo db)
       userId,
+      /** id do ClipperProfile do usuário (null se não tiver), 1 consulta por requisição. */
+      getClipperProfileId: () => getCachedClipperProfileId(baseCtx, userId),
     },
   });
 });

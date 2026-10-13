@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import dynamic from "next/dynamic"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   BookmarkSimple,
@@ -74,10 +75,7 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import {
-  DailyRankResultModal,
-  type DailyRankPreview,
-} from "./daily-rank-result-modal"
+import type { DailyRankPreview } from "./daily-rank-result-modal"
 import {
   EmptyState,
   MetricPill,
@@ -91,6 +89,12 @@ import {
   type CompetitionTabProps,
 } from "./shared"
 
+// O modal do resultado (pagamentos, PIX, exportações) só é baixado quando o
+// primeiro ranking é gerado.
+const DailyRankResultModal = dynamic(() =>
+  import("./daily-rank-result-modal").then((m) => m.DailyRankResultModal),
+)
+
 const WEEK_DAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"] as const
 
 type DailySubTab = "ranking" | "topClippers" | "cronograma"
@@ -100,7 +104,6 @@ export function DailyTab({
   campaignId,
   data,
   active,
-  refetch,
 }: CompetitionTabProps) {
   const formatCurrency = useFormatCurrency()
 
@@ -121,6 +124,12 @@ export function DailyTab({
   )
   const [dailyRankResultModalOpen, setDailyRankResultModalOpen] =
     React.useState(false)
+  // Depois da primeira abertura o modal fica montado (animação de fechar)
+  const [hasOpenedDailyRankResult, setHasOpenedDailyRankResult] =
+    React.useState(false)
+  React.useEffect(() => {
+    if (dailyRankResultModalOpen) setHasOpenedDailyRankResult(true)
+  }, [dailyRankResultModalOpen])
   const [dailyRankPreviewData, setDailyRankPreviewData] =
     React.useState<DailyRankPreview | null>(null)
   const [markAnnouncedOnPay, setMarkAnnouncedOnPay] = React.useState(true)
@@ -196,11 +205,12 @@ export function DailyTab({
     },
   )
 
+  // O calendário só aparece na sub-aba "Cronograma"
   const { data: calendarData, isLoading: isLoadingCalendar } =
     api.admin.getDailyRankingCalendar.useQuery(
       { campaignId },
       {
-        enabled: active && !!campaignId,
+        enabled: active && !!campaignId && dailySubTab === "cronograma",
         placeholderData: (prev) => prev,
       },
     )
@@ -525,7 +535,7 @@ export function DailyTab({
                         {/* Thumbnail + plataforma */}
                         <div className="bg-muted relative h-20 w-14 shrink-0 overflow-hidden rounded-xl sm:h-32 sm:w-20">
                           {entry.thumbnailUrl ? (
-                            <Image
+                            <ClipThumbnail
                               src={entry.thumbnailUrl}
                               alt={`Post por @${entry.username}`}
                               fill
@@ -1714,23 +1724,24 @@ export function DailyTab({
       </Dialog>
 
       {/* ===== Modal Resultado do Rank Diário ===== */}
-      <DailyRankResultModal
-        open={dailyRankResultModalOpen}
-        onOpenChange={(open) => {
-          setDailyRankResultModalOpen(open)
-          if (!open) {
-            setDailyRankPreviewData(null)
-          }
-        }}
-        slug={slug}
-        campaignId={campaignId}
-        data={data}
-        preview={dailyRankPreviewData}
-        markAnnouncedOnPay={markAnnouncedOnPay}
-        onMarkAnnouncedChange={setMarkAnnouncedOnPay}
-        refreshPreviewSilently={refreshPreviewSilently}
-        refetch={refetch}
-      />
+      {(dailyRankResultModalOpen || hasOpenedDailyRankResult) && (
+        <DailyRankResultModal
+          open={dailyRankResultModalOpen}
+          onOpenChange={(open) => {
+            setDailyRankResultModalOpen(open)
+            if (!open) {
+              setDailyRankPreviewData(null)
+            }
+          }}
+          slug={slug}
+          campaignId={campaignId}
+          data={data}
+          preview={dailyRankPreviewData}
+          markAnnouncedOnPay={markAnnouncedOnPay}
+          onMarkAnnouncedChange={setMarkAnnouncedOnPay}
+          refreshPreviewSilently={refreshPreviewSilently}
+        />
+      )}
     </div>
   )
 }

@@ -4,6 +4,11 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import {
+    DRAW_HANDLE_ICON_HTML,
+    MAP_LOCATE_PULSE_ICON_HTML,
+    MAP_PIN_ICON_HTML,
+} from "@/components/ui/map-icons"
+import {
     DropdownMenu,
     DropdownMenuCheckboxItem,
     DropdownMenuContent,
@@ -64,10 +69,8 @@ import {
     useEffect,
     useRef,
     useState,
-    type ReactNode,
     type Ref,
 } from "react"
-import { renderToString } from "react-dom/server"
 import type {
     CircleMarkerProps,
     CircleProps,
@@ -490,7 +493,7 @@ function MapLayersControl({
 }
 
 function MapMarker({
-    icon = <MapPinIcon className="size-6" />,
+    icon = MAP_PIN_ICON_HTML,
     iconAnchor = [12, 12],
     bgPos,
     popupAnchor,
@@ -501,7 +504,8 @@ function MapMarker({
         DivIconOptions,
         "iconAnchor" | "bgPos" | "popupAnchor" | "tooltipAnchor"
     > & {
-        icon?: ReactNode
+        /** HTML estático do ícone (o `L.divIcon` não renderiza React). */
+        icon?: string
         ref?: Ref<Marker>
     }) {
     const { L } = useLeaflet()
@@ -510,7 +514,7 @@ function MapMarker({
     return (
         <LeafletMarker
             icon={L.divIcon({
-                html: renderToString(icon),
+                html: icon,
                 iconAnchor,
                 ...(bgPos ? { bgPos } : {}),
                 ...(popupAnchor ? { popupAnchor } : {}),
@@ -700,15 +704,6 @@ function MapZoomControl({ className, ...props }: React.ComponentProps<"div">) {
     )
 }
 
-function MapLocatePulseIcon() {
-    return (
-        <div className="absolute -top-1 -right-1 flex size-3 rounded-full">
-            <div className="bg-primary absolute inline-flex size-full animate-ping rounded-full opacity-75" />
-            <div className="bg-primary relative inline-flex size-3 rounded-full" />
-        </div>
-    )
-}
-
 function MapLocateControl({
     className,
     watch = false,
@@ -786,7 +781,7 @@ function MapLocateControl({
                 )}
             </Button>
             {position && (
-                <MapMarker position={position} icon={<MapLocatePulseIcon />} />
+                <MapMarker position={position} icon={MAP_LOCATE_PULSE_ICON_HTML} />
             )}
         </>
     )
@@ -939,7 +934,7 @@ function MapDrawMarker({ ...props }: DrawOptions.MarkerOptions) {
                     icon: L.divIcon({
                         className: "", // For fixing the moving bug when going in and out the edit mode
                         iconAnchor: [12, 12],
-                        html: renderToString(<MapPinIcon className="size-6" />),
+                        html: MAP_PIN_ICON_HTML,
                     }),
                     ...props,
                 })
@@ -1248,9 +1243,7 @@ function useMapDrawHandleIcon() {
 
     return L.divIcon({
         iconAnchor: [8, 8],
-        html: renderToString(
-            <CircleIcon className="fill-primary stroke-primary size-4 transition-transform hover:scale-110" />
-        ),
+        html: DRAW_HANDLE_ICON_HTML,
     })
 }
 

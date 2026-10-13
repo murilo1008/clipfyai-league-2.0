@@ -278,3 +278,229 @@ describe("getCampaignPerformance", () => {
     expect(queryRaw).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("getCampaignPerformance — coletas de perfis e vídeos", () => {
+  let sequence = 0;
+
+  function setup() {
+    const now = Date.now();
+    const campaign = {
+      id: `snapshots-campaign-${++sequence}`,
+      name: "Competição",
+      slug: "competicao",
+      status: "ACTIVE",
+      startDate: new Date(now - 3 * 86_400_000),
+      endDate: new Date(now + 86_400_000),
+      platforms: ["INSTAGRAM"],
+      requiredMentions: [],
+      performanceSettings: null,
+    };
+    const profile = {
+      id: "profile-1",
+      campaignId: campaign.id,
+      platform: "INSTAGRAM",
+      username: "marca",
+      profileUrl: null,
+      label: null,
+      isActive: true,
+      currentFollowers: 1_300,
+      lastCollectedAt: new Date(now - 60_000),
+      lastError: null,
+      createdAt: new Date(now - 4 * 86_400_000),
+      updatedAt: new Date(now),
+    };
+    const video = {
+      id: "video-1",
+      campaignId: campaign.id,
+      platform: "TIKTOK",
+      originalUrl: "https://tiktok.com/@marca/video/1",
+      platformVideoId: "1",
+      title: "Oficial",
+      description: null,
+      thumbnailUrl: null,
+      isActive: true,
+      currentViews: 9_000n,
+      currentLikes: 90,
+      currentComments: 9,
+      currentShares: 1,
+      lastCollectedAt: new Date(now - 60_000),
+      lastError: null,
+      notifyClippers: false,
+      notificationSentAt: null,
+      notificationRecipientCount: 0,
+      notificationLastError: null,
+      createdAt: new Date(now - 4 * 86_400_000),
+      updatedAt: new Date(now),
+    };
+    const day1Morning = new Date("2026-10-10T11:00:00.000Z");
+    const day1Evening = new Date("2026-10-10T19:00:00.000Z");
+    const day2Evening = new Date("2026-10-11T19:00:00.000Z");
+
+    const findUnique = vi.fn(async (args: { select: Record<string, any> }) => {
+      const includesSnapshots = Boolean(
+        args.select.performanceProfiles?.include?.snapshots,
+      );
+      return {
+        ...campaign,
+        performanceProfiles: [
+          {
+            ...profile,
+            ...(includesSnapshots
+              ? {
+                  snapshots: [
+                    { followers: 1_000, collectedAt: day1Morning },
+                    { followers: 1_100, collectedAt: day1Evening },
+                    { followers: 1_300, collectedAt: day2Evening },
+                  ],
+                }
+              : {}),
+          },
+        ],
+        performanceVideos: [
+          {
+            ...video,
+            ...(includesSnapshots
+              ? {
+                  snapshots: [
+                    {
+                      views: 1_000n,
+                      likes: 10,
+                      comments: 1,
+                      shares: 0,
+                      collectedAt: day1Morning,
+                    },
+                    {
+                      views: 9_000n,
+                      likes: 90,
+                      comments: 9,
+                      shares: 1,
+                      collectedAt: day2Evening,
+                    },
+                  ],
+                }
+              : {}),
+          },
+        ],
+      };
+    });
+    const queryRaw = vi.fn(
+      async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+        const sql = strings.join("?");
+        if (sql.includes('"CampaignPerformanceProfileSnapshot"')) {
+          // Primeira coleta + última de cada dia operacional.
+          return [
+            {
+              profileId: "profile-1",
+              followers: 1_000,
+              collectedAt: day1Morning,
+            },
+            {
+              profileId: "profile-1",
+              followers: 1_100,
+              collectedAt: day1Evening,
+            },
+            {
+              profileId: "profile-1",
+              followers: 1_300,
+              collectedAt: day2Evening,
+            },
+          ];
+        }
+        if (sql.includes('"CampaignPerformanceVideoSnapshot"')) {
+          return [
+            {
+              videoId: "video-1",
+              views: 1_000n,
+              likes: 10,
+              comments: 1,
+              shares: 0,
+              collectedAt: day1Morning,
+            },
+            {
+              videoId: "video-1",
+              views: 9_000n,
+              likes: 90,
+              comments: 9,
+              shares: 1,
+              collectedAt: day2Evening,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    const db = {
+      campaign: { findUnique },
+      clipPost: {
+        aggregate: vi.fn().mockResolvedValue({ _sum: { views: 0n } }),
+      },
+      $queryRaw: queryRaw,
+    } as unknown as PrismaClient;
+    return { campaign, db, findUnique, queryRaw };
+  }
+
+  it("por padrão lê todas as coletas, sem o metadata bruto", async () => {
+    const { campaign, db, findUnique, queryRaw } = setup();
+
+    const result = await getCampaignPerformance(db, campaign.id);
+
+    const select = findUnique.mock.calls[0]![0].select;
+    expect(select.performanceProfiles.include.snapshots).toEqual({
+      select: { followers: true, collectedAt: true },
+      orderBy: { collectedAt: "asc" },
+    });
+    expect(select.performanceVideos.include.snapshots).toEqual({
+      select: {
+        views: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        collectedAt: true,
+      },
+      orderBy: { collectedAt: "asc" },
+    });
+    // Só a série de views da competição vai para o SQL.
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(result?.profiles[0]?.history).toHaveLength(3);
+    expect(result?.profiles[0]?.initialFollowers).toBe(1_000);
+    expect(result?.videos[0]?.initialViews).toBe(1_000);
+  });
+
+  it("no modo diário resume as coletas no SQL e mantém base e crescimento", async () => {
+    const { campaign, db, findUnique, queryRaw } = setup();
+
+    const daily = await getCampaignPerformance(db, campaign.id, {
+      snapshotResolution: "daily",
+    });
+
+    const select = findUnique.mock.calls[0]![0].select;
+    expect(select.performanceProfiles).toEqual({ orderBy: { createdAt: "asc" } });
+    expect(select.performanceVideos).toEqual({ orderBy: { createdAt: "desc" } });
+
+    const snapshotQueries = queryRaw.mock.calls
+      .map(([strings, ...values]) => ({ sql: strings.join("?"), values }))
+      .filter(({ sql }) => sql.includes("Snapshot"));
+    expect(snapshotQueries).toHaveLength(2);
+    for (const { sql, values } of snapshotQueries) {
+      // Última coleta de cada dia operacional + a primeira coleta.
+      expect(sql).toContain("DISTINCT ON");
+      expect(sql).toContain("INTERVAL '4 hours'");
+      expect(sql).toContain('"collectedAt" DESC');
+      expect(sql).toContain("UNION");
+      expect(sql).toContain('."campaignId" = ?');
+      expect(values).toEqual([campaign.id, campaign.id]);
+    }
+
+    const profile = daily?.profiles[0];
+    expect(profile?.initialFollowers).toBe(1_000);
+    expect(profile?.currentFollowers).toBe(1_300);
+    expect(profile?.growth).toBe(300);
+    expect(profile?.history.map((point) => point.followers)).toEqual([
+      1_000, 1_100, 1_300,
+    ]);
+    const video = daily?.videos[0];
+    expect(video?.initialViews).toBe(1_000);
+    expect(video?.viewsGrowth).toBe(8_000);
+    expect(video?.history.map((point) => point.views)).toEqual([1_000, 9_000]);
+  });
+});

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail"
 import {
   ArrowSquareOut,
   CalendarBlank,
@@ -34,8 +34,10 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
+import { api } from "@/trpc/react"
 
 import {
   EmptyState,
@@ -43,10 +45,8 @@ import {
   IneligibilityReasonNotice,
 } from "../../competitions/[slug]/shared"
 import {
-  getClipPostTimelineMs,
   getPlatformAccent,
   getPostEngagementRate,
-  parseBrlNumber,
   type CompetitionDetails,
   type MyPost,
 } from "./shared"
@@ -126,7 +126,7 @@ function PostCard({ post }: { post: MyPost }) {
         </div>
       ) : (
         <>
-          <Image
+          <ClipThumbnail
             src={post.thumbnailUrl}
             alt={`Post de @${post.username}`}
             fill
@@ -246,31 +246,40 @@ function PostCard({ post }: { post: MyPost }) {
    Grid + CTA "Enviar Novo Post"
    ============================================================ */
 
+const PAGE_SIZE = 24
+
 function PostsGrid({
   posts,
+  total,
+  page,
+  isLoading,
+  onPageChange,
   onCreatePost,
   emptySubtitle,
 }: {
   posts: MyPost[];
+  total: number;
+  page: number;
+  isLoading: boolean;
+  onPageChange: (page: number) => void;
   onCreatePost: () => void;
   emptySubtitle: string;
 }) {
-  const [page, setPage] = React.useState(1);
-  const pageSize = 24;
-  const totalPages = Math.max(1, Math.ceil(posts.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const visiblePosts = posts.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize,
-  );
-
-  React.useEffect(() => {
-    setPage(1);
-  }, [posts]);
 
   return (
     <div className="flex flex-col gap-4">
-      {posts.length === 0 ? (
+      {isLoading ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div
+              key={index}
+              className="bg-muted/30 aspect-[9/16] animate-pulse rounded-xl"
+            />
+          ))}
+        </div>
+      ) : posts.length === 0 ? (
         <EmptyState
           icon={<Play className="size-6" weight="fill" />}
           title="Nenhum post por aqui"
@@ -278,7 +287,7 @@ function PostsGrid({
         />
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {visiblePosts.map((post) => (
+          {posts.map((post) => (
             <PostCard key={post.id} post={post} />
           ))}
         </div>
@@ -292,7 +301,7 @@ function PostsGrid({
           <Button
             variant="outline"
             disabled={currentPage === 1}
-            onClick={() => setPage(currentPage - 1)}
+            onClick={() => onPageChange(currentPage - 1)}
           >
             Anterior
           </Button>
@@ -302,7 +311,7 @@ function PostsGrid({
           <Button
             variant="outline"
             disabled={currentPage === totalPages}
-            onClick={() => setPage(currentPage + 1)}
+            onClick={() => onPageChange(currentPage + 1)}
           >
             Próxima
           </Button>
@@ -337,6 +346,9 @@ function PostsGrid({
    Tab "Meus Posts"
    ============================================================ */
 
+type StatusFilter = "all" | "PENDING" | "ELIGIBLE" | "INELIGIBLE" | "DISQUALIFIED"
+type SortBy = "recent" | "views" | "engagement" | "earnings"
+
 export function MyPostsTab({
   competition,
   onCreatePost,
@@ -344,53 +356,92 @@ export function MyPostsTab({
   competition: CompetitionDetails
   onCreatePost: () => void
 }) {
+  const [platformTab, setPlatformTab] = React.useState("all")
   const [searchQuery, setSearchQuery] = React.useState("")
+  const debouncedSearch = useDebouncedValue(searchQuery, 300)
   const [dateFilter, setDateFilter] = React.useState("all")
-  const [statusFilter, setStatusFilter] = React.useState("all")
-  const [sortBy, setSortBy] = React.useState("recent")
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("all")
+  const [sortBy, setSortBy] = React.useState<SortBy>("recent")
 
-  /* Filtrar (busca/período/status) + ordenar */
-  const sortedPosts = React.useMemo(() => {
-    const filtered = competition.myPosts.filter((post) => {
-      const matchesSearch = (post.caption || "")
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase())
-      const matchesStatus =
-        statusFilter === "all" || post.status === statusFilter
+  /* Período sobre a data exibida do post (postedAt ou envio − 3h), no fuso
+     do navegador — calculado quando o filtro muda (chave estável da query). */
+  const timelineRange = React.useMemo(() => {
+    if (dateFilter === "today") {
+      const start = new Date()
+      start.setHours(0, 0, 0, 0)
+      const end = new Date(start)
+      end.setDate(end.getDate() + 1)
+      return { timelineFrom: start, timelineTo: end }
+    }
+    if (dateFilter === "week") {
+      const weekAgo = new Date()
+      weekAgo.setDate(weekAgo.getDate() - 7)
+      return { timelineFrom: weekAgo }
+    }
+    return {}
+  }, [dateFilter])
 
-      let matchesDate = true
-      if (dateFilter === "today") {
-        const postDate = new Date(getClipPostTimelineMs(post))
-        matchesDate = postDate.toDateString() === new Date().toDateString()
-      } else if (dateFilter === "week") {
-        const postDate = new Date(getClipPostTimelineMs(post))
-        const weekAgo = new Date()
-        weekAgo.setDate(weekAgo.getDate() - 7)
-        matchesDate = postDate >= weekAgo
-      }
+  /* Página atual; volta para a 1ª quando aba/filtros mudam (sem render extra) */
+  const filtersKey = [
+    platformTab,
+    debouncedSearch,
+    dateFilter,
+    statusFilter,
+    sortBy,
+  ].join("|")
+  const [pageState, setPageState] = React.useState({ key: filtersKey, page: 1 })
+  const page = pageState.key === filtersKey ? pageState.page : 1
+  const setPage = (nextPage: number) =>
+    setPageState({ key: filtersKey, page: nextPage })
 
-      return matchesSearch && matchesStatus && matchesDate
-    })
-
-    return [...filtered].sort((a, b) => {
-      if (sortBy === "recent")
-        return getClipPostTimelineMs(b) - getClipPostTimelineMs(a)
-      if (sortBy === "views") return b.views - a.views
-      if (sortBy === "engagement") return b.engagementRate - a.engagementRate
-      if (sortBy === "earnings")
-        return parseBrlNumber(b.earnings) - parseBrlNumber(a.earnings)
-      return 0
-    })
-  }, [competition.myPosts, searchQuery, statusFilter, dateFilter, sortBy])
-
-  const countByPlatform = React.useCallback(
-    (platform: string) =>
-      competition.myPosts.filter((post) => post.platform === platform).length,
-    [competition.myPosts],
+  const platform = platformTab === "all" ? undefined : platformTab
+  const { data, isLoading } = api.campaign.getMyCompetitionPosts.useQuery(
+    {
+      campaignId: competition.id,
+      platform,
+      search: debouncedSearch || undefined,
+      status: statusFilter === "all" ? undefined : statusFilter,
+      ...timelineRange,
+      sortBy,
+      page,
+      pageSize: PAGE_SIZE,
+    },
+    {
+      // Mantém a página anterior visível ao paginar/filtrar na mesma aba.
+      placeholderData: (previousData, previousQuery) => {
+        const previousInput = (
+          previousQuery?.queryKey[1] as
+            | { input?: { platform?: string } }
+            | undefined
+        )?.input
+        return previousInput?.platform === platform ? previousData : undefined
+      },
+    },
   )
 
+  /* Contadores das abas (todos os posts, sem filtros) */
+  const countByPlatform = React.useMemo(
+    () =>
+      new Map(
+        competition.myPostsByPlatform.map((group) => [
+          group.platform as string,
+          group.posts,
+        ]),
+      ),
+    [competition.myPostsByPlatform],
+  )
+
+  const gridProps = {
+    posts: data?.posts ?? [],
+    total: data?.total ?? 0,
+    page,
+    isLoading: isLoading && !data,
+    onPageChange: setPage,
+    onCreatePost,
+  }
+
   return (
-    <Tabs defaultValue="all" className="gap-4">
+    <Tabs value={platformTab} onValueChange={setPlatformTab} className="gap-4">
       {/* Sub-tabs por plataforma (scroll horizontal no mobile) */}
       <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden">
         <TabsList className="bg-muted/40 flex h-auto w-max gap-1 rounded-2xl p-1">
@@ -401,7 +452,7 @@ export function MyPostsTab({
             <Sparkle className="size-3.5" weight="fill" />
             Todos
             <Badge className="bg-gradient-custom border-0 px-1.5 py-0 text-[10px] font-bold text-[#04222A] shadow-sm">
-              {competition.myPosts.length}
+              {competition.postedVideoCount}
             </Badge>
           </TabsTrigger>
           {PLATFORM_TABS.map((platform) => {
@@ -420,7 +471,7 @@ export function MyPostsTab({
                 <PlatIcon className="size-3.5" />
                 <span className="hidden sm:inline">{config.label}</span>
                 <Badge className="bg-gradient-custom border-0 px-1.5 py-0 text-[10px] font-bold text-[#04222A] shadow-sm">
-                  {countByPlatform(platform)}
+                  {countByPlatform.get(platform) ?? 0}
                 </Badge>
               </TabsTrigger>
             )
@@ -453,7 +504,10 @@ export function MyPostsTab({
               </SelectContent>
             </Select>
 
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select
+              value={statusFilter}
+              onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+            >
               <SelectTrigger className="h-9 w-full cursor-pointer rounded-xl text-[11px] sm:h-10 sm:text-sm">
                 <Pulse className="size-3.5 shrink-0 sm:size-4" />
                 <SelectValue placeholder="Status" />
@@ -467,7 +521,10 @@ export function MyPostsTab({
               </SelectContent>
             </Select>
 
-            <Select value={sortBy} onValueChange={setSortBy}>
+            <Select
+              value={sortBy}
+              onValueChange={(value) => setSortBy(value as SortBy)}
+            >
               <SelectTrigger className="h-9 w-full cursor-pointer rounded-xl text-[11px] sm:h-10 sm:text-sm">
                 <TrendUp className="size-3.5 shrink-0 sm:size-4" />
                 <SelectValue placeholder="Ordenar" />
@@ -483,8 +540,7 @@ export function MyPostsTab({
         </div>
 
         <PostsGrid
-          posts={sortedPosts}
-          onCreatePost={onCreatePost}
+          {...gridProps}
           emptySubtitle="Ajuste os filtros ou envie seu primeiro post para vê-lo aqui"
         />
       </TabsContent>
@@ -493,8 +549,7 @@ export function MyPostsTab({
       {PLATFORM_TABS.map((platform) => (
         <TabsContent key={platform} value={platform}>
           <PostsGrid
-            posts={sortedPosts.filter((post) => post.platform === platform)}
-            onCreatePost={onCreatePost}
+            {...gridProps}
             emptySubtitle={`Você ainda não enviou posts no ${platformConfig[platform].label} para esta competição`}
           />
         </TabsContent>

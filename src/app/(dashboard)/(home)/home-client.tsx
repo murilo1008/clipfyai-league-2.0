@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import Image from "next/image";
+import { ClipThumbnail } from "@/components/ui/clip-thumbnail";
 import Link from "next/link";
 import {
   ArrowSquareOut,
@@ -31,9 +33,7 @@ import {
   type TickerClip,
 } from "@/components/home/hero-clips-ticker";
 import { HomeHero } from "@/components/home/home-hero";
-import { PlatformDonut } from "@/components/home/platform-donut";
 import { SectionHeading } from "@/components/home/section-heading";
-import { ViewsGrowthChart } from "@/components/home/views-growth-chart";
 import { CountUp, formatCompact } from "@/components/shared/count-up";
 import { Reveal } from "@/components/shared/reveal";
 import {
@@ -54,6 +54,40 @@ import {
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/trpc/react";
+
+/* ── Gráficos (recharts) carregados sob demanda ─────────────────────────── */
+const ViewsGrowthChart = dynamic(
+  () =>
+    import("@/components/home/views-growth-chart").then(
+      (mod) => mod.ViewsGrowthChart,
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <Bone className="h-[280px] w-full rounded-2xl sm:h-[320px]" />
+    ),
+  },
+);
+
+const PlatformDonut = dynamic(
+  () =>
+    import("@/components/home/platform-donut").then(
+      (mod) => mod.PlatformDonut,
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col items-center gap-4 sm:flex-row">
+        <Bone className="size-44 rounded-full" />
+        <div className="flex w-full flex-1 flex-col gap-2.5">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Bone key={index} delay={index * 60} className="h-5 w-full" />
+          ))}
+        </div>
+      </div>
+    ),
+  },
+);
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
 type Campaign = RouterOutputs["customers"]["getDashboard"]["campaigns"][number];
@@ -1361,7 +1395,7 @@ function ViralPostsGrid({ posts }: { posts: Campaign["topPosts"] }) {
             className="group ring-border/60 hover:ring-brand-cyan/50 not-dark:hover:ring-primary/50 relative aspect-[9/16] overflow-hidden rounded-2xl ring-1 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-black/20 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
           >
             {post.thumbnailUrl ? (
-              <Image
+              <ClipThumbnail
                 src={post.thumbnailUrl}
                 alt={`Vídeo de ${handle}`}
                 fill

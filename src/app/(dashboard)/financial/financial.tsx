@@ -1253,6 +1253,7 @@ export default function Financial() {
                   <div className="relative flex h-full w-full items-center justify-center">
                     <Image
                       src={selectedProof}
+                      unoptimized
                       alt="Comprovante"
                       fill
                       className="object-contain"

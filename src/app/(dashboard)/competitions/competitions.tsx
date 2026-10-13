@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import Link from "next/link"
 import {
@@ -49,7 +50,10 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
-import { CreateCompetitionDialog } from "./create-competition-dialog"
+// O formulário de criação é grande: o chunk só é baixado na primeira abertura
+const CreateCompetitionDialog = dynamic(() =>
+  import("./create-competition-dialog").then((m) => m.CreateCompetitionDialog),
+)
 
 type StatusKey =
   | "ACTIVE"
@@ -133,6 +137,11 @@ export default function Competitions() {
     "public",
   )
   const [isCreateOpen, setIsCreateOpen] = React.useState(false)
+  // Depois da primeira abertura o dialog fica montado (animação de fechar)
+  const [hasOpenedCreate, setHasOpenedCreate] = React.useState(false)
+  React.useEffect(() => {
+    if (isCreateOpen) setHasOpenedCreate(true)
+  }, [isCreateOpen])
 
   const filtered = (campaigns ?? []).filter((campaign) => {
     const matchesSearch = campaign.name
@@ -610,10 +619,12 @@ export default function Competitions() {
         </div>
       )}
 
-      <CreateCompetitionDialog
-        open={isCreateOpen}
-        onOpenChange={setIsCreateOpen}
-      />
+      {(isCreateOpen || hasOpenedCreate) && (
+        <CreateCompetitionDialog
+          open={isCreateOpen}
+          onOpenChange={setIsCreateOpen}
+        />
+      )}
     </div>
   )
 }

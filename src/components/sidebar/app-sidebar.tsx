@@ -1,9 +1,9 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import { Plus } from "@phosphor-icons/react"
 
-import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
 import { NavMain } from "@/components/sidebar/nav-main"
 import {
   NavProjects,
@@ -23,6 +23,15 @@ import {
 } from "@/components/ui/sidebar"
 import { getMenuByRole } from "@/config/navigation"
 import { api } from "@/trpc/react"
+
+// Dialog de envio de posts: carregado sob demanda (só clipadores o abrem).
+const CreatePostDialog = dynamic(
+  () =>
+    import("@/components/clippers/create-post-dialog").then(
+      (m) => m.CreatePostDialog,
+    ),
+  { ssr: false },
+)
 
 function SidebarSkeleton() {
   return (
@@ -62,6 +71,12 @@ function CreatePostButton({ onClick }: { onClick: () => void }) {
 
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const [isCreatePostOpen, setIsCreatePostOpen] = React.useState(false)
+  // Monta o dialog na primeira abertura e o mantém (animação de fechar e estado)
+  const [hasOpenedCreatePost, setHasOpenedCreatePost] = React.useState(false)
+  const openCreatePost = () => {
+    setHasOpenedCreatePost(true)
+    setIsCreatePostOpen(true)
+  }
 
   const { data: user, isLoading: isLoadingUser } =
     api.user.getCurrentUser.useQuery()
@@ -72,10 +87,15 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const { data: activeCampaigns } = api.campaign.getActive.useQuery(undefined, {
     enabled: isAdminLike,
   })
-  const { data: clipperCompetitions } = api.clipper.getMyCompetitions.useQuery(
-    undefined,
-    { enabled: user?.role === "CLIPPER" },
-  )
+  // Só nome/slug para o menu (getMyCompetitions calcula métricas por campanha)
+  const { data: clipperCompetitions } =
+    api.clipper.getMyCompetitionOptions.useQuery(undefined, {
+      enabled: user?.role === "CLIPPER",
+      staleTime: 5 * 60_000,
+      // O menu fica montado a sessão toda: voltar para a aba atualiza a lista
+      // (inscrição aprovada pelo admin, competição encerrada).
+      refetchOnWindowFocus: true,
+    })
   // Só nomes e ids para o menu — o getDashboard completo roda ~13 queries
   // de métricas por campanha e era refeito em toda navegação.
   const { data: clientCampaigns } =
@@ -128,14 +148,14 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           <React.Suspense fallback={<SidebarSkeleton />}>
             <NavMain items={navMain} />
             {user?.role === "CLIPPER" && (
-              <CreatePostButton onClick={() => setIsCreatePostOpen(true)} />
+              <CreatePostButton onClick={openCreatePost} />
             )}
             <NavProjects projects={projects} />
           </React.Suspense>
         )}
       </SidebarContent>
       <NavUser />
-      {user?.role === "CLIPPER" && (
+      {user?.role === "CLIPPER" && hasOpenedCreatePost && (
         <CreatePostDialog
           open={isCreatePostOpen}
           onOpenChange={setIsCreatePostOpen}

@@ -533,6 +533,24 @@ describe("clipador: acesso ao mural", () => {
     expect(db.competitionAnnouncement.findMany).not.toHaveBeenCalled();
   });
 
+  it("recusa o perfil antes de informar que a competição não existe", async () => {
+    const { api, db } = setup("CLIPPER");
+    db.clipperProfile.findUnique.mockResolvedValue({
+      id: "clipper-1",
+      verificationStatus: "BANNED",
+      user: { role: "CLIPPER" },
+    });
+    db.campaign.findUnique.mockResolvedValue(null);
+    await expect(
+      api.listForClipper({ slug: "inexistente" }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Acesso restrito aos clipadores participantes.",
+    });
+    expect(db.clipperApplication.findUnique).not.toHaveBeenCalled();
+    expect(db.competitionAnnouncement.findMany).not.toHaveBeenCalled();
+  });
+
   it("bloqueia clientes mesmo que tenham um perfil de clipador antigo", async () => {
     const { api, db } = setup("CLIENT");
     await expect(

@@ -12,11 +12,15 @@ import type { RouterInputs, RouterOutputs } from "@/trpc/react"
 export type CompetitionDetails =
   RouterOutputs["campaign"]["getCompetitionDetails"]
 
-export type MyPost = CompetitionDetails["myPosts"][number]
+export type CompetitionRanking =
+  RouterOutputs["campaign"]["getCompetitionRanking"]
 
-export type MonthlyRankingEntry = CompetitionDetails["topRanking"][number]
+export type MyPost =
+  RouterOutputs["campaign"]["getMyCompetitionPosts"]["posts"][number]
 
-export type DailyRankingItem = CompetitionDetails["topDailyPosts"][number]
+export type MonthlyRankingEntry = CompetitionRanking["topRanking"][number]
+
+export type DailyRankingItem = CompetitionRanking["topDailyPosts"][number]
 
 export type ApplicationAccount =
   RouterOutputs["campaign"]["getApplicationAccounts"][number]

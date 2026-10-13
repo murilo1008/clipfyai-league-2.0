@@ -39,17 +39,15 @@ export function AnnouncementsTab({
     setSelectedId(initialAnnouncementId ?? null);
   }, [initialAnnouncementId]);
   const [category, setCategory] = useState<AnnouncementFilter>("all");
+  // Avisos mudam pouco: polling espaçado (markRead já invalida a lista).
   const posts = api.competitionAnnouncements.listForClipper.useInfiniteQuery(
     { slug, category: category === "all" ? undefined : category },
-    { getNextPageParam: (page) => page.nextCursor, refetchInterval: 30000 },
+    { getNextPageParam: (page) => page.nextCursor, refetchInterval: 120_000 },
   );
+  // Sem polling: o aviso aberto é buscado ao abrir e após marcar como lido.
   const selectedPost = api.notifications.getAnnouncement.useQuery(
     { slug, announcementId: selectedId ?? "" },
-    {
-      enabled: !!selectedId,
-      retry: false,
-      refetchInterval: selectedId ? 30000 : false,
-    },
+    { enabled: !!selectedId, retry: false },
   );
   const { mutate: markRead } = api.notifications.markRead.useMutation({
     onSuccess: () => {

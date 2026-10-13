@@ -1,9 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import type { CommentAnalysisAggregate, Prisma } from "@prisma/client";
+import type {
+  CommentAnalysisAggregate,
+  Prisma,
+  UserRole,
+} from "@prisma/client";
 
 import { env } from "@/env";
 import type { db as prismaClient } from "@/server/db";
+import { cachedQuery } from "@/server/memory-cache";
 import {
   createTRPCRouter,
   privateProcedure,
@@ -48,9 +53,35 @@ function extractErrorMessage(data: any, status: number): string {
   return `Erro ao comunicar com análise de comentários (${status})`;
 }
 
+/** Prazo padrão de cada chamada à API do League (status de jobs, agregados). */
+const LEAGUE_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Estimar e disparar uma análise fazem o League carregar e preparar dezenas
+ * de milhares de comentários de forma síncrona: prazo bem maior que o padrão.
+ */
+const LEAGUE_ANALYSIS_TIMEOUT_MS = 120_000;
+
+type LeagueFetchOptions = {
+  timeoutMs?: number;
+  /** Mensagem do TIMEOUT (ex.: um disparo que pode ter chegado ao League). */
+  timeoutMessage?: string;
+};
+
+function isAbortError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
+}
+
 async function leagueFetch<T = LeagueResponse>(
   path: string,
   init: RequestInit = {},
+  {
+    timeoutMs = LEAGUE_FETCH_TIMEOUT_MS,
+    timeoutMessage = "A análise de comentários não respondeu a tempo. Tente novamente em instantes.",
+  }: LeagueFetchOptions = {},
 ): Promise<T> {
   const baseUrl = resolveLeagueBaseUrl();
   const headers = new Headers(init.headers);
@@ -60,11 +91,26 @@ async function leagueFetch<T = LeagueResponse>(
     headers.set("x-internal-api-key", internalApiKey);
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-  });
-  const text = await response.text();
+  let response: Response;
+  let text: string;
+  try {
+    // O prazo cobre também a leitura do corpo.
+    response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+    });
+    text = await response.text();
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: timeoutMessage,
+        cause: error,
+      });
+    }
+    throw error;
+  }
   const data: any = text ? JSON.parse(text) : null;
 
   if (!response.ok) {
@@ -83,18 +129,29 @@ async function leagueFetch<T = LeagueResponse>(
   return data as T;
 }
 
+// Os helpers de acesso são encadeados (assertAdmin + assertCanAccess*): o
+// role é lido uma vez por chamada de procedure, não uma vez por helper.
+const roleByContext = new WeakMap<AnalysisContext, Promise<UserRole | null>>();
+
 async function getUserRole(ctx: AnalysisContext) {
-  const user = await ctx.db.user.findUnique({
-    where: { id: ctx.userId },
-    select: { role: true },
-  });
-  if (!user) {
+  let pending = roleByContext.get(ctx);
+  if (!pending) {
+    pending = ctx.db.user
+      .findUnique({
+        where: { id: ctx.userId },
+        select: { role: true },
+      })
+      .then((user) => user?.role ?? null);
+    roleByContext.set(ctx, pending);
+  }
+  const role = await pending;
+  if (!role) {
     throw new TRPCError({
       code: "UNAUTHORIZED",
       message: "Usuário não encontrado",
     });
   }
-  return user.role;
+  return role;
 }
 
 async function assertCanAccessPost(ctx: AnalysisContext, postId: string) {
@@ -173,6 +230,82 @@ type AggregateFreshness = {
 type AggregateWithFreshness = CommentAnalysisAggregate &
   Partial<AggregateFreshness>;
 
+/** A contagem da competição é a mesma para todos que podem vê-la. */
+const CAMPAIGN_COMMENT_COUNTS_TTL_MS = 5 * 60_000;
+
+type CommentCounts = {
+  storedComments: number;
+  newCommentsSinceGeneratedAt: number;
+};
+
+/**
+ * Comentários guardados da competição e quantos chegaram depois do agregado.
+ * ClipPostComment não tem campaignId: a contagem parte dos posts da competição
+ * e lê os comentários post a post pelo índice de clipPostId (o OFFSET 0 impede
+ * o planner de trocar por uma varredura da tabela inteira, que tem GBs).
+ */
+export async function countCampaignComments(
+  db: AnalysisContext["db"],
+  campaignId: string,
+  generatedAt: Date,
+): Promise<CommentCounts> {
+  const [row] = await db.$queryRaw<
+    Array<{ storedComments: number; newComments: number }>
+  >`
+    SELECT
+      COUNT(*)::int AS "storedComments",
+      COUNT(*) FILTER (
+        WHERE comment."createdAt" > ${generatedAt}::timestamp
+      )::int AS "newComments"
+    FROM "ClipPost" post
+    CROSS JOIN LATERAL (
+      SELECT c."createdAt"
+      FROM "ClipPostComment" c
+      WHERE c."clipPostId" = post.id
+      OFFSET 0
+    ) comment
+    WHERE post."campaignId" = ${campaignId}
+  `;
+  return {
+    storedComments: row?.storedComments ?? 0,
+    newCommentsSinceGeneratedAt: row?.newComments ?? 0,
+  };
+}
+
+function countCommentsForAggregate(
+  ctx: AnalysisContext,
+  aggregate: CommentAnalysisAggregate,
+): Promise<CommentCounts> | null {
+  if (aggregate.scope === "POST") {
+    if (!aggregate.clipPostId) return null;
+    const where: Prisma.ClipPostCommentWhereInput = {
+      clipPostId: aggregate.clipPostId,
+    };
+    return Promise.all([
+      ctx.db.clipPostComment.count({ where }),
+      ctx.db.clipPostComment.count({
+        where: {
+          ...where,
+          createdAt: { gt: aggregate.generatedAt },
+        },
+      }),
+    ]).then(([storedComments, newCommentsSinceGeneratedAt]) => ({
+      storedComments,
+      newCommentsSinceGeneratedAt,
+    }));
+  }
+
+  const campaignId = aggregate.campaignId;
+  if (!campaignId) return null;
+  // Quem chama já validou o acesso à competição; a chave inclui o agregado,
+  // então um agregado novo já conta do zero.
+  return cachedQuery(
+    `comments-analysis:campaign-counts:${campaignId}:${aggregate.id}:${aggregate.generatedAt.getTime()}`,
+    CAMPAIGN_COMMENT_COUNTS_TTL_MS,
+    () => countCampaignComments(ctx.db, campaignId, aggregate.generatedAt),
+  );
+}
+
 async function withAggregateFreshness(
   ctx: AnalysisContext,
   aggregate: CommentAnalysisAggregate | null,
@@ -181,16 +314,9 @@ async function withAggregateFreshness(
 
   // O agregado guarda apenas um dos dois ids conforme o escopo; sem ele não há
   // como contar comentários novos, então devolve o agregado sem frescor.
-  const where: Prisma.ClipPostCommentWhereInput | null =
-    aggregate.scope === "POST"
-      ? aggregate.clipPostId
-        ? { clipPostId: aggregate.clipPostId }
-        : null
-      : aggregate.campaignId
-        ? { clipPost: { campaignId: aggregate.campaignId } }
-        : null;
+  const counts = countCommentsForAggregate(ctx, aggregate);
 
-  if (!where) {
+  if (!counts) {
     return {
       ...aggregate,
       storedComments: 0,
@@ -199,15 +325,7 @@ async function withAggregateFreshness(
     };
   }
 
-  const [storedComments, newCommentsSinceGeneratedAt] = await Promise.all([
-    ctx.db.clipPostComment.count({ where }),
-    ctx.db.clipPostComment.count({
-      where: {
-        ...where,
-        createdAt: { gt: aggregate.generatedAt },
-      },
-    }),
-  ]);
+  const { storedComments, newCommentsSinceGeneratedAt } = await counts;
 
   return {
     ...aggregate,
@@ -264,6 +382,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        { timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS },
       );
     }),
 
@@ -283,6 +402,11 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        {
+          timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS,
+          timeoutMessage:
+            "A análise pode ter sido iniciada, mas o League demorou a responder. Confira o andamento em instantes antes de disparar de novo.",
+        },
       );
     }),
 
@@ -300,6 +424,7 @@ export const commentsAnalysisRouter = createTRPCRouter({
             maxComments: input.maxComments,
           }),
         },
+        { timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS },
       );
     }),
 
@@ -318,6 +443,11 @@ export const commentsAnalysisRouter = createTRPCRouter({
             forceReprocess: input.forceReprocess,
             maxComments: input.maxComments,
           }),
+        },
+        {
+          timeoutMs: LEAGUE_ANALYSIS_TIMEOUT_MS,
+          timeoutMessage:
+            "A análise pode ter sido iniciada, mas o League demorou a responder. Confira o andamento em instantes antes de disparar de novo.",
         },
       );
     }),
