@@ -10,6 +10,10 @@ import {
 import { getCampaignPerformance } from "@/server/performance/get-campaign-performance"
 import { aggregateCampaignPerformance } from "@/server/performance/aggregate-campaign-performance"
 import { hasInvestedAmountInEveryCampaign } from "@/server/performance/visibility"
+import {
+  getCampaignDashboardMetrics,
+  getCampaignTotals,
+} from "@/server/client-dashboard"
 
 // Client status enum
 const ClientStatusEnum = z.enum(["ACTIVE", "INACTIVE", "PENDING"])
@@ -1260,274 +1264,17 @@ export const clientRouter = createTRPCRouter({
         platforms: true,
         requiredHashtags: true,
         prizeInfo: true,
-        _count: {
-          select: {
-            applications: {
-              where: {
-                status: "APPROVED",
-              },
-            },
-            clipPosts: true, // ✅ Conta TODOS os posts, independente do status
-          },
-        },
       },
       orderBy: {
         startDate: "desc",
       },
     })
 
-    // Para cada campanha, buscar métricas
+    // Métricas agregadas no banco por competição (cache de 60 s por
+    // competição). As competições já vêm filtradas pelo cliente logado.
     const campaignsWithMetrics = await Promise.all(
       campaigns.map(async (campaign) => {
-        // ⚠️ FILTRO ESPECIAL: Competição Tarcísio De Freitas - Novembro
-        // Apenas posts a partir de 07/11/2025 22:00 (horário de Brasília)
-        const isTarcisioCompetition =
-          campaign.slug === "tarcisio-de-freitas-novembro"
-        const tarcisioStartDate = new Date("2025-11-07T22:00:00-03:00") // 07/11/2025 22:00 BRT
-
-        const postDateFilter = isTarcisioCompetition
-          ? { postedAt: { gte: tarcisioStartDate } }
-          : {}
-
-        // Buscar contagem real de posts (TODOS, independente do status)
-        const totalPostsCount = isTarcisioCompetition
-          ? await ctx.db.clipPost.count({
-              where: {
-                campaignId: campaign.id,
-                // ✅ Removido filtro de status - conta TODOS os posts
-                ...postDateFilter,
-              },
-            })
-          : await ctx.db.clipPost.count({
-              where: {
-                campaignId: campaign.id,
-                // ✅ Removido filtro de status - conta TODOS os posts
-              },
-            })
-
-        // Buscar métricas totais da campanha apenas em posts elegíveis
-        const metrics = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-        })
-
-        // Buscar crescimento nos últimos 7 dias apenas em posts elegíveis
-        const sevenDaysAgo = new Date()
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-
-        const recentMetrics = await ctx.db.clipPost.aggregate({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            createdAt: {
-              gte: sevenDaysAgo,
-            },
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-          },
-        })
-
-        // Crescimento acumulado por plataforma (do início ao fim da competição)
-        const now = new Date()
-        const growthStartDate = new Date(campaign.startDate)
-        growthStartDate.setHours(0, 0, 0, 0)
-        const growthEndDate =
-          campaign.endDate < now ? new Date(campaign.endDate) : now
-        growthEndDate.setHours(23, 59, 59, 999)
-
-        const [postsInRange, allCampaignPlatforms] = await Promise.all([
-          ctx.db.clipPost.findMany({
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              createdAt: { gte: growthStartDate, lte: growthEndDate },
-              ...(isTarcisioCompetition
-                ? { postedAt: { gte: tarcisioStartDate } }
-                : {}),
-            },
-            select: { platform: true, views: true, createdAt: true },
-          }),
-          ctx.db.clipPost.groupBy({
-            by: ["platform"],
-            where: {
-              campaignId: campaign.id,
-              status: "ELIGIBLE",
-              ...(isTarcisioCompetition
-                ? { postedAt: { gte: tarcisioStartDate } }
-                : {}),
-            },
-            _sum: { views: true },
-          }),
-        ])
-
-        const growthPlatforms = allCampaignPlatforms
-          .map((p) => p.platform)
-          .sort()
-
-        const totalDays = Math.ceil(
-          (growthEndDate.getTime() - growthStartDate.getTime()) /
-            (1000 * 60 * 60 * 24),
-        )
-        const dayMap = new Map<string, Record<string, number>>()
-        for (let i = 0; i < totalDays; i++) {
-          const d = new Date(growthStartDate)
-          d.setDate(d.getDate() + i)
-          const key = d.toISOString().slice(0, 10)
-          const row: Record<string, number> = { total: 0 }
-          growthPlatforms.forEach((p) => (row[p] = 0))
-          dayMap.set(key, row)
-        }
-
-        for (const post of postsInRange) {
-          const key = post.createdAt.toISOString().slice(0, 10)
-          const row = dayMap.get(key)
-          if (!row) continue
-          const views = Number(post.views || 0)
-          row.total = (row.total || 0) + views
-          row[post.platform] = (row[post.platform] || 0) + views
-        }
-
-        const cumTotals: Record<string, number> = {}
-        growthPlatforms.forEach((p) => (cumTotals[p] = 0))
-        let cumTotal = 0
-
-        const growthData = Array.from(dayMap.entries()).map(([date, row]) => {
-          cumTotal += row.total || 0
-          const entry: Record<string, number | string> = { total: cumTotal }
-          for (const p of growthPlatforms) {
-            cumTotals[p] = (cumTotals[p] || 0) + (row[p] || 0)
-            entry[p] = cumTotals[p]!
-          }
-          return { date, ...entry }
-        })
-
-        // Buscar top posts da campanha - apenas vídeos elegíveis
-        const topPosts = await ctx.db.clipPost.findMany({
-          where: {
-            campaignId: campaign.id,
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          select: {
-            id: true,
-            username: true,
-            submittedUrl: true,
-            thumbnailUrl: true,
-            platform: true,
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            postedAt: true,
-          },
-          orderBy: {
-            views: "desc",
-          },
-          take: 5,
-        })
-
-        // Buscar distribuição por plataforma
-        const platformStats = await ctx.db.clipPost.groupBy({
-          by: ["platform"],
-          where: {
-            campaignId: campaign.id,
-            status: {
-              equals: "ELIGIBLE",
-            },
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-          },
-          _count: {
-            id: true,
-          },
-        })
-
-        // Buscar top accounts - APENAS vídeos elegíveis
-        const topAccountsGrouped = await ctx.db.clipPost.groupBy({
-          by: ["username"],
-          where: {
-            campaignId: campaign.id,
-            username: { not: null },
-            status: "ELIGIBLE",
-            ...postDateFilter,
-          },
-          _sum: {
-            views: true,
-            likes: true,
-            comments: true,
-          },
-          _count: {
-            id: true,
-          },
-          orderBy: {
-            _sum: {
-              views: "desc",
-            },
-          },
-          take: 5,
-        })
-
-        // Para cada top account, buscar a plataforma principal
-        const topAccounts = await Promise.all(
-          topAccountsGrouped.map(async (acc) => {
-            const topPost = await ctx.db.clipPost.findFirst({
-              where: {
-                campaignId: campaign.id,
-                username: acc.username,
-                status: "ELIGIBLE",
-                ...postDateFilter,
-              },
-              select: {
-                platform: true,
-              },
-              orderBy: {
-                views: "desc",
-              },
-            })
-
-            return {
-              username: acc.username || "",
-              platform: topPost?.platform || "INSTAGRAM",
-              totalViews: Number(acc._sum.views || 0),
-              totalLikes: acc._sum.likes || 0,
-              totalComments: acc._sum.comments || 0,
-              postsCount: acc._count.id,
-            }
-          }),
-        )
-
-        // Calcular engagement rate
-        const totalViews = Number(metrics._sum.views || 0)
-        const totalLikes = metrics._sum.likes || 0
-        const totalComments = metrics._sum.comments || 0
-        const totalShares = metrics._sum.shares || 0
-        const totalSaves = metrics._sum.saves || 0
-        const engagementRate = calculateEngagementRate(
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalSaves,
-        )
+        const metrics = await getCampaignDashboardMetrics(ctx.db, campaign)
 
         return {
           id: campaign.id,
@@ -1541,38 +1288,20 @@ export const clientRouter = createTRPCRouter({
           platforms: campaign.platforms,
           requiredHashtags: campaign.requiredHashtags,
           prizeInfo: campaign.prizeInfo,
-          totalParticipants: campaign._count.applications,
-          totalPosts: totalPostsCount, // Usa contagem filtrada se for Tarcísio
-          totalViews,
-          totalLikes,
-          totalComments,
-          totalShares,
-          totalSaves,
-          engagementRate,
-          recentViews: Number(recentMetrics._sum.views || 0),
-          growthData,
-          growthPlatforms,
-          platformStats: platformStats.map((stat) => ({
-            platform: stat.platform,
-            totalViews: Number(stat._sum.views || 0),
-            totalLikes: stat._sum.likes || 0,
-            totalComments: stat._sum.comments || 0,
-            totalShares: stat._sum.shares || 0,
-            postsCount: stat._count.id,
-          })),
-          topPosts: topPosts.map((post) => ({
-            id: post.id,
-            username: post.username || "",
-            url: post.submittedUrl,
-            thumbnailUrl: post.thumbnailUrl,
-            platform: post.platform,
-            views: Number(post.views),
-            likes: post.likes,
-            comments: post.comments,
-            shares: post.shares,
-            postedAt: post.postedAt?.toISOString(),
-          })),
-          topAccounts,
+          totalParticipants: metrics.totalParticipants,
+          totalPosts: metrics.totalPosts, // Usa contagem filtrada se for Tarcísio
+          totalViews: metrics.totalViews,
+          totalLikes: metrics.totalLikes,
+          totalComments: metrics.totalComments,
+          totalShares: metrics.totalShares,
+          totalSaves: metrics.totalSaves,
+          engagementRate: metrics.engagementRate,
+          recentViews: metrics.recentViews,
+          growthData: metrics.growthData,
+          growthPlatforms: metrics.growthPlatforms,
+          platformStats: metrics.platformStats,
+          topPosts: metrics.topPosts,
+          topAccounts: metrics.topAccounts,
         }
       }),
     )
