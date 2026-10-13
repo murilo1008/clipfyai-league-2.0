@@ -173,14 +173,14 @@ export function getHomeTickerClips(db: Pick<PrismaClient, "$queryRaw">) {
   return cachedAdminHomeQuery("ticker-clips", async () => {
     const rows = await db.$queryRaw<TickerRow[]>`
       WITH active AS (
-        SELECT id, ROW_NUMBER() OVER (ORDER BY "startDate" DESC)::int AS rank
+        SELECT id, ROW_NUMBER() OVER (ORDER BY "startDate" DESC)::int AS campaign_rank
         FROM "Campaign"
         WHERE status = 'ACTIVE' AND "isPrivate" = false
         ORDER BY "startDate" DESC
         LIMIT ${TICKER_CAMPAIGNS}
       )
       SELECT
-        a.rank AS "campaignRank",
+        a.campaign_rank AS "campaignRank",
         p.id,
         p."thumbnailUrl",
         p.views,
@@ -198,7 +198,7 @@ export function getHomeTickerClips(db: Pick<PrismaClient, "$queryRaw">) {
         ORDER BY cp.views DESC
         LIMIT ${TICKER_POSTS_PER_CAMPAIGN}
       ) p
-      ORDER BY a.rank, p.views DESC
+      ORDER BY a.campaign_rank, p.views DESC
     `;
 
     const postsByCampaign = new Map<number, HomeTickerPost[]>();
