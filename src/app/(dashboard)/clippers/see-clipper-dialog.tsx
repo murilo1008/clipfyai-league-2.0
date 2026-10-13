@@ -85,7 +85,7 @@ import { api } from "@/trpc/react"
 
 import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
 
-import { STATUS_CONFIG, type Clipper, type ClipperStatus } from "./clippers"
+import { STATUS_CONFIG, type ClipperStatus } from "./clippers"
 
 const formatDateTime = (date: Date | string) =>
   format(new Date(date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
@@ -205,28 +205,32 @@ type TransactionStatusFilter =
   | "CANCELLED"
 
 interface SeeClipperDialogProps {
-  clipper: Clipper | null
+  clipperId: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
 export function SeeClipperDialog({
-  clipper,
+  clipperId,
   open,
   onOpenChange,
 }: SeeClipperDialogProps) {
   const utils = api.useUtils()
   const { maskBRLExact: formatCurrency } = useMaskedCurrency()
-  const enabled = open && !!clipper
+  const enabled = open && !!clipperId
+
+  /* ===== Perfil completo (a lista só traz as colunas da tabela) ===== */
+  const { data: clipper, isError: profileError } =
+    api.clipper.getById.useQuery({ id: clipperId ?? "" }, { enabled })
 
   /* ===== Carteira ===== */
   const { data: wallet, isLoading: loadingWallet } =
     api.clipper.getWallet.useQuery(
-      { clipperProfileId: clipper?.id ?? "" },
+      { clipperProfileId: clipperId ?? "" },
       { enabled },
     )
   const { data: walletStats } = api.clipper.getWalletStats.useQuery(
-    { clipperProfileId: clipper?.id ?? "" },
+    { clipperProfileId: clipperId ?? "" },
     { enabled },
   )
 
@@ -244,7 +248,7 @@ export function SeeClipperDialog({
   const { data: transactionsData, isLoading: loadingTransactions } =
     api.clipper.getTransactions.useQuery(
       {
-        clipperProfileId: clipper?.id ?? "",
+        clipperProfileId: clipperId ?? "",
         page: transactionPage,
         pageSize: 10,
         type: transactionType,
@@ -256,7 +260,7 @@ export function SeeClipperDialog({
   /* ===== Contas sociais ===== */
   const { data: socialAccounts, isLoading: loadingSocial } =
     api.clipper.getClipperSocialAccounts.useQuery(
-      { clipperProfileId: clipper?.id ?? "" },
+      { clipperProfileId: clipperId ?? "" },
       { enabled },
     )
 
@@ -282,6 +286,7 @@ export function SeeClipperDialog({
       toast.success("Informações atualizadas!")
       setIsEditing(false)
       void utils.clipper.getAll.invalidate()
+      void utils.clipper.getById.invalidate()
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao atualizar informações"),
@@ -357,6 +362,7 @@ export function SeeClipperDialog({
       setIsBanOpen(false)
       onOpenChange(false)
       void utils.clipper.getAll.invalidate()
+      void utils.clipper.getById.invalidate()
       void utils.clipper.getStats.invalidate()
     },
     onError: (error) => toast.error(error.message || "Erro ao banir clipador"),
@@ -368,13 +374,23 @@ export function SeeClipperDialog({
       setIsUnbanOpen(false)
       onOpenChange(false)
       void utils.clipper.getAll.invalidate()
+      void utils.clipper.getById.invalidate()
       void utils.clipper.getStats.invalidate()
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao desbanir clipador"),
   })
 
-  if (!clipper) return null
+  if (!clipperId) return null
+  if (!clipper) {
+    return (
+      <ClipperProfileLoadingDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        failed={profileError}
+      />
+    )
+  }
 
   const status =
     STATUS_CONFIG[clipper.verificationStatus as ClipperStatus] ??
@@ -1837,5 +1853,55 @@ function TermRow({ accepted, label }: { accepted: boolean; label: string }) {
         {accepted ? "Aceito" : "Não aceito"}
       </span>
     </div>
+  )
+}
+
+/** Dialog enquanto o perfil completo (getById) carrega ou se ele falhar. */
+function ClipperProfileLoadingDialog({
+  open,
+  onOpenChange,
+  failed,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  failed: boolean
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] w-[96vw] flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-5xl">
+        <DialogHeader className="border-border/60 shrink-0 border-b p-4 text-left sm:p-6">
+          <DialogTitle className="sr-only">Perfil do clipador</DialogTitle>
+          <DialogDescription className="sr-only">
+            {failed
+              ? "Não foi possível carregar o perfil"
+              : "Carregando perfil do clipador"}
+          </DialogDescription>
+          <div className="flex items-center gap-3.5">
+            <Bone className="size-13 shrink-0 rounded-2xl sm:size-15" />
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <Bone delay={60} className="h-5 w-48 max-w-full" />
+              <Bone delay={120} className="h-3.5 w-64 max-w-full rounded-full" />
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="p-4 sm:p-6">
+          {failed ? (
+            <p className="text-muted-foreground py-10 text-center text-sm">
+              Não foi possível carregar o perfil do clipador.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <Bone
+                  key={index}
+                  delay={180 + index * 60}
+                  className="h-20 rounded-2xl"
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

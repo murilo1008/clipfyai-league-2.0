@@ -26,11 +26,16 @@ export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const { data: user } = api.user.getCurrentUser.useQuery();
   const enabled = user?.role === "CLIPPER";
+  // Mesma entrada que a página da competição usa ({ slug }): as duas
+  // observam a mesma query e o polling não se duplica.
   const summary = api.notifications.unreadSummary.useQuery(
     competitionSlug ? { slug: competitionSlug } : undefined,
     {
       enabled,
-      refetchInterval: 30000,
+      // O sino aparece em todas as páginas do clipador: polling espaçado e
+      // atualização ao voltar para a aba (o padrão global desliga o foco).
+      refetchInterval: 120_000,
+      refetchOnWindowFocus: true,
     },
   );
   const notifications = api.notifications.list.useInfiniteQuery(
@@ -38,7 +43,8 @@ export function NotificationsBell() {
     {
       enabled: enabled && open,
       getNextPageParam: (page) => page.nextCursor,
-      refetchInterval: open ? 30000 : false,
+      // Sem polling: a lista é buscada a cada abertura do popover.
+      staleTime: 0,
     },
   );
   if (!enabled) return null;
@@ -46,7 +52,14 @@ export function NotificationsBell() {
   const items = notifications.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // Mantém o contador do cabeçalho coerente com a lista recém-buscada.
+        if (next && summary.isStale) void summary.refetch();
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="ghost"

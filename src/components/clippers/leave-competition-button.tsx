@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 import { SignOut } from "@phosphor-icons/react"
+import { useQueryClient } from "@tanstack/react-query"
+import { getQueryKey } from "@trpc/react-query"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -26,6 +28,8 @@ import { api } from "@/trpc/react"
 type Props = {
   competition: {
     id: string
+    /** Quando informado, descarta o cache da página da competição após sair. */
+    slug?: string
     name: string
     status: string
     startDate: string | Date
@@ -46,22 +50,61 @@ export function LeaveCompetitionButton({
 }: Props) {
   const [open, setOpen] = useState(false)
   const utils = api.useUtils()
+  const queryClient = useQueryClient()
   const hasPosts = postedVideoCount > 0
+
+  // Listas que mostram a inscrição (antes invalidava os routers inteiros).
+  const refreshEnrollmentLists = () => {
+    void utils.campaign.getAllActiveCompetitions.invalidate()
+    void utils.campaign.getScheduled.invalidate()
+    void utils.clipper.getMyApplications.invalidate()
+    void utils.clipper.getMyCompetitions.invalidate()
+    void utils.clipper.getMyCompetitionOptions.invalidate()
+    void utils.clipper.getDashboardStats.invalidate()
+    void utils.clipper.getNextAvailableCompetition.invalidate()
+  }
+
   const leave = api.campaign.leaveCompetition.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: (result) => {
       setOpen(false)
       toast.success(result.message)
       onSuccess?.()
-      await Promise.all([
-        utils.campaign.invalidate(),
-        utils.clipper.invalidate(),
-        utils.notifications.invalidate(),
-      ])
+      // A página da competição deixa de ser acessível: descarta o cache dela.
+      if (competition.slug) {
+        queryClient.removeQueries({
+          queryKey: getQueryKey(
+            api.campaign.getCompetitionDetails,
+            { slug: competition.slug },
+            "query",
+          ),
+        })
+      }
+      queryClient.removeQueries({
+        queryKey: getQueryKey(
+          api.campaign.getCompetitionRanking,
+          { campaignId: competition.id },
+          "query",
+        ),
+      })
+      queryClient.removeQueries({
+        queryKey: getQueryKey(
+          api.campaign.getMyCompetitionPosts,
+          { campaignId: competition.id },
+          "query",
+        ),
+      })
+      refreshEnrollmentLists()
+      // Avisos da competição deixam de aparecer para quem saiu.
+      void utils.notifications.invalidate()
     },
     onError: (error) => {
       toast.error("Não foi possível sair", { description: error.message })
-      void utils.campaign.invalidate()
-      void utils.clipper.getMyApplications.invalidate()
+      refreshEnrollmentLists()
+      if (competition.slug) {
+        void utils.campaign.getCompetitionDetails.invalidate({
+          slug: competition.slug,
+        })
+      }
     },
   })
 

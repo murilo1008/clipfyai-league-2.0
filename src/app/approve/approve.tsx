@@ -54,16 +54,13 @@ export default function Approve() {
     isLoading,
     refetch,
   } = api.user.getVerificationStatus.useQuery(undefined, {
-    // Só aguarda enquanto a análise está em aberto; status finais não mudam
-    // sozinhos (o botão de atualizar continua disponível).
-    refetchInterval: (query) => {
-      const status = query.state.data?.verificationStatus
-      return status === "VERIFIED" ||
-        status === "REJECTED" ||
-        status === "BANNED"
-        ? false
-        : 15_000
-    },
+    // O status só muda por ação do admin (ou do próprio clipador no
+    // onboarding, no caso do UNVERIFIED): só o PENDING aguarda uma decisão,
+    // com polling espaçado. Voltar para a aba e o botão de atualizar
+    // continuam consultando em qualquer status.
+    refetchInterval: (query) =>
+      query.state.data?.verificationStatus === "PENDING" ? 60_000 : false,
+    refetchOnWindowFocus: true,
   })
 
   // Redirecionar se não está logado

@@ -79,7 +79,7 @@ function fixture() {
     clipPost: {
       findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({ id: "post-1" }),
+      createManyAndReturn: vi.fn().mockResolvedValue([{ id: "post-1" }]),
     },
     monthlyRanking: { findMany: vi.fn() },
     wallet: { findUnique: vi.fn(), update: vi.fn() },
@@ -145,22 +145,22 @@ afterEach(() => vi.restoreAllMocks());
 describe("ações após a saída", () => {
   it("informa todos os vídeos enviados em minhas inscrições para validar a saída", async () => {
     const { clipper, db, application } = fixture();
-    db.clipperApplication.findMany.mockResolvedValue([
-      { ...application, _count: { clipPosts: 2 } },
-    ]);
+    // Contagem de todos os status (inclusive não elegíveis), só das inscrições do clipador
+    const groupBy = vi
+      .fn()
+      .mockResolvedValue([{ applicationId: application.id, _count: { id: 2 } }]);
+    Object.assign(db.clipPost, { groupBy });
 
     const result = await clipper.getMyApplications();
 
     expect(result).toEqual([
       expect.objectContaining({ id: application.id, postedVideoCount: 2 }),
     ]);
-    expect(db.clipperApplication.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        select: expect.objectContaining({
-          _count: { select: { clipPosts: true } },
-        }),
-      }),
-    );
+    expect(groupBy).toHaveBeenCalledWith({
+      by: ["applicationId"],
+      where: { applicationId: { in: [application.id] } },
+      _count: { id: true },
+    });
   });
 
   it("não credita um prêmio mensal se o clipador sair depois da consulta do ranking", async () => {
@@ -199,7 +199,7 @@ describe("ações após a saída", () => {
     await expect(clipper.submitPosts(postInput)).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
-    expect(db.clipPost.create).not.toHaveBeenCalled();
+    expect(db.clipPost.createManyAndReturn).not.toHaveBeenCalled();
   });
 
   it("revalida a inscrição sob lock antes de gravar posts", async () => {
@@ -211,7 +211,7 @@ describe("ações após a saída", () => {
       code: "FORBIDDEN",
     });
     expect(db.$executeRaw).toHaveBeenCalled();
-    expect(db.clipPost.create).not.toHaveBeenCalled();
+    expect(db.clipPost.createManyAndReturn).not.toHaveBeenCalled();
   });
 
   it("continua aceitando posts de quem permanece aprovado", async () => {
@@ -220,9 +220,20 @@ describe("ações após a saída", () => {
       success: true,
       postsCreated: 1,
     });
-    expect(db.clipPost.create).toHaveBeenCalledTimes(1);
+    expect(db.clipPost.createManyAndReturn).toHaveBeenCalledTimes(1);
+    expect(db.clipPost.createManyAndReturn.mock.calls[0]?.[0].data).toEqual([
+      expect.objectContaining({
+        campaignId: "campaign-1",
+        applicationId: "application-1",
+        platform: "YOUTUBE",
+        submittedUrl: postInput.posts[0]!.url,
+        platformVideoId: "abcdefghijk",
+        username: "clipador",
+        status: "PENDING",
+      }),
+    ]);
     expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
-      db.clipPost.create.mock.invocationCallOrder[0]!,
+      db.clipPost.createManyAndReturn.mock.invocationCallOrder[0]!,
     );
   });
 

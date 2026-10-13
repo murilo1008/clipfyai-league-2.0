@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import Link from "next/link"
 import { useUser } from "@clerk/nextjs"
@@ -29,7 +30,6 @@ import {
 import { motion } from "framer-motion"
 
 import { ClassesMarathonHeroViz, ClassesMarathonHeroVizSkeleton } from "@/components/classes/classes-marathon-hero-viz"
-import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { ClipfyUltraPricingDialog } from "@/components/clippers/clipfy-ultra-pricing-dialog"
 import { ClipperManualPricingDialog } from "@/components/clippers/clipper-manual-pricing-dialog"
 import { UltraDiscordInviteDialog } from "@/components/clippers/ultra-discord-invite-dialog"
@@ -48,6 +48,16 @@ import {
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { api, type RouterOutputs } from "@/trpc/react"
+
+// Diálogo de vendas sob demanda: o chunk só é baixado quando o clipador abre
+// o diálogo, e ele só fica montado enquanto está aberto.
+const ClipfyProPricingDialog = dynamic(
+  () =>
+    import("@/components/clippers/clipfy-pro-pricing-dialog").then(
+      (m) => m.ClipfyProPricingDialog,
+    ),
+  { ssr: false },
+)
 
 type MemberContent = RouterOutputs["academy"]["getMemberContent"]
 type ModuleItem = MemberContent["modules"][number]
@@ -832,11 +842,13 @@ export default function ClassesAcademy() {
       </Reveal>
 
       {/* ===== Dialogs ===== */}
-      <ClipfyProPricingDialog
-        open={isProDialogOpen}
-        onOpenChange={setIsProDialogOpen}
-        userEmail={userEmail}
-      />
+      {isProDialogOpen && (
+        <ClipfyProPricingDialog
+          open={isProDialogOpen}
+          onOpenChange={setIsProDialogOpen}
+          userEmail={userEmail}
+        />
+      )}
       <ClipperManualPricingDialog
         open={isManualDialogOpen}
         onOpenChange={setIsManualDialogOpen}

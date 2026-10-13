@@ -1,6 +1,37 @@
 import { createTRPCRouter, privateProcedure, adminProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import type { PrismaClient } from "@prisma/client";
+
+/**
+ * Aulas concluídas e curtidas só das aulas informadas. O `_count` da relação
+ * dentro do findMany agrega as tabelas inteiras de progresso e curtidas num
+ * LEFT JOIN; o groupBy filtrado usa o índice de lessonId.
+ */
+async function countLessonEngagement(db: PrismaClient, lessonIds: string[]) {
+  if (lessonIds.length === 0) {
+    return {
+      completed: new Map<string, number>(),
+      likes: new Map<string, number>(),
+    };
+  }
+  const [completed, likes] = await Promise.all([
+    db.academyLessonProgress.groupBy({
+      by: ["lessonId"],
+      where: { lessonId: { in: lessonIds }, completed: true },
+      _count: { _all: true },
+    }),
+    db.academyLessonLike.groupBy({
+      by: ["lessonId"],
+      where: { lessonId: { in: lessonIds } },
+      _count: { _all: true },
+    }),
+  ]);
+  return {
+    completed: new Map(completed.map((row) => [row.lessonId, row._count._all])),
+    likes: new Map(likes.map((row) => [row.lessonId, row._count._all])),
+  };
+}
 
 export const academyRouter = createTRPCRouter({
   // ============================================================================
@@ -10,41 +41,55 @@ export const academyRouter = createTRPCRouter({
   // Buscar módulos e aulas publicados para área de membros
   getMemberContent: privateProcedure.query(async ({ ctx }) => {
     try {
-      // Buscar módulos publicados com aulas publicadas
-      const modules = await ctx.db.academyModule.findMany({
-        where: { isPublished: true },
-        orderBy: { order: "asc" },
-        include: {
-          lessons: {
-            where: { isPublished: true },
-            orderBy: { order: "asc" },
-            include: {
-              _count: {
-                select: {
-                  progress: { where: { completed: true } },
-                  likes: true,
-                },
+      // Módulos publicados com aulas publicadas, progresso e curtidas do
+      // usuário em paralelo (só os campos usados na resposta)
+      const [modules, userProgress, userLikes] = await Promise.all([
+        ctx.db.academyModule.findMany({
+          where: { isPublished: true },
+          orderBy: { order: "asc" },
+          select: {
+            id: true,
+            title: true,
+            slug: true,
+            description: true,
+            coverImageUrl: true,
+            order: true,
+            lessons: {
+              where: { isPublished: true },
+              orderBy: { order: "asc" },
+              select: {
+                id: true,
+                title: true,
+                slug: true,
+                description: true,
+                videoUrl: true,
+                thumbnailUrl: true,
+                duration: true,
+                order: true,
+                isFree: true,
               },
             },
           },
-        },
-      });
+        }),
+        ctx.db.academyLessonProgress.findMany({
+          where: { userId: ctx.userId },
+          select: {
+            lessonId: true,
+            completed: true,
+            progressPercent: true,
+          },
+        }),
+        ctx.db.academyLessonLike.findMany({
+          where: { userId: ctx.userId },
+          select: { lessonId: true },
+        }),
+      ]);
 
-      // Buscar progresso do usuário
-      const userProgress = await ctx.db.academyLessonProgress.findMany({
-        where: { userId: ctx.userId },
-        select: {
-          lessonId: true,
-          completed: true,
-          progressPercent: true,
-        },
-      });
-
-      // Buscar curtidas do usuário
-      const userLikes = await ctx.db.academyLessonLike.findMany({
-        where: { userId: ctx.userId },
-        select: { lessonId: true },
-      });
+      // Contagens (todos os usuários) só das aulas exibidas
+      const engagement = await countLessonEngagement(
+        ctx.db,
+        modules.flatMap((module) => module.lessons.map((lesson) => lesson.id)),
+      );
 
       const progressMap = new Map(
         userProgress.map((p) => [p.lessonId, p])
@@ -71,8 +116,8 @@ export const academyRouter = createTRPCRouter({
             duration: lesson.duration,
             order: lesson.order,
             isFree: lesson.isFree,
-            completedCount: lesson._count.progress,
-            likesCount: lesson._count.likes,
+            completedCount: engagement.completed.get(lesson.id) ?? 0,
+            likesCount: engagement.likes.get(lesson.id) ?? 0,
             isCompleted: progressMap.get(lesson.id)?.completed || false,
             progressPercent: progressMap.get(lesson.id)?.progressPercent || 0,
             isLiked: likesSet.has(lesson.id),
@@ -210,12 +255,6 @@ export const academyRouter = createTRPCRouter({
                 slug: true,
               },
             },
-            _count: {
-              select: {
-                progress: { where: { completed: true } },
-                likes: true,
-              },
-            },
           },
         });
 
@@ -226,8 +265,16 @@ export const academyRouter = createTRPCRouter({
           });
         }
 
-        // Buscar progresso e like do usuário
-        const [userProgress, userLike] = await Promise.all([
+        // Progresso e like do usuário, contagens da aula (filtradas pela aula,
+        // em vez do `_count` que agrega as tabelas inteiras) e aulas vizinhas
+        const [
+          userProgress,
+          userLike,
+          completedCount,
+          likesCount,
+          nextLesson,
+          prevLesson,
+        ] = await Promise.all([
           ctx.db.academyLessonProgress.findUnique({
             where: {
               lessonId_userId: {
@@ -244,10 +291,12 @@ export const academyRouter = createTRPCRouter({
               },
             },
           }),
-        ]);
-
-        // Buscar próxima e anterior aula
-        const [nextLesson, prevLesson] = await Promise.all([
+          ctx.db.academyLessonProgress.count({
+            where: { lessonId: lesson.id, completed: true },
+          }),
+          ctx.db.academyLessonLike.count({
+            where: { lessonId: lesson.id },
+          }),
           ctx.db.academyLesson.findFirst({
             where: {
               moduleId: lesson.moduleId,
@@ -279,8 +328,8 @@ export const academyRouter = createTRPCRouter({
           order: lesson.order,
           isFree: lesson.isFree,
           module: lesson.module,
-          completedCount: lesson._count.progress,
-          likesCount: lesson._count.likes,
+          completedCount,
+          likesCount,
           isCompleted: userProgress?.completed || false,
           progressPercent: userProgress?.progressPercent || 0,
           isLiked: !!userLike,

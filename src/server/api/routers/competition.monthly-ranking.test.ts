@@ -10,6 +10,7 @@ vi.mock("@/server/db", () => ({ db: {} }));
 
 import { campaignRouter } from "./competition";
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
+import { invalidateCachedQueries } from "@/server/memory-cache";
 
 function fixture(status: "ACTIVE" | "COMPLETED") {
   const campaign = {
@@ -49,8 +50,11 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
     clipPost: {
       count: vi.fn().mockResolvedValue(2),
       findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
       aggregate: vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 } }),
-      groupBy: vi.fn().mockResolvedValue([
+      // Só o groupBy por inscrição (ranking mensal ativo) tem dados aqui.
+      groupBy: vi.fn().mockImplementation(async ({ by }: { by: string[] }) =>
+        by[0] !== "applicationId" ? [] : [
         {
           applicationId: "app-1",
           _sum: { views: 100n, likes: 10, comments: 0, shares: 0, saves: 0 },
@@ -68,26 +72,32 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
         },
       ]),
     },
-    $queryRaw: vi.fn().mockResolvedValue([
-      {
-        clipPostId: "post-1",
-        applicationId: "app-1",
-        views: 100n,
-        likes: 20,
-        comments: 0,
-        shares: 0,
-        saves: 0,
-      },
-      {
-        clipPostId: "post-2",
-        applicationId: "app-2",
-        views: 200n,
-        likes: 5,
-        comments: 0,
-        shares: 0,
-        saves: 0,
-      },
-    ]),
+    // Ranking histórico (último snapshot por post até o corte, somado por inscrição);
+    // as demais consultas SQL da página (crescimento, maior ER) ficam vazias.
+    $queryRaw: vi.fn().mockImplementation(async (parts: TemplateStringsArray) =>
+      parts.join("?").includes('GROUP BY p."applicationId"')
+        ? [
+            {
+              applicationId: "app-1",
+              views: 100n,
+              likes: 20n,
+              comments: 0n,
+              shares: 0n,
+              saves: 0n,
+              postsCount: 1n,
+            },
+            {
+              applicationId: "app-2",
+              views: 200n,
+              likes: 5n,
+              comments: 0n,
+              shares: 0n,
+              saves: 0n,
+              postsCount: 1n,
+            },
+          ]
+        : [],
+    ),
     monthlyRankingEntry: {
       findFirst: vi.fn().mockResolvedValue({ position: 1 }),
     },
@@ -97,6 +107,7 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
       findMany: vi.fn().mockResolvedValue([]),
     },
     clipPostMetrics: { findMany: vi.fn().mockResolvedValue([]) },
+    applicationSocialAccount: { count: vi.fn().mockResolvedValue(0) },
   };
   return {
     db,
@@ -106,6 +117,7 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
 }
 
 beforeEach(() => {
+  invalidateCachedQueries("");
   currentUser.mockResolvedValue({ id: "user-2" });
 });
 
@@ -120,7 +132,10 @@ describe("ranking mensal do clipador alinhado ao ADMIN", () => {
         campaign,
       );
       const result = await api.getCompetitionDetails({ slug: campaign.slug });
-      expect(result.topRanking).toEqual(
+      const ranking = await api.getCompetitionRanking({
+        campaignId: campaign.id,
+      });
+      expect(ranking.topRanking).toEqual(
         admin!.rows.map((row) => ({
           position: row.position,
           username: `@${row.clipperUsername}`,
@@ -144,12 +159,17 @@ describe("ranking mensal do clipador alinhado ao ADMIN", () => {
         }),
       );
       if (status === "COMPLETED") {
-        expect(db.clipPost.groupBy).not.toHaveBeenCalled();
-        expect(db.$queryRaw.mock.calls[0]?.[2]).toEqual(
-          new Date("2026-10-03T02:30:00Z"),
+        expect(db.clipPost.groupBy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ by: ["applicationId"] }),
         );
+        const historicalCall = db.$queryRaw.mock.calls.find((call) =>
+          (call[0] as TemplateStringsArray)
+            .join("?")
+            .includes('GROUP BY p."applicationId"'),
+        );
+        expect(historicalCall?.[2]).toEqual(new Date("2026-10-03T02:30:00Z"));
       } else {
-        expect(result.topRanking.map((row) => row.username)).toEqual([
+        expect(ranking.topRanking.map((row) => row.username)).toEqual([
           "@Clipador 2",
           "@Clipador 1",
         ]);

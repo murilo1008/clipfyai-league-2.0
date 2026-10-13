@@ -3,14 +3,10 @@
 import * as React from "react";
 import {
   type ColumnDef,
-  type ColumnFiltersState,
   type SortingState,
   type VisibilityState,
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import {
@@ -79,7 +75,24 @@ import type { RouterOutputs } from "@/trpc/react";
 
 import { SeeClipperDialog } from "./see-clipper-dialog";
 
-export type Clipper = RouterOutputs["clipper"]["getAll"][number];
+/** Linha da tabela (só as colunas listadas; o perfil completo vem do getById). */
+export type Clipper = RouterOutputs["clipper"]["getAll"]["items"][number];
+
+const PAGE_SIZE = 10;
+const NO_CLIPPERS: Clipper[] = [];
+
+/** Colunas que o servidor sabe ordenar (as que têm cabeçalho clicável). */
+const SORTABLE_COLUMNS = [
+  "fullName",
+  "totalEarned",
+  "avgEngagementRate",
+  "autoScore",
+] as const;
+type SortableColumn = (typeof SORTABLE_COLUMNS)[number];
+
+function isSortableColumn(id: string): id is SortableColumn {
+  return (SORTABLE_COLUMNS as readonly string[]).includes(id);
+}
 
 export type ClipperStatus =
   | "VERIFIED"
@@ -550,24 +563,52 @@ export default function Clippers() {
   const [subscriptionFilter, setSubscriptionFilter] = React.useState<
     SubscriptionKey | "ALL"
   >("ALL");
+  const [sorting, setSorting] = React.useState<SortingState>([]);
 
   // Busca no servidor só depois que o usuário para de digitar
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
-  const { data: clippers, isLoading: loadingClippers } =
-    api.clipper.getAll.useQuery(
-      { status: statusFilter, search: debouncedSearch },
-      { placeholderData: (prev) => prev },
-    );
+  const filters = {
+    status: statusFilter,
+    search: debouncedSearch,
+    subscription: subscriptionFilter,
+  };
+
+  // Filtro ou ordenação novos voltam para a primeira página
+  const listKey = JSON.stringify([filters, sorting]);
+  const [page, setPage] = React.useState({ key: listKey, index: 0 });
+  const pageIndex = page.key === listKey ? page.index : 0;
+  const goToPage = (index: number) => setPage({ key: listKey, index });
+
+  const sort = sorting[0];
+  const { data, isLoading: loadingClippers } = api.clipper.getAll.useQuery(
+    {
+      ...filters,
+      page: pageIndex + 1,
+      pageSize: PAGE_SIZE,
+      sortBy: sort && isSortableColumn(sort.id) ? sort.id : undefined,
+      sortDir: sort?.desc ? "desc" : "asc",
+    },
+    { placeholderData: (prev) => prev },
+  );
   const { data: stats, isLoading: loadingStats } =
     api.clipper.getStats.useQuery();
 
-  const [selectedClipper, setSelectedClipper] = React.useState<Clipper | null>(
-    null,
-  );
+  const total = data?.total ?? 0;
+  const pageCount = Math.ceil(total / PAGE_SIZE);
+  // A página atual sumiu (ex.: o último clipador dela saiu do filtro de
+  // status ao ser verificado): vai para a última que existe.
+  if (data && pageIndex > 0 && pageIndex >= pageCount) {
+    goToPage(Math.max(pageCount - 1, 0));
+  }
+
+  const [selectedClipperId, setSelectedClipperId] = React.useState<
+    string | null
+  >(null);
   const [isProfileOpen, setIsProfileOpen] = React.useState(false);
 
   const invalidate = () => {
     void utils.clipper.getAll.invalidate();
+    void utils.clipper.getById.invalidate();
     void utils.clipper.getStats.invalidate();
   };
 
@@ -589,21 +630,11 @@ export default function Clippers() {
       toast.error(error.message || "Erro ao rejeitar clipador"),
   });
 
-  const tableData = React.useMemo(() => {
-    const list = clippers ?? [];
-    if (subscriptionFilter === "ALL") return list;
-    return list.filter(
-      (clipper) =>
-        ((clipper.user.subscriptionStatus ?? "NONE") as SubscriptionKey) ===
-        subscriptionFilter,
-    );
-  }, [clippers, subscriptionFilter]);
-
   const columns = React.useMemo(
     () =>
       createColumns(
         (clipper) => {
-          setSelectedClipper(clipper);
+          setSelectedClipperId(clipper.id);
           setIsProfileOpen(true);
         },
         (id) => verifyMutation.mutate({ id }),
@@ -613,10 +644,6 @@ export default function Clippers() {
     [],
   );
 
-  const [sorting, setSorting] = React.useState<SortingState>([]);
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    [],
-  );
   const [columnVisibility, setColumnVisibility] =
     React.useState<VisibilityState>({
       avgEngagementRate: false,
@@ -624,40 +651,48 @@ export default function Clippers() {
     });
 
   const table = useReactTable({
-    data: tableData,
+    data: data?.items ?? NO_CLIPPERS,
     columns,
+    // Filtro, ordenação e paginação já vêm aplicados pelo servidor
+    manualFiltering: true,
+    manualSorting: true,
+    manualPagination: true,
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
     getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    state: { sorting, columnFilters, columnVisibility },
-    initialState: { pagination: { pageSize: 10 } },
+    state: { sorting, columnVisibility },
   });
 
-  const copyVerifiedClippers = () => {
-    const verified = tableData.filter(
-      (clipper) => clipper.verificationStatus === "VERIFIED",
-    );
-    if (verified.length === 0) {
-      toast.error("Nenhum clipador aprovado encontrado");
-      return;
+  const [isCopying, setIsCopying] = React.useState(false);
+  const copyVerifiedClippers = async () => {
+    setIsCopying(true);
+    try {
+      // CPF e chave PIX só saem do servidor neste clique
+      const verified = await utils.clipper.exportVerified.fetch(filters, {
+        staleTime: 0,
+      });
+      if (verified.length === 0) {
+        toast.error("Nenhum clipador aprovado encontrado");
+        return;
+      }
+      const text = verified
+        .map((clipper) =>
+          [
+            `Nome: ${clipper.fullName}`,
+            `Nome Artístico: ${clipper.artisticName ?? "—"}`,
+            `Email: ${clipper.email}`,
+            `CPF: ${clipper.cpf || "—"}`,
+            `Chave PIX: ${clipper.pixKey || "—"}`,
+          ].join("\n"),
+        )
+        .join("\n\n---\n\n");
+      await navigator.clipboard.writeText(text);
+      toast.success(`${verified.length} clipadores aprovados copiados!`);
+    } catch {
+      toast.error("Erro ao copiar clipadores aprovados");
+    } finally {
+      setIsCopying(false);
     }
-    const text = verified
-      .map((clipper) =>
-        [
-          `Nome: ${clipper.fullName}`,
-          `Nome Artístico: ${clipper.artisticName ?? "—"}`,
-          `Email: ${clipper.user.email}`,
-          `CPF: ${clipper.cpf || "—"}`,
-          `Chave PIX: ${clipper.pixKey || "—"}`,
-        ].join("\n"),
-      )
-      .join("\n\n---\n\n");
-    void navigator.clipboard.writeText(text);
-    toast.success(`${verified.length} clipadores aprovados copiados!`);
   };
 
   return (
@@ -913,6 +948,7 @@ export default function Clippers() {
 
             <Button
               onClick={copyVerifiedClippers}
+              disabled={isCopying}
               className="btn-gradient-auth h-10 cursor-pointer rounded-xl px-4 font-semibold"
             >
               <Copy className="size-4" weight="bold" />
@@ -1102,7 +1138,7 @@ export default function Clippers() {
                       key={row.id}
                       className="border-border/40 hover:bg-muted/30 cursor-pointer transition-colors"
                       onClick={() => {
-                        setSelectedClipper(row.original);
+                        setSelectedClipperId(row.original.id);
                         setIsProfileOpen(true);
                       }}
                     >
@@ -1132,19 +1168,19 @@ export default function Clippers() {
           {/* Paginação */}
           <div className="border-border/60 flex flex-col items-center justify-between gap-3 border-t px-4 py-3.5 sm:flex-row">
             <p className="text-muted-foreground text-xs">
-              {table.getFilteredRowModel().rows.length} clipadores · Página{" "}
+              {total} clipadores · Página{" "}
               <span className="text-foreground font-semibold">
-                {table.getState().pagination.pageIndex + 1}
+                {pageIndex + 1}
               </span>{" "}
-              de {Math.max(table.getPageCount(), 1)}
+              de {Math.max(pageCount, 1)}
             </p>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 className="h-9 cursor-pointer rounded-xl"
-                onClick={() => table.previousPage()}
-                disabled={!table.getCanPreviousPage()}
+                onClick={() => goToPage(pageIndex - 1)}
+                disabled={pageIndex === 0}
               >
                 <CaretLeft className="size-3.5" />
                 Anterior
@@ -1153,8 +1189,8 @@ export default function Clippers() {
                 variant="outline"
                 size="sm"
                 className="h-9 cursor-pointer rounded-xl"
-                onClick={() => table.nextPage()}
-                disabled={!table.getCanNextPage()}
+                onClick={() => goToPage(pageIndex + 1)}
+                disabled={pageIndex + 1 >= pageCount}
               >
                 Próxima
                 <CaretRight className="size-3.5" />
@@ -1165,11 +1201,11 @@ export default function Clippers() {
       </Reveal>
 
       <SeeClipperDialog
-        clipper={selectedClipper}
+        clipperId={selectedClipperId}
         open={isProfileOpen}
         onOpenChange={(open) => {
           setIsProfileOpen(open);
-          if (!open) setSelectedClipper(null);
+          if (!open) setSelectedClipperId(null);
         }}
       />
     </div>

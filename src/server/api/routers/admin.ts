@@ -10710,6 +10710,7 @@ export const adminRouter = createTRPCRouter({
           ctx.db,
           input.campaignId,
           input.date,
+          { includeStats: false },
         );
 
         if (!core) {
@@ -11948,6 +11949,7 @@ export const adminRouter = createTRPCRouter({
           ctx.db,
           input.campaignId,
           input.date,
+          { includeStats: false },
         );
         if (!core) {
           throw new TRPCError({
@@ -12338,6 +12340,7 @@ export const adminRouter = createTRPCRouter({
           ctx.db,
           input.campaignId,
           input.date,
+          { includeStats: false },
         );
         if (!core) {
           throw new TRPCError({
@@ -12416,6 +12419,7 @@ export const adminRouter = createTRPCRouter({
           ctx.db,
           input.campaignId,
           input.date,
+          { includeStats: false },
         );
 
         if (!core) {

@@ -3,6 +3,7 @@
 import { canRejoinCompetition } from "@/lib/competition-participation"
 import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import * as React from "react"
+import dynamic from "next/dynamic"
 import Image from "next/image"
 import {
   ArrowRight,
@@ -35,7 +36,6 @@ import {
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
-import { ClipfyProPricingDialog } from "@/components/clippers/clipfy-pro-pricing-dialog"
 import { HomeHero } from "@/components/home/home-hero"
 import { StatTile } from "@/components/home/stat-tile"
 import { ScheduleHeroViz, ScheduleHeroVizSkeleton } from "@/components/my-competitions/schedule-hero-viz"
@@ -85,6 +85,16 @@ import { parsePrizeTable } from "@/lib/daily-ranking-preview"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api, type RouterInputs, type RouterOutputs } from "@/trpc/react"
+
+// Diálogo de vendas sob demanda: o chunk só é baixado quando o clipador abre
+// o diálogo, e ele só fica montado enquanto está aberto.
+const ClipfyProPricingDialog = dynamic(
+  () =>
+    import("@/components/clippers/clipfy-pro-pricing-dialog").then(
+      (m) => m.ClipfyProPricingDialog,
+    ),
+  { ssr: false },
+)
 
 type ScheduledCompetition = RouterOutputs["campaign"]["getScheduled"][number]
 type AddSocialAccountInput = RouterInputs["clipper"]["addSocialAccount"]
@@ -192,6 +202,7 @@ export default function Schedule() {
     )
 
   // ===== Mutations =====
+  const utils = api.useUtils()
   const enrollMutation = api.campaign.enrollInCompetition.useMutation({
     onSuccess: (data) => {
       toast.success(data.message, {
@@ -201,6 +212,8 @@ export default function Schedule() {
       setSelectedAccounts([])
       void refetchCompetitions()
       void refetchApplications()
+      // Menu lateral (nome/slug das competições, staleTime de 5 min)
+      void utils.clipper.getMyCompetitionOptions.invalidate()
     },
     onError: (error) => {
       toast.error("Erro ao inscrever", {
@@ -1995,11 +2008,13 @@ export default function Schedule() {
       </Dialog>
 
       {/* ===== Dialog PRO ===== */}
-      <ClipfyProPricingDialog
-        open={isProDialogOpen}
-        onOpenChange={setIsProDialogOpen}
-        userEmail={userData?.email ?? undefined}
-      />
+      {isProDialogOpen && (
+        <ClipfyProPricingDialog
+          open={isProDialogOpen}
+          onOpenChange={setIsProDialogOpen}
+          userEmail={userData?.email ?? undefined}
+        />
+      )}
     </div>
   )
 }
