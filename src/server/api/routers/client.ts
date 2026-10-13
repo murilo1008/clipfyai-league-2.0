@@ -87,6 +87,9 @@ function getClientCreationClerkError(error: unknown): TRPCError {
   })
 }
 
+/** Coletas mais recentes devolvidas no detalhe do post (gráfico e tabela). */
+const POST_DETAIL_METRICS_LIMIT = 120
+
 export const clientRouter = createTRPCRouter({
   hasPerformance: privateProcedure.query(async ({ ctx }) => {
     const campaigns = await ctx.db.campaign.findMany({
@@ -1593,73 +1596,77 @@ export const clientRouter = createTRPCRouter({
   getPostById: privateProcedure
     .input(z.object({ postId: z.string() }))
     .query(async ({ ctx, input }) => {
-      const dbUser = await ctx.db.user.findUnique({
-        where: { id: ctx.userId },
-        select: { role: true },
-      })
-
-      if (!dbUser || dbUser.role !== "CLIENT") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Você não tem permissão para acessar esta funcionalidade",
-        })
-      }
-
-      const post = await ctx.db.clipPost.findUnique({
-        where: { id: input.postId },
-        select: {
-          id: true,
-          submittedUrl: true,
-          normalizedUrl: true,
-          platformVideoId: true,
-          thumbnailUrl: true,
-          platform: true,
-          username: true,
-          caption: true,
-          hashtags: true,
-          mentions: true,
-          duration: true,
-          postedAt: true,
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-          status: true,
-          hasRequiredHashtags: true,
-          hasRequiredMentions: true,
-          isPublicProfile: true,
-          hasDuplicates: true,
-          ineligibilityReason: true,
-          lastMetricsUpdate: true,
-          createdAt: true,
-          updatedAt: true,
-          locationName: true,
-          campaign: {
+      // Role, post e histórico saem em paralelo; nada é devolvido antes das
+      // checagens de role e de dono da competição.
+      const [dbUser, post, metricsHistory, metricsHistoryCount] =
+        await Promise.all([
+          ctx.db.user.findUnique({
+            where: { id: ctx.userId },
+            select: { role: true },
+          }),
+          ctx.db.clipPost.findUnique({
+            where: { id: input.postId },
             select: {
               id: true,
-              name: true,
-              slug: true,
-              clientId: true,
-            },
-          },
-          application: {
-            select: {
-              clipperProfile: {
+              submittedUrl: true,
+              normalizedUrl: true,
+              platformVideoId: true,
+              thumbnailUrl: true,
+              platform: true,
+              username: true,
+              caption: true,
+              hashtags: true,
+              mentions: true,
+              duration: true,
+              postedAt: true,
+              views: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+              status: true,
+              hasRequiredHashtags: true,
+              hasRequiredMentions: true,
+              isPublicProfile: true,
+              hasDuplicates: true,
+              ineligibilityReason: true,
+              lastMetricsUpdate: true,
+              createdAt: true,
+              updatedAt: true,
+              locationName: true,
+              campaign: {
                 select: {
-                  artisticName: true,
-                  fullName: true,
-                  user: {
+                  id: true,
+                  name: true,
+                  slug: true,
+                  clientId: true,
+                },
+              },
+              application: {
+                select: {
+                  clipperProfile: {
                     select: {
-                      imageUrl: true,
+                      artisticName: true,
+                      fullName: true,
+                      user: {
+                        select: {
+                          imageUrl: true,
+                        },
+                      },
                     },
                   },
                 },
               },
             },
-          },
-          metricsHistory: {
+          }),
+          // Só as coletas mais recentes (o gráfico da página); a série
+          // completa fica com o dialog, via getPostMetricsHistory. A consulta
+          // separada usa o índice (clipPostId, collectedAt) com LIMIT — o
+          // `take` de uma relação aninhada seria aplicado em memória.
+          ctx.db.clipPostMetrics.findMany({
+            where: { clipPostId: input.postId },
             orderBy: { collectedAt: "desc" },
+            take: POST_DETAIL_METRICS_LIMIT,
             select: {
               id: true,
               collectedAt: true,
@@ -1675,9 +1682,18 @@ export const clientRouter = createTRPCRouter({
               commentsDelta: true,
               sharesDelta: true,
             },
-          },
-        },
-      })
+          }),
+          ctx.db.clipPostMetrics.count({
+            where: { clipPostId: input.postId },
+          }),
+        ])
+
+      if (!dbUser || dbUser.role !== "CLIENT") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Você não tem permissão para acessar esta funcionalidade",
+        })
+      }
 
       if (!post) {
         throw new TRPCError({
@@ -1740,7 +1756,8 @@ export const clientRouter = createTRPCRouter({
           name: post.campaign.name,
           slug: post.campaign.slug,
         },
-        metricsHistory: post.metricsHistory.map((m) => ({
+        metricsHistoryCount,
+        metricsHistory: metricsHistory.map((m) => ({
           id: m.id,
           collectedAt: m.collectedAt.toISOString(),
           views: Number(m.views),
