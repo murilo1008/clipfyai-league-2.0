@@ -183,3 +183,46 @@ describe("visibilidade da performance do cliente", () => {
     expect(getCampaignPerformance).not.toHaveBeenCalled();
   });
 });
+
+describe("posts do cliente", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentUser.mockResolvedValue({ id: "client-1" });
+  });
+
+  function postsCaller(campaigns: TestCampaign[]) {
+    const postsFindMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(0);
+    const api = clientRouter.createCaller({
+      db: {
+        user: { findUnique: vi.fn().mockResolvedValue({ role: "CLIENT" }) },
+        campaign: { findMany: vi.fn().mockResolvedValue(campaigns) },
+        clipPost: { findMany: postsFindMany, count },
+      },
+      headers: new Headers(),
+    } as never);
+    return { api, postsFindMany };
+  }
+
+  it("recusa a competição de outro cliente vinda da URL", async () => {
+    const { api, postsFindMany } = postsCaller([linkedCampaign("camp-a", 100)]);
+
+    await expect(api.getAllPosts({ campaignId: "camp-outro" })).rejects.toThrow(
+      "Esta competição não está vinculada à sua conta",
+    );
+    expect(postsFindMany).not.toHaveBeenCalled();
+  });
+
+  it("filtra pela competição do cliente quando ela é informada", async () => {
+    const { api, postsFindMany } = postsCaller([
+      linkedCampaign("camp-a", 100),
+      linkedCampaign("camp-b", 100),
+    ]);
+
+    await api.getAllPosts({ campaignId: "camp-b" });
+
+    expect(postsFindMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { campaignId: "camp-b" },
+    });
+  });
+});

@@ -287,7 +287,7 @@ export default function PostDetail({ postId }: PostDetailProps) {
   /*
    * Delta null vira 0 para não sumir coleta do gráfico; só a primeira coleta
    * cronológica (que legitimamente não tem delta) fica de fora. O badge de
-   * "N coletas" segue contando chartData, igual ao gráfico de área.
+   * "N coletas" mostra o total do histórico (o gráfico recebe as mais recentes).
    */
   const deltaData = chartData
     .filter((point, index) => index > 0 || point.viewsDelta !== null)
@@ -313,9 +313,12 @@ export default function PostDetail({ postId }: PostDetailProps) {
       )
     : null;
   const avgViewsPerDay = daysLive ? post.views / daysLive : null;
-  const peakDelta = deltaData.length
-    ? Math.max(...deltaData.map((point) => point.delta))
-    : null;
+  // O gráfico recebe só as coletas mais recentes; o pico vem do histórico todo.
+  const peakDelta =
+    post.peakViewsDelta ??
+    (deltaData.length
+      ? Math.max(...deltaData.map((point) => point.delta))
+      : null);
 
   const miniTiles = [
     {
@@ -662,8 +665,8 @@ export default function PostDetail({ postId }: PostDetailProps) {
                       className="border-brand-cyan/25 not-dark:border-primary/30 shrink-0 rounded-full text-[10px] font-bold"
                     >
                       <span className="text-gradient not-dark:brightness-[0.7] not-dark:saturate-[1.4]">
-                        {chartData.length}{" "}
-                        {chartData.length === 1 ? "coleta" : "coletas"}
+                        {post.metricsHistoryCount}{" "}
+                        {post.metricsHistoryCount === 1 ? "coleta" : "coletas"}
                       </span>
                     </Badge>
                   )}

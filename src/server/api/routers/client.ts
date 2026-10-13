@@ -1508,6 +1508,13 @@ export const clientRouter = createTRPCRouter({
       }
 
       if (campaignId) {
+        // O id vem da URL (/posts?campaignId=...): só as competições do cliente
+        if (!clientCampaignIds.includes(campaignId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Esta competição não está vinculada à sua conta",
+          })
+        }
         where.campaignId = campaignId
       }
 
@@ -1602,7 +1609,7 @@ export const clientRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       // Role, post e histórico saem em paralelo; nada é devolvido antes das
       // checagens de role e de dono da competição.
-      const [dbUser, post, metricsHistory, metricsHistoryCount] =
+      const [dbUser, post, metricsHistory, metricsHistoryCount, metricsPeak] =
         await Promise.all([
           ctx.db.user.findUnique({
             where: { id: ctx.userId },
@@ -1690,6 +1697,12 @@ export const clientRouter = createTRPCRouter({
           ctx.db.clipPostMetrics.count({
             where: { clipPostId: input.postId },
           }),
+          // O pico entre coletas considera o histórico inteiro, não só as
+          // coletas devolvidas para o gráfico.
+          ctx.db.clipPostMetrics.aggregate({
+            where: { clipPostId: input.postId },
+            _max: { viewsDelta: true },
+          }),
         ])
 
       if (!dbUser || dbUser.role !== "CLIENT") {
@@ -1761,6 +1774,10 @@ export const clientRouter = createTRPCRouter({
           slug: post.campaign.slug,
         },
         metricsHistoryCount,
+        peakViewsDelta:
+          metricsPeak._max.viewsDelta === null
+            ? null
+            : Number(metricsPeak._max.viewsDelta),
         metricsHistory: metricsHistory.map((m) => ({
           id: m.id,
           collectedAt: m.collectedAt.toISOString(),
