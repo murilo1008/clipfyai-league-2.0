@@ -82,11 +82,37 @@ const displayNameOf = (clipper: {
 
 const initialsOf = (name: string) => name.slice(0, 2).toUpperCase()
 
+type RankingTab = "geral" | "campeoes" | "plataformas" | "competicoes" | "ganhos"
+
 export default function RankingClippers() {
   const { maskBRL } = useMaskedCurrency()
-  const { data, isLoading } = api.clipper.getRankingData.useQuery()
+  const [tab, setTab] = React.useState<RankingTab>("geral")
 
-  const top3 = data?.topClippersByViews.slice(0, 3) ?? []
+  // Números do topo sempre; cada aba busca só os próprios dados, ao ser aberta.
+  const { data: summary, isLoading } =
+    api.clipper.getRankingSummary.useQuery()
+  const { data: byViews, isError: byViewsFailed } =
+    api.clipper.getRankingByViews.useQuery(undefined, {
+      enabled: tab === "geral",
+    })
+  const { data: champions, isError: championsFailed } =
+    api.clipper.getRankingChampions.useQuery(undefined, {
+      enabled: tab === "campeoes",
+    })
+  const { data: platforms, isError: platformsFailed } =
+    api.clipper.getRankingByPlatform.useQuery(undefined, {
+      enabled: tab === "plataformas",
+    })
+  const { data: competitions, isError: competitionsFailed } =
+    api.clipper.getRankingByCompetition.useQuery(undefined, {
+      enabled: tab === "competicoes",
+    })
+  const { data: earnings, isError: earningsFailed } =
+    api.clipper.getRankingByEarnings.useQuery(undefined, {
+      enabled: tab === "ganhos",
+    })
+
+  const top3 = byViews?.slice(0, 3) ?? []
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8">
@@ -106,19 +132,19 @@ export default function RankingClippers() {
           {
             icon: <UsersThree className="size-3.5" weight="fill" />,
             label: "Clipadores",
-            value: data?.stats.totalClippers ?? 0,
+            value: summary?.totalClippers ?? 0,
             kind: "int",
           },
           {
             icon: <Eye className="size-3.5" weight="fill" />,
             label: "Views totais",
-            value: data?.stats.totalViewsAllTime ?? 0,
+            value: summary?.totalViewsAllTime ?? 0,
             kind: "compact",
           },
           {
             icon: <CurrencyDollar className="size-3.5" weight="fill" />,
             label: "Ganhos totais",
-            value: data?.stats.totalEarningsAllTime ?? 0,
+            value: summary?.totalEarningsAllTime ?? 0,
             kind: "compactBRL",
           },
         ]}
@@ -130,7 +156,7 @@ export default function RankingClippers() {
           <StatTile
             icon={<Eye className="size-4" weight="fill" />}
             label="Views totais"
-            value={data?.stats.totalViewsAllTime ?? 0}
+            value={summary?.totalViewsAllTime ?? 0}
             kind="compact"
             hint="todas as competições"
             accent="cyan"
@@ -140,7 +166,7 @@ export default function RankingClippers() {
           <StatTile
             icon={<UsersThree className="size-4" weight="fill" />}
             label="Clipadores"
-            value={data?.stats.totalClippers ?? 0}
+            value={summary?.totalClippers ?? 0}
             kind="int"
             hint="com posts aprovados"
             accent="green"
@@ -149,7 +175,7 @@ export default function RankingClippers() {
           <StatTile
             icon={<VideoCamera className="size-4" weight="fill" />}
             label="Posts"
-            value={data?.stats.totalPostsAllTime ?? 0}
+            value={summary?.totalPostsAllTime ?? 0}
             kind="compact"
             hint="enviados na plataforma"
             accent="cyan"
@@ -158,7 +184,7 @@ export default function RankingClippers() {
           <StatTile
             icon={<CurrencyDollar className="size-4" weight="fill" />}
             label="Ganhos"
-            value={data?.stats.totalEarningsAllTime ?? 0}
+            value={summary?.totalEarningsAllTime ?? 0}
             kind="compactBRL"
             hint="distribuídos aos clipadores"
             accent="green"
@@ -167,11 +193,11 @@ export default function RankingClippers() {
           <StatTile
             icon={<Fire className="size-4" weight="fill" />}
             label="Competições ativas"
-            value={data?.stats.activeCompetitionsCount ?? 0}
+            value={summary?.activeCompetitionsCount ?? 0}
             kind="int"
             hint={
-              data
-                ? `de ${data.stats.totalCompetitionsCount} no total`
+              summary
+                ? `de ${summary.totalCompetitionsCount} no total`
                 : "acontecendo agora"
             }
             accent="cyan"
@@ -183,7 +209,7 @@ export default function RankingClippers() {
       {/* ===== Conteúdo ===== */}
       {isLoading ? (
         <RankingSkeleton />
-      ) : !data ? (
+      ) : !summary ? (
         <Reveal immediate>
           <div className="glass-card flex flex-col items-center gap-4 rounded-3xl px-6 py-16 text-center">
             <span className="bg-gradient-custom flex size-13 items-center justify-center rounded-2xl text-[#04222A]">
@@ -199,7 +225,11 @@ export default function RankingClippers() {
         </Reveal>
       ) : (
         <Reveal immediate delayMs={80}>
-          <Tabs defaultValue="geral" className="gap-6">
+          <Tabs
+            value={tab}
+            onValueChange={(value) => setTab(value as RankingTab)}
+            className="gap-6"
+          >
             <TabsList className="bg-muted/40 ring-border/60 flex h-auto w-full snap-x flex-nowrap justify-start gap-1 overflow-x-auto rounded-full p-1.5 ring-1 backdrop-blur-sm [-ms-overflow-style:none] [scrollbar-width:none] sm:overflow-visible [&::-webkit-scrollbar]:hidden">
               {(
                 [
@@ -244,7 +274,9 @@ export default function RankingClippers() {
                   title="Ranking Completo por Views"
                   description="Todos os clipadores ordenados por total de visualizações"
                 />
-                {data.topClippersByViews.length === 0 ? (
+                {!byViews ? (
+                  <TabLoading failed={byViewsFailed} />
+                ) : byViews.length === 0 ? (
                   <EmptyState
                     icon={<UsersThree className="size-6" weight="fill" />}
                     title="Nenhum participante ainda"
@@ -252,7 +284,7 @@ export default function RankingClippers() {
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {data.topClippersByViews.map((clipper) => (
+                    {byViews.map((clipper) => (
                       <RankingRow
                         key={clipper.clipperProfileId}
                         rank={clipper.rank}
@@ -276,7 +308,9 @@ export default function RankingClippers() {
                   title="Hall dos Campeões"
                   description="Clipadores com mais títulos na Clipfy League"
                 />
-                {data.topChampions.length === 0 ? (
+                {!champions ? (
+                  <TabLoading failed={championsFailed} />
+                ) : champions.topChampions.length === 0 ? (
                   <EmptyState
                     icon={<Crown className="size-6" weight="fill" />}
                     title="Nenhum campeão ainda"
@@ -284,7 +318,7 @@ export default function RankingClippers() {
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {data.topChampions.slice(0, 10).map((champion, index) => {
+                    {champions.topChampions.slice(0, 10).map((champion, index) => {
                       const name = displayNameOf(champion)
                       return (
                         <div
@@ -363,7 +397,9 @@ export default function RankingClippers() {
                   title="Histórico de Campeões"
                   description="Vencedores de todas as competições finalizadas"
                 />
-                {data.champions.length === 0 ? (
+                {!champions ? (
+                  <TabLoading failed={championsFailed} />
+                ) : champions.champions.length === 0 ? (
                   <EmptyState
                     icon={<Trophy className="size-6" weight="fill" />}
                     title="Nenhuma competição finalizada ainda"
@@ -371,7 +407,7 @@ export default function RankingClippers() {
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {data.champions.map((champion) => {
+                    {champions.champions.map((champion) => {
                       const name = displayNameOf(champion)
                       return (
                         <Link
@@ -428,12 +464,18 @@ export default function RankingClippers() {
             {/* ===== Aba: Plataformas ===== */}
             <TabsContent value="plataformas">
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {Object.entries(data.platformRankings).map(
+                {!platforms && (
+                  <TabLoading
+                    failed={platformsFailed}
+                    className="md:col-span-2 xl:col-span-3"
+                  />
+                )}
+                {Object.entries(platforms?.platformRankings ?? {}).map(
                   ([platform, ranking], index) => {
                     const config = platformConfig[platform as PlatformKey]
                     if (!config) return null
                     const PlatformIcon = config.icon
-                    const distribution = data.platformDistribution.find(
+                    const distribution = platforms?.platformDistribution.find(
                       (entry) => entry.platform === platform,
                     )
                     return (
@@ -580,19 +622,21 @@ export default function RankingClippers() {
                     className="gap-1 rounded-full border-emerald-500/30 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
                   >
                     <Fire className="size-3" weight="fill" />
-                    {data.stats.activeCompetitionsCount} Ativas
+                    {summary.activeCompetitionsCount} Ativas
                   </Badge>
                   <Badge
                     variant="outline"
                     className="gap-1 rounded-full border-violet-500/30 bg-violet-500/15 text-violet-600 dark:text-violet-400"
                   >
                     <Trophy className="size-3" weight="fill" />
-                    {data.stats.completedCompetitionsCount} Finalizadas
+                    {summary.completedCompetitionsCount} Finalizadas
                   </Badge>
                 </div>
               </div>
 
-              {data.competitionRankings.length === 0 ? (
+              {!competitions ? (
+                <TabLoading failed={competitionsFailed} />
+              ) : competitions.length === 0 ? (
                 <EmptyState
                   icon={<Trophy className="size-6" weight="fill" />}
                   title="Nenhuma competição encontrada"
@@ -600,7 +644,7 @@ export default function RankingClippers() {
                 />
               ) : (
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {data.competitionRankings.map((competition, index) => {
+                  {competitions.map((competition, index) => {
                     const status =
                       COMPETITION_STATUS[competition.campaign.status] ??
                       COMPETITION_STATUS.ACTIVE!
@@ -735,7 +779,9 @@ export default function RankingClippers() {
                   title="Top Clipadores por Ganhos"
                   description="Quem mais recebeu prêmios na Clipfy League"
                 />
-                {data.topClippersByEarnings.length === 0 ? (
+                {!earnings ? (
+                  <TabLoading failed={earningsFailed} />
+                ) : earnings.length === 0 ? (
                   <EmptyState
                     icon={<CurrencyDollar className="size-6" weight="fill" />}
                     title="Nenhum prêmio distribuído ainda"
@@ -743,7 +789,7 @@ export default function RankingClippers() {
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {data.topClippersByEarnings.map((clipper) => (
+                    {earnings.map((clipper) => (
                       <RankingRow
                         key={clipper.clipperProfileId}
                         rank={clipper.rank}
@@ -978,6 +1024,29 @@ function MiniStat({
       </span>
     </div>
   )
+}
+
+/** Conteúdo da aba enquanto os dados dela carregam (ou se falharem). */
+function TabLoading({
+  failed,
+  className,
+}: {
+  failed: boolean
+  className?: string
+}) {
+  if (failed) {
+    return (
+      <p
+        className={cn(
+          "text-muted-foreground py-12 text-center text-sm",
+          className,
+        )}
+      >
+        Não foi possível carregar este ranking.
+      </p>
+    )
+  }
+  return <ListRowsSkeleton rows={8} className={className} />
 }
 
 function EmptyState({
