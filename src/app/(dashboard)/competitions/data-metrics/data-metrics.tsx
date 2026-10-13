@@ -124,8 +124,10 @@ export default function DataMetrics() {
 
   const monthOptions = React.useMemo(() => getMonthOptions(), [])
 
+  // Só id e nome das competições: a lista com estatísticas era pesada e
+  // atrasava a consulta das métricas.
   const { data: campaigns, isLoading: loadingCampaigns } =
-    api.admin.getAllCampaignsWithStats.useQuery()
+    api.admin.getLibraryCampaigns.useQuery()
 
   // Hidrata a seleção do localStorage (mantendo só ids existentes);
   // fallback: todas as competições selecionadas.

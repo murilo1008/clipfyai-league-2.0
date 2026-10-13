@@ -154,10 +154,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
     isLoading,
     refetch: refetchDetails,
   } = api.admin.getCompetitionDetailsAdmin.useQuery({ slug })
-  const { data: chartsData } = api.admin.getCompetitionChartsAdmin.useQuery(
-    { slug },
-    { enabled: !!data },
-  )
+  const { data: chartsData } = api.admin.getCompetitionChartsAdmin.useQuery({
+    slug,
+  })
+  const utils = api.useUtils()
 
   const [activeTab, setActiveTab] = React.useState("overview")
   const [isCalendarDisconnectOpen, setIsCalendarDisconnectOpen] =
@@ -265,12 +265,8 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
         engagementRate: data.stats.engagementRate,
         recentViews: 0,
         recentPosts: 0,
-        dailyStats:
-          chartsData?.growthData?.map((d) => ({
-            date: d.date || "",
-            views: Number(d.views) || 0,
-            posts: 0,
-          })) ?? [],
+        // A evolução diária só entra no Excel (buscada ao exportar)
+        dailyStats: [] as { date: string; views: number; posts: number }[],
         platformStats:
           chartsData?.platformDistribution?.map((p) => ({
             platform: p.platform || "",
@@ -338,6 +334,17 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
     if (!payload) return
     setIsGeneratingExcel(true)
     try {
+      // A evolução diária é pesada e só aparece no Excel: busca ao exportar
+      // (sem ela, a planilha sai sem a aba "Evolução Diária", como antes).
+      const growth = await utils.admin.getCompetitionGrowthExportAdmin
+        .fetch({ slug })
+        .catch(() => null)
+      payload.analytics.dailyStats =
+        growth?.growthData.map((d) => ({
+          date: d.date || "",
+          views: Number(d.views) || 0,
+          posts: 0,
+        })) ?? []
       // xlsx (~90 kB gz) só é baixado quando o usuário exporta
       const { generateCompetitionExcel } = await import(
         "@/components/excel/competition-excel-generator"
