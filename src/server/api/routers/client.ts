@@ -90,6 +90,9 @@ function getClientCreationClerkError(error: unknown): TRPCError {
 /** Coletas mais recentes devolvidas no detalhe do post (gráfico e tabela). */
 const POST_DETAIL_METRICS_LIMIT = 120
 
+/** Prazo de cada chamada à API da Kiwify. */
+const KIWIFY_FETCH_TIMEOUT_MS = 15_000
+
 export const clientRouter = createTRPCRouter({
   hasPerformance: privateProcedure.query(async ({ ctx }) => {
     const campaigns = await ctx.db.campaign.findMany({
@@ -1993,6 +1996,7 @@ export const clientRouter = createTRPCRouter({
               client_id: input.kiwifyClientId,
               client_secret: input.kiwifySecretKey,
             }),
+            signal: AbortSignal.timeout(KIWIFY_FETCH_TIMEOUT_MS),
           },
         )
 
@@ -2039,6 +2043,7 @@ export const clientRouter = createTRPCRouter({
               Authorization: `Bearer ${accessToken}`,
               "x-kiwify-account-id": input.kiwifyAccountId,
             },
+            signal: AbortSignal.timeout(KIWIFY_FETCH_TIMEOUT_MS),
           },
         )
 
@@ -2054,6 +2059,13 @@ export const clientRouter = createTRPCRouter({
       } catch (error: any) {
         if (error instanceof TRPCError) {
           throw error
+        }
+        if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+          throw new TRPCError({
+            code: "TIMEOUT",
+            message:
+              "A Kiwify não respondeu a tempo. Tente novamente em instantes.",
+          })
         }
         console.error("Erro ao validar credenciais:", error)
         throw new TRPCError({
@@ -2074,6 +2086,7 @@ export const clientRouter = createTRPCRouter({
 
       return { success: true, message: "Credenciais salvas com sucesso!" }
     }),
+
 
   getSales: privateProcedure
     .input(
