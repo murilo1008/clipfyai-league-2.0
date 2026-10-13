@@ -409,50 +409,32 @@ export async function getTotalViewsAtRankingCutoff(
 ): Promise<bigint> {
   // Add 30-min buffer so metrics collected slightly after the cutoff hour are included
   const cutoffWithBuffer = new Date(cutoffDate.getTime() + 30 * 60 * 1000);
+  // Último snapshot por post via LATERAL no índice (clipPostId, collectedAt, views).
   const result = await db.$queryRaw<
     [
       {
         totalAtCutoffFromSnapshots: bigint | null;
         totalCurrentViews: bigint | null;
-        growthAfterCutoff: bigint | null;
         postsWithSnapshot: bigint | null;
         totalPosts: bigint | null;
       },
     ]
   >`
-    WITH posts AS (
-      SELECT cp."id", cp."views"
-      FROM "ClipPost" cp
-      WHERE cp."campaignId" = ${campaignId}
-    ),
-    latest_before_cutoff AS (
-      SELECT
-        p."id" AS "clipPostId",
-        (
-          SELECT cpm."views"
-          FROM "ClipPostMetrics" cpm
-          WHERE cpm."clipPostId" = p."id"
-            AND cpm."collectedAt" <= ${cutoffWithBuffer}
-          ORDER BY cpm."collectedAt" DESC
-          LIMIT 1
-        ) AS "viewsAtCutoff"
-      FROM posts p
-    ),
-    growth_after_cutoff AS (
-      SELECT
-        COALESCE(SUM(cpm."viewsDelta"), 0)::bigint AS "sumGrowth"
-      FROM "ClipPostMetrics" cpm
-      INNER JOIN posts p ON p."id" = cpm."clipPostId"
-      WHERE cpm."collectedAt" > ${cutoffWithBuffer}
-    )
     SELECT
       COALESCE(SUM(lbc."viewsAtCutoff"), 0)::bigint AS "totalAtCutoffFromSnapshots",
       COALESCE(SUM(p."views"), 0)::bigint AS "totalCurrentViews",
-      (SELECT "sumGrowth" FROM growth_after_cutoff) AS "growthAfterCutoff",
       COUNT(lbc."viewsAtCutoff")::bigint AS "postsWithSnapshot",
       COUNT(*)::bigint AS "totalPosts"
-    FROM posts p
-    LEFT JOIN latest_before_cutoff lbc ON lbc."clipPostId" = p."id"
+    FROM "ClipPost" p
+    LEFT JOIN LATERAL (
+      SELECT cpm."views" AS "viewsAtCutoff"
+      FROM "ClipPostMetrics" cpm
+      WHERE cpm."clipPostId" = p."id"
+        AND cpm."collectedAt" <= ${cutoffWithBuffer}::timestamp
+      ORDER BY cpm."collectedAt" DESC
+      LIMIT 1
+    ) lbc ON TRUE
+    WHERE p."campaignId" = ${campaignId}
   `;
 
   const row = result[0];
@@ -461,7 +443,6 @@ export async function getTotalViewsAtRankingCutoff(
   const totalAtCutoffFromSnapshots =
     row.totalAtCutoffFromSnapshots ?? BigInt(0);
   const totalCurrentViews = row.totalCurrentViews ?? BigInt(0);
-  const growthAfterCutoff = row.growthAfterCutoff ?? BigInt(0);
   const postsWithSnapshot = row.postsWithSnapshot ?? BigInt(0);
   const totalPosts = row.totalPosts ?? BigInt(0);
 
@@ -471,6 +452,19 @@ export async function getTotalViewsAtRankingCutoff(
   }
 
   // Fallback: estimate cutoff as current views minus growth after cutoff.
+  // O crescimento só é lido quando necessário; com o corte ainda no futuro
+  // não existem métricas posteriores a ele (crescimento = 0).
+  let growthAfterCutoff = BigInt(0);
+  if (cutoffWithBuffer.getTime() <= Date.now()) {
+    const growth = await db.$queryRaw<[{ sumGrowth: bigint | null }]>`
+      SELECT COALESCE(SUM(cpm."viewsDelta"), 0)::bigint AS "sumGrowth"
+      FROM "ClipPostMetrics" cpm
+      INNER JOIN "ClipPost" p ON p."id" = cpm."clipPostId"
+      WHERE p."campaignId" = ${campaignId}
+        AND cpm."collectedAt" > ${cutoffWithBuffer}::timestamp
+    `;
+    growthAfterCutoff = growth[0]?.sumGrowth ?? BigInt(0);
+  }
   const estimatedCutoff = totalCurrentViews - growthAfterCutoff;
   return estimatedCutoff > BigInt(0) ? estimatedCutoff : BigInt(0);
 }
@@ -608,6 +602,23 @@ export interface DailyRankingDateContext {
   };
 }
 
+/** Contexto sem as estatísticas de views (só `totalPosts`). */
+export type DailyRankingDateContextLite = Omit<
+  DailyRankingDateContext,
+  "stats"
+> & {
+  stats: Pick<DailyRankingDateContext["stats"], "totalPosts">;
+};
+
+export interface LoadDailyRankingDateContextOptions {
+  /**
+   * `false` pula as views totais da campanha e o aumento de views do dia
+   * (duas varreduras de ClipPostMetrics) quando o chamador não usa `stats`.
+   * Padrão: `true`.
+   */
+  includeStats?: boolean;
+}
+
 /**
  * Carrega campanha, snapshot do DailyRanking do dia UTC e linhas do top (mesma query do preview).
  * Retorna `null` se campanha ou ranking do dia não existir.
@@ -616,7 +627,20 @@ export async function loadDailyRankingDateContext(
   db: PrismaClient,
   campaignId: string,
   dateYmd: string,
-): Promise<DailyRankingDateContext | null> {
+  options: { includeStats: false },
+): Promise<DailyRankingDateContextLite | null>;
+export async function loadDailyRankingDateContext(
+  db: PrismaClient,
+  campaignId: string,
+  dateYmd: string,
+  options?: { includeStats?: true },
+): Promise<DailyRankingDateContext | null>;
+export async function loadDailyRankingDateContext(
+  db: PrismaClient,
+  campaignId: string,
+  dateYmd: string,
+  options: LoadDailyRankingDateContextOptions = {},
+): Promise<DailyRankingDateContext | DailyRankingDateContextLite | null> {
   parseUtcDateParts(dateYmd);
   const { startOfDay, endOfDay } = getUtcRankingDayBounds(dateYmd);
   const { startDate, endDate } = getPostedAtWindowUtc(dateYmd);
@@ -677,14 +701,7 @@ export async function loadDailyRankingDateContext(
         fetchLimit,
       );
 
-  const [totalPosts, totalCompetitionViews, viewsIncreaseToday] =
-    await Promise.all([
-      getTotalPostsCountForDailyRanking(db, dailyRanking.id),
-      getTotalViewsOfCampaign(db, campaignId),
-      getViewsDeltaByLastMetricOfDay(db, campaignId, dateYmd),
-    ]);
-
-  return {
+  const base = {
     dateYmd,
     campaignId: campaign.id,
     campaignName: campaign.name,
@@ -696,6 +713,25 @@ export async function loadDailyRankingDateContext(
     topCount,
     dailyPrizeTable: campaign.activeRankingRule?.dailyPrizeTable ?? null,
     rawRows,
+  };
+
+  if (options.includeStats === false) {
+    const totalPosts = await getTotalPostsCountForDailyRanking(
+      db,
+      dailyRanking.id,
+    );
+    return { ...base, stats: { totalPosts } };
+  }
+
+  const [totalPosts, totalCompetitionViews, viewsIncreaseToday] =
+    await Promise.all([
+      getTotalPostsCountForDailyRanking(db, dailyRanking.id),
+      getTotalViewsOfCampaign(db, campaignId),
+      getViewsDeltaByLastMetricOfDay(db, campaignId, dateYmd),
+    ]);
+
+  return {
+    ...base,
     stats: {
       totalPosts,
       totalCompetitionViews,
@@ -924,10 +960,13 @@ export async function computeDailyRankWalletPaidGate(
   campaignId: string,
   dateYmd: string,
 ): Promise<{
-  core: DailyRankingDateContext;
+  core: DailyRankingDateContextLite;
   canUndoRankPayments: boolean;
 } | null> {
-  const core = await loadDailyRankingDateContext(db, campaignId, dateYmd);
+  // Os gates só usam linhas/tabela/top do dia: as estatísticas de views não são lidas.
+  const core = await loadDailyRankingDateContext(db, campaignId, dateYmd, {
+    includeStats: false,
+  });
   if (!core) {
     return null;
   }
@@ -990,13 +1029,15 @@ export async function computeDailyPixPayoutSettledGate(
   campaignId: string,
   dateYmd: string,
 ): Promise<{
-  core: DailyRankingDateContext;
+  core: DailyRankingDateContextLite;
   isSettled: boolean;
   prizeCount: number;
   unsettledCount: number;
   processingTransactionCount: number;
 } | null> {
-  const core = await loadDailyRankingDateContext(db, campaignId, dateYmd);
+  const core = await loadDailyRankingDateContext(db, campaignId, dateYmd, {
+    includeStats: false,
+  });
   if (!core) {
     return null;
   }
