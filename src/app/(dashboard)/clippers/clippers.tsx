@@ -74,6 +74,7 @@ import { api } from "@/trpc/react";
 import type { RouterOutputs } from "@/trpc/react";
 
 import { SeeClipperDialog } from "./see-clipper-dialog";
+import { EarnedFilter, type EarnedRange } from "./earned-filter";
 
 /** Linha da tabela (só as colunas listadas; o perfil completo vem do getById). */
 export type Clipper = RouterOutputs["clipper"]["getAll"]["items"][number];
@@ -564,6 +565,7 @@ export default function Clippers() {
     SubscriptionKey | "ALL"
   >("ALL");
   const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [earnedRange, setEarnedRange] = React.useState<EarnedRange>({});
 
   // Busca no servidor só depois que o usuário para de digitar
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
@@ -571,6 +573,7 @@ export default function Clippers() {
     status: statusFilter,
     search: debouncedSearch,
     subscription: subscriptionFilter,
+    ...earnedRange,
   };
 
   // Filtro ou ordenação novos voltam para a primeira página
@@ -915,6 +918,8 @@ export default function Clippers() {
               </DropdownMenuContent>
             </DropdownMenu>
 
+            <EarnedFilter value={earnedRange} onChange={setEarnedRange} />
+
             {/* Visibilidade de colunas */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -961,6 +966,12 @@ export default function Clippers() {
       {/* ===== Data Table ===== */}
       <Reveal immediate delayMs={120}>
         <div className="glass-card overflow-hidden rounded-3xl">
+          <div className="border-border/60 border-b px-4 py-3.5 text-right">
+            <p className="text-muted-foreground text-xs">
+              <span className="text-foreground font-semibold">{total}</span>{" "}
+              {total === 1 ? "clipador" : "clipadores"}
+            </p>
+          </div>
           <div className="space-y-3 p-3.5 lg:hidden">
             {loadingClippers ? (
               Array.from({ length: 4 }).map((_, index) => (
@@ -1168,7 +1179,7 @@ export default function Clippers() {
           {/* Paginação */}
           <div className="border-border/60 flex flex-col items-center justify-between gap-3 border-t px-4 py-3.5 sm:flex-row">
             <p className="text-muted-foreground text-xs">
-              {total} clipadores · Página{" "}
+              Página{" "}
               <span className="text-foreground font-semibold">
                 {pageIndex + 1}
               </span>{" "}

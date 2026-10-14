@@ -144,6 +144,76 @@ describe("clipper.getAll (lista do admin)", () => {
   });
 
   it.each([
+    [{ minTotalEarned: 100.5 }, ['COALESCE(w."totalEarned", 0) > ?'], [100.5]],
+    [{ maxTotalEarned: 500 }, ['COALESCE(w."totalEarned", 0) < ?'], [500]],
+    [
+      { minTotalEarned: 0, maxTotalEarned: 1000.75 },
+      ['COALESCE(w."totalEarned", 0) > ?', 'COALESCE(w."totalEarned", 0) < ?'],
+      [0, 1000.75],
+    ],
+    [{ maxTotalEarned: 0 }, ['COALESCE(w."totalEarned", 0) < ?'], [0]],
+  ])(
+    "aplica a faixa %j à página e à contagem",
+    async (filters, conditions, values) => {
+      const { db, queryRaw } = listDb([], 0);
+
+      await caller(db).getAll({
+        ...filters,
+        status: "VERIFIED",
+        subscription: "ACTIVE",
+      });
+
+      expect(queryRaw).toHaveBeenCalledTimes(2);
+      for (const call of queryRaw.mock.calls) {
+        const query = rawQuery(call);
+        const sql = compact(query.sql);
+        // LEFT JOIN + COALESCE mantém perfis sem carteira como total ganho zero.
+        expect(sql).toContain(
+          'LEFT JOIN "Wallet" w ON w."clipperProfileId" = cp."id"',
+        );
+        for (const condition of conditions) expect(sql).toContain(condition);
+        expect(query.values.slice(0, 2 + values.length)).toEqual([
+          "VERIFIED",
+          "ACTIVE",
+          ...values,
+        ]);
+        expect(sql).not.toContain(
+          "minTotalEarned" in filters
+            ? 'COALESCE(w."totalEarned", 0) >= ?'
+            : 'COALESCE(w."totalEarned", 0) > ?',
+        );
+        expect(sql).not.toContain(
+          "maxTotalEarned" in filters
+            ? 'COALESCE(w."totalEarned", 0) <= ?'
+            : 'COALESCE(w."totalEarned", 0) < ?',
+        );
+      }
+    },
+  );
+
+  it.each([
+    { minTotalEarned: -1 },
+    { maxTotalEarned: -1 },
+    { minTotalEarned: Infinity },
+    { maxTotalEarned: NaN },
+    { minTotalEarned: 100, maxTotalEarned: 50 },
+    { minTotalEarned: 100, maxTotalEarned: 100 },
+  ])(
+    "rejeita a faixa inválida %j na lista e na exportação",
+    async (filters) => {
+      const { db, queryRaw } = listDb([], 0);
+
+      await expect(caller(db).getAll(filters)).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      await expect(caller(db).exportVerified(filters)).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      expect(queryRaw).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
     ["fullName", "asc", 'lower(cp."fullName") COLLATE "C" ASC'],
     ["totalEarned", "desc", 'COALESCE(w."totalEarned", 0) DESC'],
     ["avgEngagementRate", "asc", 'cp."avgEngagementRate" ASC NULLS FIRST'],
@@ -212,6 +282,24 @@ describe("clipper.exportVerified (Copiar Aprovados)", () => {
       caller(db).exportVerified({ status: "PENDING" }),
     ).resolves.toEqual([]);
     expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("copia somente aprovados dentro da mesma faixa de total ganho", async () => {
+    const db = exportDb();
+
+    await caller(db).exportVerified({
+      minTotalEarned: 0,
+      maxTotalEarned: 500.5,
+    });
+
+    const query = rawQuery(db.$queryRaw.mock.calls[0]!);
+    expect(compact(query.sql)).toContain(
+      'LEFT JOIN "Wallet" w ON w."clipperProfileId" = cp."id"',
+    );
+    expect(compact(query.sql)).toContain(
+      'WHERE cp."verificationStatus" = ?::"ClipperVerificationStatus" AND COALESCE(w."totalEarned", 0) > ? AND COALESCE(w."totalEarned", 0) < ?',
+    );
+    expect(query.values).toEqual(["VERIFIED", 0, 500.5]);
   });
 });
 

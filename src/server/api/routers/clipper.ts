@@ -362,13 +362,28 @@ const clipperListFiltersSchema = z.object({
     .enum(["ACTIVE", "TRIAL", "CANCELLED", "EXPIRED", "NONE", "ALL"])
     .optional()
     .default("ALL"),
+  minTotalEarned: z.number().finite().nonnegative().optional(),
+  maxTotalEarned: z.number().finite().nonnegative().optional(),
 });
 
 type ClipperListFilters = z.infer<typeof clipperListFiltersSchema>;
 
+function isValidEarnedRange(filters: ClipperListFilters) {
+  return (
+    filters.minTotalEarned === undefined ||
+    filters.maxTotalEarned === undefined ||
+    filters.minTotalEarned < filters.maxTotalEarned
+  );
+}
+
+const earnedRangeError = {
+  message: "O limite superior deve ser maior que o limite inferior.",
+  path: ["maxTotalEarned"],
+};
+
 /**
  * WHERE da lista de clipadores (página e "Copiar Aprovados"), sobre
- * `"ClipperProfile" cp JOIN "User" u`.
+ * `"ClipperProfile" cp JOIN "User" u LEFT JOIN "Wallet" w`.
  *
  * - A busca casa nome, nome artístico, e-mail ou @username de uma conta
  *   social com `ILIKE '%termo%'`, o mesmo SQL do `contains` +
@@ -389,6 +404,18 @@ function clipperListWhereSql(filters: ClipperListFilters) {
   if (filters.subscription !== "ALL") {
     conditions.push(
       Prisma.sql`u."subscriptionStatus" = ${filters.subscription}::"SubscriptionStatus"`,
+    );
+  }
+
+  if (filters.minTotalEarned !== undefined) {
+    conditions.push(
+      Prisma.sql`COALESCE(w."totalEarned", 0) > ${filters.minTotalEarned}`,
+    );
+  }
+
+  if (filters.maxTotalEarned !== undefined) {
+    conditions.push(
+      Prisma.sql`COALESCE(w."totalEarned", 0) < ${filters.maxTotalEarned}`,
     );
   }
 
@@ -1044,14 +1071,16 @@ export const clipperRouter = createTRPCRouter({
   // telefone, chave PIX) vem do getById quando o detalhe é aberto.
   getAll: adminProcedure
     .input(
-      clipperListFiltersSchema.extend({
-        page: z.number().int().min(1).default(1),
-        pageSize: z.number().int().min(1).max(100).default(10),
-        sortBy: z
-          .enum(["fullName", "totalEarned", "avgEngagementRate", "autoScore"])
-          .optional(),
-        sortDir: z.enum(["asc", "desc"]).default("asc"),
-      }),
+      clipperListFiltersSchema
+        .extend({
+          page: z.number().int().min(1).default(1),
+          pageSize: z.number().int().min(1).max(100).default(10),
+          sortBy: z
+            .enum(["fullName", "totalEarned", "avgEngagementRate", "autoScore"])
+            .optional(),
+          sortDir: z.enum(["asc", "desc"]).default("asc"),
+        })
+        .refine(isValidEarnedRange, earnedRangeError),
     )
     .query(async ({ ctx, input }) => {
       const where = clipperListWhereSql(input);
@@ -1077,6 +1106,7 @@ export const clipperRouter = createTRPCRouter({
           SELECT COUNT(*)::int AS "total"
           FROM "ClipperProfile" cp
           JOIN "User" u ON u."id" = cp."userId"
+          LEFT JOIN "Wallet" w ON w."clipperProfileId" = cp."id"
           ${where}
         `,
       ]);
@@ -1122,7 +1152,7 @@ export const clipperRouter = createTRPCRouter({
   // "Copiar Aprovados" (somente ADMIN): nome, e-mail, CPF e chave PIX dos
   // VERIFIED que passam pelos filtros da lista, buscados só no clique.
   exportVerified: adminProcedure
-    .input(clipperListFiltersSchema)
+    .input(clipperListFiltersSchema.refine(isValidEarnedRange, earnedRangeError))
     .query(async ({ ctx, input }) => {
       // Filtrando outro status, a lista não tem nenhum VERIFIED.
       if (input.status !== "ALL" && input.status !== "VERIFIED") return [];
@@ -1140,6 +1170,7 @@ export const clipperRouter = createTRPCRouter({
         SELECT cp."fullName", cp."artisticName", u."email", cp."cpf", cp."pixKey"
         FROM "ClipperProfile" cp
         JOIN "User" u ON u."id" = cp."userId"
+        LEFT JOIN "Wallet" w ON w."clipperProfileId" = cp."id"
         ${where}
         ORDER BY cp."createdAt" DESC, cp."id" DESC
       `;
