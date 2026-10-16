@@ -38,6 +38,8 @@ function fixture(status: "ACTIVE" | "COMPLETED") {
     },
   }));
   const db = {
+    // Sem sanções de advertência (redutor, suspensão, retenção).
+    clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
     campaign: { findUnique: vi.fn().mockResolvedValue(campaign) },
     clipperProfile: {
       findUnique: vi.fn().mockResolvedValue({ id: "clipper-2" }),

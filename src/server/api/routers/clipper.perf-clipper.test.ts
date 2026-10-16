@@ -38,6 +38,8 @@ describe("home do clipador", () => {
       { applicationId: "app-1", position: 1, previousPosition: 1, monthlyRanking: { campaignId: "c-1" } },
     ]);
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ id: "clipper-1" }) },
       wallet: { findUnique: vi.fn().mockResolvedValue({ totalEarned: 150 }) },
       clipperApplication: {
@@ -73,6 +75,8 @@ describe("home do clipador", () => {
   it("busca o perfil uma vez por requisição entre procedures do mesmo batch", async () => {
     const findUnique = vi.fn().mockResolvedValue({ id: "clipper-1" });
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique },
       clipperApplication: { findMany: vi.fn().mockResolvedValue([]) },
       clipPost: { groupBy: vi.fn().mockResolvedValue([]) },
@@ -88,6 +92,8 @@ describe("home do clipador", () => {
 
   it("minhas competições somam views por groupBy e usam a menor posição", async () => {
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ id: "clipper-1" }) },
       clipperApplication: {
         findMany: vi.fn().mockResolvedValue([
@@ -217,6 +223,8 @@ describe("home do clipador", () => {
       organization: { id: "o", name: "Org", logoUrl: null },
     };
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ id: "clipper-1" }) },
       campaign: {
         findMany: vi.fn().mockResolvedValue([
@@ -260,6 +268,8 @@ describe("carteira", () => {
       },
     ]);
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ userId: "user-1" }) },
       user: { findUnique: vi.fn().mockResolvedValue({ role: "CLIPPER" }) },
       $queryRaw: queryRaw,
@@ -285,6 +295,8 @@ describe("carteira", () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const count = vi.fn().mockResolvedValue(0);
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ userId: "user-1" }) },
       user: { findUnique: vi.fn().mockResolvedValue({ role: "CLIPPER" }) },
       transaction: { findMany, count },
@@ -316,6 +328,8 @@ describe("carteira", () => {
 describe("envio de posts", () => {
   function submitDb() {
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       $executeRaw: vi.fn().mockResolvedValue(1),
       $transaction: vi.fn(),
       clipperProfile: { findUnique: vi.fn().mockResolvedValue({ id: "clipper-1" }) },

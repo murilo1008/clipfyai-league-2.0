@@ -86,6 +86,7 @@ import { api } from "@/trpc/react"
 import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
 
 import { STATUS_CONFIG, type ClipperStatus } from "./clippers"
+import { ClipperWarningsTab } from "./warnings/clipper-warnings-tab"
 
 const formatDateTime = (date: Date | string) =>
   format(new Date(date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
@@ -355,6 +356,13 @@ export function SeeClipperDialog({
   /* ===== Ban / Unban ===== */
   const [isBanOpen, setIsBanOpen] = React.useState(false)
   const [isUnbanOpen, setIsUnbanOpen] = React.useState(false)
+  // Com o sistema de advertências ligado, o ban também tira o clipador das
+  // competições em andamento e retém a carteira.
+  const { data: disciplineStatus } = api.clipperDiscipline.status.useQuery(
+    undefined,
+    { enabled },
+  )
+  const disciplineEnabled = disciplineStatus?.enabled === true
 
   const banMutation = api.clipper.ban.useMutation({
     onSuccess: () => {
@@ -364,6 +372,7 @@ export function SeeClipperDialog({
       void utils.clipper.getAll.invalidate()
       void utils.clipper.getById.invalidate()
       void utils.clipper.getStats.invalidate()
+      void utils.clipperDiscipline.invalidate()
     },
     onError: (error) => toast.error(error.message || "Erro ao banir clipador"),
   })
@@ -376,6 +385,7 @@ export function SeeClipperDialog({
       void utils.clipper.getAll.invalidate()
       void utils.clipper.getById.invalidate()
       void utils.clipper.getStats.invalidate()
+      void utils.clipperDiscipline.invalidate()
     },
     onError: (error) =>
       toast.error(error.message || "Erro ao desbanir clipador"),
@@ -536,6 +546,7 @@ export function SeeClipperDialog({
                     { value: "portfolio", label: "Portfólio" },
                     { value: "terms", label: "Termos" },
                     { value: "wallet", label: "Carteira" },
+                    { value: "warnings", label: "Advertências" },
                   ].map((tab) => (
                     <TabsTrigger
                       key={tab.value}
@@ -652,7 +663,9 @@ export function SeeClipperDialog({
                     <p className="text-muted-foreground text-sm">
                       {isBanned
                         ? "Este clipador está banido. Desbanir restaura o status de verificado."
-                        : "Banir remove o clipador de todas as competições e bloqueia o acesso."}
+                        : disciplineEnabled
+                          ? "Banir bloqueia o acesso, tira o clipador das competições em andamento (sem estorno) e retém a carteira."
+                          : "Banir bloqueia o acesso à plataforma."}
                     </p>
                     {isBanned ? (
                       <Button
@@ -1439,6 +1452,14 @@ export function SeeClipperDialog({
                   </div>
                 )}
               </TabsContent>
+
+              {/* ===== Advertências ===== */}
+              <TabsContent value="warnings" className="mt-4">
+                <ClipperWarningsTab
+                  clipperProfileId={clipper.id}
+                  clipperName={name}
+                />
+              </TabsContent>
             </Tabs>
           </div>
         </DialogContent>
@@ -1557,12 +1578,19 @@ export function SeeClipperDialog({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ul className="text-muted-foreground flex flex-col gap-1.5 text-sm">
-            {[
-              "Remove o clipador de todas as competições ativas",
-              "Bloqueia o acesso à plataforma",
-              "Suspende pagamentos e saques pendentes",
-              "Marca o perfil como banido permanentemente",
-            ].map((item) => (
+            {(disciplineEnabled
+              ? [
+                  "Bloqueia o acesso à plataforma",
+                  "Tira o clipador das competições em andamento, sem estornar os prêmios já creditados",
+                  "Retém a carteira: os saques ficam bloqueados até o desbanimento",
+                  "Marca o perfil como banido até ser desbanido",
+                ]
+              : [
+                  "Bloqueia o acesso à plataforma",
+                  "Marca o perfil como banido até ser desbanido",
+                  "Inscrições e carteira não são alteradas (sistema de advertências desativado)",
+                ]
+            ).map((item) => (
               <li key={item} className="flex items-start gap-2">
                 <XCircle
                   className="mt-0.5 size-3.5 shrink-0 text-red-500"
@@ -1607,6 +1635,9 @@ export function SeeClipperDialog({
             {[
               "Restaura o status de verificado",
               "Libera o acesso à plataforma",
+              ...(disciplineEnabled
+                ? ["Devolve as inscrições que o banimento removeu"]
+                : []),
               "Permite participar de novas competições",
               "Reativa a carteira e os saques",
             ].map((item) => (

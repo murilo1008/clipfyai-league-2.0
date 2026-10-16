@@ -49,14 +49,26 @@ export function canRejoinCompetition(
   );
 }
 
-/** Uma desistência não altera períodos que já haviam encerrado. */
+/**
+ * Uma desistência não altera períodos que já haviam encerrado. A remoção por
+ * advertência (REVOKED) usa o mesmo corte: withdrawnAt guarda o momento da
+ * remoção, e os rankings fechados antes dela continuam como foram pagos.
+ */
+export const rankingCutoffApplicationStatuses = [
+  "WITHDRAWN",
+  "REVOKED",
+] satisfies ApplicationStatus[];
+
 export function rankingApplicationWhere(
   cutoff: Date,
 ): Prisma.ClipperApplicationWhereInput {
   return {
     OR: [
       { status: "APPROVED" },
-      { status: "WITHDRAWN", withdrawnAt: { gte: cutoff } },
+      {
+        status: { in: rankingCutoffApplicationStatuses },
+        withdrawnAt: { gte: cutoff },
+      },
     ],
   };
 }

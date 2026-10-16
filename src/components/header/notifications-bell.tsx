@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { Bell, Megaphone } from "@phosphor-icons/react";
+import { Bell, Megaphone, ShieldWarning } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,13 @@ export function NotificationsBell() {
       ? params.slug
       : undefined;
   const [open, setOpen] = useState(false);
+  const utils = api.useUtils();
+  const { mutate: markAlertRead } = api.notifications.markAlertRead.useMutation({
+    onSuccess: () => {
+      void utils.notifications.unreadSummary.invalidate();
+      void utils.notifications.list.invalidate();
+    },
+  });
   const { data: user } = api.user.getCurrentUser.useQuery();
   const enabled = user?.role === "CLIPPER";
   // Mesma entrada que a página da competição usa ({ slug }): as duas
@@ -87,12 +94,12 @@ export function NotificationsBell() {
           </h2>
           <p className="text-muted-foreground mt-1 text-xs">
             {summary.isLoading
-              ? "Carregando avisos…"
+              ? "Carregando notificações…"
               : summary.error
-                ? "Não foi possível consultar os avisos não lidos."
+                ? "Não foi possível consultar as notificações não lidas."
                 : unread
-                  ? `${unread} aviso(s) não lido(s)`
-                  : "Você está em dia com os avisos."}
+                  ? `${unread} notificação(ões) não lida(s)`
+                  : "Você está em dia com as notificações."}
           </p>
         </div>
         <div className="max-h-[min(65vh,480px)] overflow-y-auto">
@@ -120,7 +127,7 @@ export function NotificationsBell() {
               <Megaphone className="size-7" weight="duotone" />
               {competitionSlug
                 ? "Nenhum aviso recebido nesta competição."
-                : "Nenhum aviso recebido ainda."}
+                : "Nenhuma notificação recebida ainda."}
             </div>
           ) : (
             items.map((notification) => (
@@ -133,19 +140,40 @@ export function NotificationsBell() {
                 )}
                 onClick={() => {
                   setOpen(false);
+                  if (
+                    notification.kind === "clipper_warning" &&
+                    !notification.isRead
+                  ) {
+                    markAlertRead({ notificationId: notification.id });
+                  }
                   router.push(notification.actionUrl);
                 }}
               >
-                <span aria-hidden className="shrink-0 text-lg">
-                  {ANNOUNCEMENT_CATEGORIES[notification.category].emoji}
-                </span>
+                {notification.kind === "announcement" ? (
+                  <span aria-hidden className="shrink-0 text-lg">
+                    {ANNOUNCEMENT_CATEGORIES[notification.category].emoji}
+                  </span>
+                ) : (
+                  <ShieldWarning
+                    aria-hidden
+                    weight="duotone"
+                    className="mt-0.5 size-5 shrink-0 text-amber-500"
+                  />
+                )}
                 <span className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="text-muted-foreground truncate text-xs">
-                    {notification.campaignName}
+                    {notification.kind === "announcement"
+                      ? notification.campaignName
+                      : "Advertência"}
                   </span>
                   <span className="line-clamp-2 text-sm font-semibold wrap-anywhere">
                     {notification.title}
                   </span>
+                  {notification.kind === "clipper_warning" && (
+                    <span className="text-muted-foreground line-clamp-2 text-xs wrap-anywhere">
+                      {notification.message}
+                    </span>
+                  )}
                   <time
                     dateTime={notification.createdAt.toISOString()}
                     className="text-muted-foreground text-[10px]"

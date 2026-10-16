@@ -34,6 +34,11 @@ function caller(db: Record<string, unknown>) {
   return adminRouter.createCaller({
     db: {
       user: { findUnique: vi.fn().mockResolvedValue({ role: "ADMIN" }) },
+      // Sem sanções de advertência (redutor do ranking).
+      clipperSanction: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
       ...db,
     },
     headers: new Headers(),
@@ -944,9 +949,8 @@ describe("pagamentos em lote", () => {
       })),
     });
     const transactionFindMany = vi.fn().mockResolvedValue([
-      { rankingPosition: 2, wallet: { clipperProfileId: "cp-2" } },
-      // mesmo clipador em outra posição não conta
-      { rankingPosition: 1, wallet: { clipperProfileId: "cp-2" } },
+      // A posição 2 já foi paga a quem estava nela antes de uma remoção.
+      { rankingPosition: 2, wallet: { clipperProfileId: "cp-9" } },
     ]);
     const api = caller({
       campaign: {
@@ -962,8 +966,8 @@ describe("pagamentos em lote", () => {
 
     expect(transactionFindMany).toHaveBeenCalledOnce();
     expect(transactionFindMany.mock.calls[0]![0].where.OR).toEqual([
-      { rankingPosition: 1, wallet: { clipperProfileId: "cp-1" } },
-      { rankingPosition: 2, wallet: { clipperProfileId: "cp-2" } },
+      { rankingPosition: { in: [1, 2] } },
+      { wallet: { clipperProfileId: { in: ["cp-1", "cp-2"] } } },
     ]);
     expect(result).toMatchObject({
       dryRun: true,
@@ -975,6 +979,49 @@ describe("pagamentos em lote", () => {
           reason: "Prêmio mensal já creditado para esta posição",
         },
         { position: 3, reason: "Sem valor de prêmio para esta posição" },
+      ],
+    });
+  });
+
+  it("payMonthlyRankByPeriod não paga de novo quem já recebeu prêmio mensal", async () => {
+    computeMonthlyLeaderboard.mockResolvedValue({
+      monthlyPrizeTable: [{ position: 1, prize: 300 }],
+      monthPeriod: "2026-10",
+      rows: [
+        {
+          position: 1,
+          clipperProfileId: "cp-1",
+          clipperName: "Nome 1",
+          clipperUsername: "user1",
+        },
+      ],
+    });
+    const api = caller({
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({ id: "c1", name: "Liga" }),
+      },
+      transaction: {
+        // Recebeu o 3º lugar antes de subir para o 1º após uma remoção.
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { rankingPosition: 3, wallet: { clipperProfileId: "cp-1" } },
+          ]),
+      },
+    });
+
+    const result = await api.payMonthlyRankByPeriod({
+      campaignId: "c1",
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({
+      totalAmount: 0,
+      skipped: [
+        {
+          position: 1,
+          reason: "Clipador já recebeu prêmio mensal nesta competição",
+        },
       ],
     });
   });
@@ -1479,3 +1526,45 @@ describe("spotifyMetrics.listTracks", () => {
     ]);
   });
 });
+
+describe("getTopPostersPixPayoutStatus", () => {
+  function setup({ walletActive = true } = {}) {
+    const credit = (id: string, position: number, isActive = true) => ({
+      id,
+      amount: 50,
+      rankingPosition: position,
+      wallet: { isActive, clipperProfile: { fullName: `Nome ${id}`, artisticName: null } },
+    });
+    const transactionFindMany = vi
+      .fn()
+      // créditos do dia
+      .mockResolvedValueOnce([credit("c1", 1), credit("c2", 2, walletActive)])
+      // estornos: c1 foi estornado por advertência...
+      .mockResolvedValueOnce([{ id: "adj-1", metadata: { reversedPrizeCreditId: "c1" } }])
+      // ...e devolvido na revogação
+      .mockResolvedValueOnce([{ metadata: { restoredReversalId: "adj-1" } }])
+      // PIX já iniciados
+      .mockResolvedValueOnce([]);
+    const api = caller({
+      transaction: { findMany: transactionFindMany },
+      $queryRaw: vi.fn().mockResolvedValue([]),
+    });
+    return api;
+  }
+
+  it("crédito devolvido na revogação volta a esperar PIX", async () => {
+    const result = await setup().getTopPostersPixPayoutStatus({ campaignId: "c1", date: "2026-10-10" });
+    expect(result.lines.map((line) => line.position)).toEqual([1, 2]);
+    expect(result).toMatchObject({ status: "PENDING", held: 0 });
+  });
+
+  it("carteira retida sem PIX iniciado fica fora do status do lote", async () => {
+    const result = await setup({ walletActive: false }).getTopPostersPixPayoutStatus({
+      campaignId: "c1",
+      date: "2026-10-10",
+    });
+    expect(result.lines.map((line) => line.position)).toEqual([1]);
+    expect(result).toMatchObject({ total: 1, held: 1 });
+  });
+});
+

@@ -94,6 +94,10 @@ describe("ranking diário ao vivo (SQL)", () => {
     expect(text).toContain("LIMIT ?");
     expect(values).toContain(12); // topCount (2) + folga (10)
     expect(values).toContainEqual(new Date("2026-10-09T20:00:00Z"));
+    // Clipador inelegível ao pódio no dia do vídeo fica fora do ranking ao vivo.
+    expect(text.replace(/\s+/g, " ")).toContain(
+      `AND NOT EXISTS ( SELECT 1 FROM "ClipperSanction" s WHERE s."clipperProfileId" = ca."clipperProfileId" AND s."campaignId" = cp."campaignId" AND s."type" = 'PODIUM_INELIGIBLE'`,
+    );
 
     // Score = views × ER% (igual ao calculateRankingScore); empate → views.
     expect(ranked.map((item) => item.postId)).toEqual(["a", "b"]);
@@ -357,7 +361,7 @@ describe("Top Clipadores do dia", () => {
       OR: [
         { status: "APPROVED" },
         {
-          status: "WITHDRAWN",
+          status: { in: ["WITHDRAWN", "REVOKED"] },
           withdrawnAt: { gte: new Date("2026-10-09T20:00:00Z") },
         },
       ],

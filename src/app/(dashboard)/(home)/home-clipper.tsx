@@ -36,7 +36,6 @@ import {
   ShareNetwork,
   Sparkle,
   Target,
-  Timer,
   Trophy,
   UserPlus,
   UsersThree,
@@ -47,10 +46,12 @@ import {
 import { toast } from "sonner"
 
 import { ClanTagBadge } from "@/components/clan-tag-badge"
+import { DisciplineBanner } from "@/components/clippers/discipline-banner"
 import { ClipperHeroViz, ClipperHeroVizSkeleton } from "@/components/home/clipper-hero-viz"
 import { HomeHero } from "@/components/home/home-hero"
 import { StatTile } from "@/components/home/stat-tile"
 import { CountUp, formatCompact } from "@/components/shared/count-up"
+import { CountdownTimer } from "@/components/shared/countdown-timer"
 import { Reveal } from "@/components/shared/reveal"
 import {
   Bone,
@@ -164,66 +165,6 @@ const parsePrize = (prize: unknown): number => {
       parseFloat(prize.replace(/[^\d.,]/g, "").replace(",", ".")) || 0
     )
   return typeof prize === "number" ? prize : 0
-}
-
-/* ============================================================
-   Countdown ao vivo (d/h/m/s) — portado do original
-   ============================================================ */
-
-function CountdownTimer({ startDate }: { startDate: string }) {
-  const calcTimeLeft = React.useCallback(() => {
-    const diff = new Date(startDate).getTime() - Date.now()
-    if (diff <= 0) return null
-    return {
-      d: Math.floor(diff / (1000 * 60 * 60 * 24)),
-      h: Math.floor((diff / (1000 * 60 * 60)) % 24),
-      m: Math.floor((diff / (1000 * 60)) % 60),
-      s: Math.floor((diff / 1000) % 60),
-    }
-  }, [startDate])
-
-  const [timeLeft, setTimeLeft] = React.useState(calcTimeLeft)
-
-  React.useEffect(() => {
-    const interval = setInterval(() => setTimeLeft(calcTimeLeft()), 1000)
-    return () => clearInterval(interval)
-  }, [calcTimeLeft])
-
-  if (!timeLeft) return null
-
-  const units = [
-    { label: "d", value: timeLeft.d },
-    { label: "h", value: timeLeft.h },
-    { label: "m", value: timeLeft.m },
-    { label: "s", value: timeLeft.s },
-  ]
-
-  return (
-    <div className="relative flex h-[22px] items-center gap-[3px] overflow-hidden rounded-full px-2.5 py-0.5">
-      <div className="absolute inset-0 rounded-full border border-[var(--brand-cyan)]/25 bg-gradient-to-r from-[#0d1117] via-[#111827] to-[#0d1117] shadow-[0_0_12px_rgba(20,247,255,0.15),inset_0_1px_1px_rgba(255,255,255,0.05)]" />
-      <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/[0.04] to-transparent" />
-      <Timer
-        className="relative size-3 shrink-0 animate-pulse text-[var(--brand-cyan)] drop-shadow-[0_0_4px_rgba(20,247,255,0.6)]"
-        weight="fill"
-      />
-      {units.map((u, i) => (
-        <span
-          key={u.label}
-          className="relative text-[11px] leading-none font-black tracking-tight tabular-nums"
-        >
-          <span className="bg-gradient-to-b from-[var(--brand-cyan)] via-[var(--brand-mint)] to-[var(--brand-green)] bg-clip-text text-transparent drop-shadow-[0_0_6px_rgba(20,247,255,0.4)]">
-            {String(u.value).padStart(2, "0")}
-          </span>
-          <span className="text-[9px] font-semibold text-white/40">
-            {u.label}
-          </span>
-          {i < units.length - 1 && (
-            <span className="mx-[1px] text-[var(--brand-cyan)]/30">:</span>
-          )}
-        </span>
-      ))}
-    </div>
-  )
 }
 
 /* ============================================================
@@ -672,6 +613,9 @@ export default function HomeClipper() {
           },
         ]}
       />
+
+      {/* Advertências e restrições em vigor (some quando não há nenhuma) */}
+      <DisciplineBanner />
 
       {/* ===== 2. Toolbar: ações + select de competição ===== */}
       <Reveal immediate>
@@ -1259,9 +1203,7 @@ export default function HomeClipper() {
                           )}
 
                           {daysUntil > 0 && competition.registrationOpen && (
-                            <CountdownTimer
-                              startDate={competition.startDate}
-                            />
+                            <CountdownTimer target={competition.startDate} />
                           )}
                         </div>
                       </div>

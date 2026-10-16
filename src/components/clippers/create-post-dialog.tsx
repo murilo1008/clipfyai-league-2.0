@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import {
   ArrowLeft,
   ArrowRight,
@@ -19,6 +20,11 @@ import {
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
+import {
+  formatBrtDateTime,
+  useMyDisciplineStatus,
+} from "@/components/clippers/discipline-shared"
+import { CountdownTimer } from "@/components/shared/countdown-timer"
 import { Bone } from "@/components/shared/skeletons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -191,6 +197,12 @@ export function CreatePostDialog({
   // Contas sociais do clipador
   const { data: socialAccounts = [], isLoading: isLoadingSocialAccounts } =
     api.clipper.getMySocialAccounts.useQuery(undefined, { enabled: open })
+
+  // Suspensão por advertência ou conta banida: o envio fica bloqueado (o
+  // servidor também recusa; aqui só evita o formulário inútil).
+  const { data: discipline } = useMyDisciplineStatus({ enabled: open })
+  const suspensionEndsAt = discipline?.suspension?.endsAt ?? null
+  const isPostingBlocked = !!discipline?.banned || !!suspensionEndsAt
 
   // Verificação de duplicidade em tempo real (debounce enquanto digita/cola)
   const validatePostUrlMutation = api.clipper.validatePostUrl.useMutation()
@@ -692,6 +704,40 @@ export function CreatePostDialog({
 
         {/* ===== Corpo scrollável ===== */}
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 sm:p-6">
+          {isPostingBlocked && (
+            <div
+              role="alert"
+              className="mb-4 flex items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-3.5 py-3"
+            >
+              <WarningCircle
+                className="mt-0.5 size-5 shrink-0 text-red-600 dark:text-red-400"
+                weight="fill"
+              />
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                  {discipline?.banned
+                    ? "Sua conta está banida"
+                    : "Envio de vídeos suspenso por advertência"}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {discipline?.banned || !suspensionEndsAt
+                    ? "O envio de vídeos está bloqueado. Fale com o suporte se precisar de ajuda."
+                    : `Você poderá enviar vídeos novamente em ${formatBrtDateTime(suspensionEndsAt)} (horário de Brasília).`}
+                </p>
+                {!discipline?.banned && suspensionEndsAt && (
+                  <CountdownTimer target={suspensionEndsAt} />
+                )}
+                <Link
+                  href="/warnings"
+                  onClick={handleClose}
+                  className="text-primary w-fit text-xs font-semibold underline-offset-4 hover:underline"
+                >
+                  Ver minhas advertências
+                </Link>
+              </div>
+            </div>
+          )}
+
           {/* Step 1: Selecionar Competição */}
           {step === 1 && (
             <div className="flex flex-col gap-4">
@@ -1177,7 +1223,8 @@ export function CreatePostDialog({
               disabled={
                 !selectedCompetition ||
                 isLoadingCompetitions ||
-                isLoadingSocialAccounts
+                isLoadingSocialAccounts ||
+                isPostingBlocked
               }
               className="btn-gradient-auth h-10 flex-1 cursor-pointer rounded-xl px-4 font-semibold sm:px-6"
             >
@@ -1197,7 +1244,10 @@ export function CreatePostDialog({
             <Button
               onClick={handleSubmit}
               disabled={
-                validPostsCount === 0 || isSubmitting || isCheckingAnyPost
+                validPostsCount === 0 ||
+                isSubmitting ||
+                isCheckingAnyPost ||
+                isPostingBlocked
               }
               className="btn-gradient-auth h-10 flex-1 cursor-pointer rounded-xl px-4 font-semibold sm:px-6"
             >

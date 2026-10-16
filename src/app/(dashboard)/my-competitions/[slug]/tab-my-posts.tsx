@@ -262,7 +262,8 @@ function PostsGrid({
   page: number;
   isLoading: boolean;
   onPageChange: (page: number) => void;
-  onCreatePost: () => void;
+  /** Sem ele (inscrição revogada), o CTA de envio não aparece. */
+  onCreatePost?: () => void;
   emptySubtitle: string;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -319,25 +320,27 @@ function PostsGrid({
       )}
 
       {/* CTA enviar mais posts */}
-      <div className="glass-card flex flex-col items-center justify-center gap-3 rounded-3xl py-12 text-center sm:py-14">
-        <span className="bg-gradient-custom flex size-14 items-center justify-center rounded-2xl text-[#04222A] sm:size-16">
-          <Plus className="size-7 sm:size-8" weight="bold" />
-        </span>
-        <div className="px-4">
-          <p className="text-lg font-bold sm:text-xl">Envie mais posts</p>
-          <p className="text-muted-foreground mt-1 max-w-md text-xs sm:text-sm">
-            Continue participando da competição enviando novos vídeos
-          </p>
+      {onCreatePost && (
+        <div className="glass-card flex flex-col items-center justify-center gap-3 rounded-3xl py-12 text-center sm:py-14">
+          <span className="bg-gradient-custom flex size-14 items-center justify-center rounded-2xl text-[#04222A] sm:size-16">
+            <Plus className="size-7 sm:size-8" weight="bold" />
+          </span>
+          <div className="px-4">
+            <p className="text-lg font-bold sm:text-xl">Envie mais posts</p>
+            <p className="text-muted-foreground mt-1 max-w-md text-xs sm:text-sm">
+              Continue participando da competição enviando novos vídeos
+            </p>
+          </div>
+          <Button
+            size="lg"
+            className="btn-gradient-auth h-10 cursor-pointer rounded-xl px-6 font-semibold sm:h-11 sm:px-8"
+            onClick={onCreatePost}
+          >
+            <Plus className="size-4 sm:size-5" weight="bold" />
+            Enviar Novo Post
+          </Button>
         </div>
-        <Button
-          size="lg"
-          className="btn-gradient-auth h-10 cursor-pointer rounded-xl px-6 font-semibold sm:h-11 sm:px-8"
-          onClick={onCreatePost}
-        >
-          <Plus className="size-4 sm:size-5" weight="bold" />
-          Enviar Novo Post
-        </Button>
-      </div>
+      )}
     </div>
   );
 }
@@ -354,7 +357,8 @@ export function MyPostsTab({
   onCreatePost,
 }: {
   competition: CompetitionDetails
-  onCreatePost: () => void
+  /** Sem ele (inscrição revogada), o CTA de envio não aparece. */
+  onCreatePost?: () => void
 }) {
   const [platformTab, setPlatformTab] = React.useState("all")
   const [searchQuery, setSearchQuery] = React.useState("")

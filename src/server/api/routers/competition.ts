@@ -41,6 +41,11 @@ import { loadClipperGrowth } from "@/server/clipper-growth";
 import { getVisibleActiveCampaigns } from "@/server/competition-active-campaigns";
 import { withdrawFromCompetition } from "@/server/competition-withdrawal";
 import { reenrollWithdrawnApplication } from "@/server/competition-reenrollment";
+import { assertCanEnroll } from "@/server/clipper-discipline/restrictions";
+import {
+  COMPETITION_APPLICATION_REVOKED_MESSAGE,
+  COMPETITION_REMOVED_BY_WARNING_MESSAGE,
+} from "@/lib/clipper-discipline/constants";
 import {
   loadCampaignReports,
   loadEligiblePlatformsByUsername,
@@ -278,7 +283,9 @@ async function requireRankingMembership(
         select: { id: true, status: true, withdrawnAt: true },
       })
     : null;
-  const withdrawn = application?.status === "WITHDRAWN";
+  // Saída voluntária ou remoção por advertência: só os períodos fechados antes.
+  const withdrawn =
+    application?.status === "WITHDRAWN" || application?.status === "REVOKED";
   if (
     !application ||
     (!isParticipatingApplication(application.status) && !withdrawn) ||
@@ -682,6 +689,9 @@ export const campaignRouter = createTRPCRouter({
           });
         }
 
+        // Conta banida ou bloqueio de campanhas premium por advertência.
+        await assertCanEnroll(ctx.db, clipperProfile.id, campaign);
+
         // Bloquear inscrição em competições PRO-only para não-assinantes
         if (campaign.isProOnly) {
           const user = await ctx.db.user.findUnique({
@@ -712,7 +722,9 @@ export const campaignRouter = createTRPCRouter({
             code: "BAD_REQUEST",
             message: existingApplication.status === "WITHDRAWN"
               ? "A reinscrição após a saída só é permitida antes do início da competição."
-              : "Você já se inscreveu nesta competição",
+              : existingApplication.status === "REVOKED"
+                ? "Você foi removido desta competição por advertência."
+                : "Você já se inscreveu nesta competição",
           });
         }
 
@@ -1350,6 +1362,24 @@ export const campaignRouter = createTRPCRouter({
           select: { id: true, status: true },
         });
 
+        if (application?.status === "REVOKED") {
+          const removal = await ctx.db.clipperSanction.findFirst({
+            where: {
+              clipperProfileId: clipperProfile.id,
+              campaignId: campaign.id,
+              type: "COMPETITION_REMOVAL",
+              revokedAt: null,
+            },
+            select: { id: true },
+          });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: removal
+              ? COMPETITION_REMOVED_BY_WARNING_MESSAGE
+              : COMPETITION_APPLICATION_REVOKED_MESSAGE,
+          });
+        }
+
         if (!application || !participatingApplicationStatuses.some((status) => status === application.status)) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -1942,7 +1972,9 @@ export const campaignRouter = createTRPCRouter({
       const rankings = await ctx.db.dailyRanking.findMany({
         where: {
           campaignId: input.campaignId,
-          ...(application?.status === "WITHDRAWN" && application.withdrawnAt
+          ...((application?.status === "WITHDRAWN" ||
+            application?.status === "REVOKED") &&
+          application.withdrawnAt
             ? { rankingDate: { lt: firstOpenDailyRankingDate(application.withdrawnAt) } }
             : {}),
         },

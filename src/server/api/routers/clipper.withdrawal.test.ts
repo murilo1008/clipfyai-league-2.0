@@ -50,6 +50,8 @@ function fixture() {
     },
   };
   const db = {
+    // Sem sanções de advertência (redutor, suspensão, retenção).
+    clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
     user: { findUnique: vi.fn().mockResolvedValue({ role: "ADMIN" }) },
@@ -98,6 +100,7 @@ function fixture() {
           campaign: { id: "campaign-1" },
         },
         clipPost: { status: "ELIGIBLE" },
+        application: { status: "WITHDRAWN" },
       }),
       update: vi.fn(),
     },
@@ -173,6 +176,12 @@ describe("ações após a saída", () => {
     expect(result.failed).toHaveLength(1);
     expect(db.wallet.update).not.toHaveBeenCalled();
     expect(db.transaction.create).not.toHaveBeenCalled();
+    // Os pagamentos mensais da campanha são serializados (checagem por posição).
+    const firstLock = (db.$executeRaw.mock.calls[0]?.[0] as string[]).join("?");
+    expect(firstLock).toContain("pg_advisory_xact_lock");
+    expect(db.$executeRaw.mock.calls[0]?.[1]).toBe(
+      "monthly-ranking-prize:campaign-1",
+    );
   });
 
   it("não restaura a elegibilidade diária de quem saiu durante o período", async () => {
@@ -272,7 +281,10 @@ describe("ações após a saída", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.clipperApplication.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: application.id, status: { not: "WITHDRAWN" } },
+        where: {
+          id: application.id,
+          status: { notIn: ["WITHDRAWN", "REVOKED"] },
+        },
       }),
     );
     expect(db.monthlyRanking.findMany).not.toHaveBeenCalled();
@@ -303,5 +315,75 @@ describe("ações após a saída", () => {
       }),
     );
     expect(db.monthlyRanking.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("inelegível ao pódio", () => {
+  it("não devolve ao ranking diário um vídeo do dia punido", async () => {
+    const { admin, db } = fixture();
+    const postedAt = new Date("2026-10-09T12:00:00.000Z");
+    db.dailyRankingEntry.findUnique.mockResolvedValue({
+      id: "entry-1",
+      applicationId: "application-1",
+      isDisqualified: true,
+      dailyRanking: {
+        campaignId: "campaign-1",
+        rankingDate: new Date("2026-10-09T00:00:00Z"),
+        campaign: { id: "campaign-1" },
+      },
+      clipPost: { status: "ELIGIBLE", postedAt },
+      application: { status: "APPROVED", clipperProfileId: "clipper-1" },
+    });
+    db.clipperSanction.count.mockResolvedValue(1);
+    await expect(
+      admin.undoDisqualifyDailyRankingEntry({ dailyRankingEntryId: "entry-1" }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("inelegível ao pódio"),
+    });
+    expect(db.clipperSanction.count).toHaveBeenCalledWith({
+      where: {
+        type: "PODIUM_INELIGIBLE",
+        clipperProfileId: "clipper-1",
+        campaignId: "campaign-1",
+        revokedAt: null,
+        startsAt: { lt: new Date("2026-10-09T12:00:00.001Z") },
+        endsAt: { gt: postedAt },
+      },
+    });
+    expect(db.dailyRankingEntry.update).not.toHaveBeenCalled();
+  });
+
+  it("não devolve ao Top Clipadores o clipador do dia punido", async () => {
+    const { admin, db, application } = fixture();
+    db.topClippersDailyRankingEntry.findUnique.mockResolvedValue({
+      id: "entry-1",
+      applicationId: application.id,
+      clipperProfileId: "clipper-1",
+      prizeStatus: "PENDING",
+      transactionId: null,
+      ranking: {
+        campaignId: "campaign-1",
+        rankingDate: new Date("2026-10-09T00:00:00Z"),
+      },
+    });
+    db.clipperSanction.count.mockResolvedValue(1);
+    await expect(
+      admin.undoDisqualifyTopClippersDailyRankingEntry({ rankingEntryId: "entry-1" }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("inelegível ao pódio"),
+    });
+    expect(db.clipperSanction.count).toHaveBeenCalledWith({
+      where: {
+        type: "PODIUM_INELIGIBLE",
+        clipperProfileId: "clipper-1",
+        campaignId: "campaign-1",
+        revokedAt: null,
+        startsAt: { lt: new Date("2026-10-09T20:00:00.000Z") },
+        endsAt: { gt: new Date("2026-10-08T20:00:00.000Z") },
+      },
+    });
+    expect(db.topClippersDailyRankingEntry.update).not.toHaveBeenCalled();
   });
 });

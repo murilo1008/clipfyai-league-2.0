@@ -4,6 +4,10 @@ import * as React from "react"
 import dynamic from "next/dynamic"
 import { Plus } from "@phosphor-icons/react"
 
+import {
+  formatBrtShort,
+  useMyDisciplineStatus,
+} from "@/components/clippers/discipline-shared"
 import { NavMain } from "@/components/sidebar/nav-main"
 import {
   NavProjects,
@@ -20,7 +24,13 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { getMenuByRole } from "@/config/navigation"
 import { api } from "@/trpc/react"
 
@@ -48,7 +58,58 @@ function SidebarSkeleton() {
 }
 
 /** Botão "Enviar Post" do clipador — compacto, colapsa junto com a sidebar. */
-function CreatePostButton({ onClick }: { onClick: () => void }) {
+function CreatePostButton({
+  onClick,
+  blockedReason,
+}: {
+  onClick: () => void
+  /** Suspensão/banimento: botão desabilitado com o motivo ("Liberado em …"). */
+  blockedReason?: string | null
+}) {
+  const { isMobile, state } = useSidebar()
+  const className =
+    "btn-gradient-auth h-9 cursor-pointer justify-center rounded-lg font-semibold text-[#04222A] group-data-[collapsible=icon]:justify-center hover:text-[#04222A] active:text-[#04222A]"
+  const content = (
+    <>
+      <Plus weight="bold" className="size-4 shrink-0" />
+      <span className="truncate group-data-[collapsible=icon]:hidden">
+        Enviar Post
+      </span>
+    </>
+  )
+
+  if (blockedReason) {
+    // Botão desabilitado não recebe hover: o tooltip fica num wrapper.
+    return (
+      <SidebarGroup className="py-0">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0} className="block rounded-lg">
+                  <SidebarMenuButton disabled className={className}>
+                    {content}
+                  </SidebarMenuButton>
+                </span>
+              </TooltipTrigger>
+              {/* Expandida, o motivo já aparece na linha abaixo do botão */}
+              <TooltipContent
+                side="right"
+                align="center"
+                hidden={state !== "collapsed" || isMobile}
+              >
+                {blockedReason}
+              </TooltipContent>
+            </Tooltip>
+            <p className="text-muted-foreground mt-1 px-1 text-center text-[11px] leading-tight group-data-[collapsible=icon]:hidden">
+              {blockedReason}
+            </p>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarGroup>
+    )
+  }
+
   return (
     <SidebarGroup className="py-0">
       <SidebarMenu>
@@ -56,12 +117,9 @@ function CreatePostButton({ onClick }: { onClick: () => void }) {
           <SidebarMenuButton
             tooltip="Enviar Post"
             onClick={onClick}
-            className="btn-gradient-auth h-9 cursor-pointer justify-center rounded-lg font-semibold text-[#04222A] group-data-[collapsible=icon]:justify-center hover:text-[#04222A] active:text-[#04222A]"
+            className={className}
           >
-            <Plus weight="bold" className="size-4 shrink-0" />
-            <span className="truncate group-data-[collapsible=icon]:hidden">
-              Enviar Post
-            </span>
+            {content}
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
@@ -80,6 +138,16 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   const { data: user, isLoading: isLoadingUser } =
     api.user.getCurrentUser.useQuery()
+
+  // Suspensão por advertência: o botão "Enviar Post" mostra quando libera.
+  const { data: discipline } = useMyDisciplineStatus({
+    enabled: user?.role === "CLIPPER",
+  })
+  const postingBlockedReason = discipline?.banned
+    ? "Envio bloqueado: conta banida"
+    : discipline?.suspension
+      ? `Liberado em ${formatBrtShort(discipline.suspension.endsAt)}`
+      : null
 
   const isAdminLike = user?.role === "ADMIN" || user?.role === "ORGANIZER_ADMIN"
 
@@ -148,7 +216,10 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           <React.Suspense fallback={<SidebarSkeleton />}>
             <NavMain items={navMain} />
             {user?.role === "CLIPPER" && (
-              <CreatePostButton onClick={openCreatePost} />
+              <CreatePostButton
+                onClick={openCreatePost}
+                blockedReason={postingBlockedReason}
+              />
             )}
             <NavProjects projects={projects} />
           </React.Suspense>

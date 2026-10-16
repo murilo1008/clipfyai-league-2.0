@@ -65,6 +65,8 @@ function fixture() {
     _count: { id: 1 },
   }));
   const db = {
+    // Sem sanções de advertência (redutor do ranking mensal).
+    clipperSanction: { findFirst: vi.fn().mockResolvedValue(null) },
     clipperProfile: {
       findUnique: vi.fn().mockImplementation(async ({ where }) => ({
         id: profiles[where.userId as string],

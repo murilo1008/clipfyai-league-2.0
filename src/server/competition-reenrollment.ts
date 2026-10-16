@@ -5,6 +5,7 @@ import {
   canRejoinCompetition,
   withdrawableCampaignStatuses,
 } from "@/lib/competition-participation";
+import { assertCanEnroll } from "@/server/clipper-discipline/restrictions";
 
 type Reenrollment = {
   campaignId: string;
@@ -77,6 +78,9 @@ export async function reenrollWithdrawnApplication(
         code: "FORBIDDEN",
         message: "Você não pode se reinscrever nesta competição.",
       });
+    }
+    if (!input.byAdmin) {
+      await assertCanEnroll(tx, input.clipperProfileId, application.campaign);
     }
     if (
       !input.byAdmin &&

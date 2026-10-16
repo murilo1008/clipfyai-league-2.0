@@ -1,5 +1,7 @@
 import { Prisma, type PrismaClient, type RankingMetricType } from "@prisma/client";
 
+import { podiumIneligibleSql } from "@/lib/clipper-discipline/podium-sql";
+import { scoreMultiplierBpsSql } from "@/lib/clipper-discipline/score-multiplier";
 import { rankingApplicationWhere } from "@/lib/competition-participation";
 import {
   getPostedAtWindowUtc,
@@ -284,6 +286,7 @@ type LiveRankRow = {
   clanTag: string | null;
   clanEmoji: string | null;
   clanEmojiColor: string | null;
+  scoreMultiplierBps: number;
 };
 
 /** Folga sobre o top para o desempate final em JS (`rankLiveDailyPosts`). */
@@ -320,14 +323,16 @@ export async function loadLiveDailyRanking(
     AND cp."postedAt" < ${endDate}::timestamp
     AND (
       ca."status" = 'APPROVED'
-      OR (ca."status" = 'WITHDRAWN' AND ca."withdrawnAt" >= ${endDate}::timestamp)
+      OR (ca."status" IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= ${endDate}::timestamp)
     )
+    AND NOT ${podiumIneligibleSql('ca."clipperProfileId"', 'cp."campaignId"', 'cp."postedAt"')}
   `;
   const metricsSql = params.entriesDailyRankingId
     ? Prisma.sql`
         SELECT
           cp."id", cp."applicationId", cp."username",
           cp."platform"::text AS "platform", cp."thumbnailUrl", cp."postedAt",
+          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"')} AS "scoreMultiplierBps",
           dre."dailyViews" AS "views",
           dre."dailyLikes" AS "likes",
           dre."dailyComments" AS "comments",
@@ -344,6 +349,7 @@ export async function loadLiveDailyRanking(
         SELECT
           cp."id", cp."applicationId", cp."username",
           cp."platform"::text AS "platform", cp."thumbnailUrl", cp."postedAt",
+          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"')} AS "scoreMultiplierBps",
           cp."views", cp."likes", cp."comments", cp."shares", cp."saves"
         FROM "ClipPost" cp
         INNER JOIN "ClipperApplication" ca ON ca."id" = cp."applicationId"
@@ -351,23 +357,26 @@ export async function loadLiveDailyRanking(
       `;
   // calculateRankingScore: VIEWS → views; VIEWS_X_ENGAGEMENT →
   // trunc(views × trunc(((l+c+s+sv)/views) × 100 × 100) / 100), em float8.
+  // O redutor de advertência (applyScoreMultiplierBps) vem por cima: floor(score × bps / 10000).
   const scoreSql =
     params.metricType === "VIEWS_X_ENGAGEMENT"
       ? Prisma.sql`
-          CASE
-            WHEN m."views" > 0 THEN
-              TRUNC(
-                m."views"::float8 * (
-                  TRUNC(
-                    ((m."likes"::bigint + m."comments" + m."shares" + COALESCE(m."saves", 0))::float8
-                      / m."views"::float8) * 100 * 100
-                  ) / 100
+          FLOOR((
+            CASE
+              WHEN m."views" > 0 THEN
+                TRUNC(
+                  m."views"::float8 * (
+                    TRUNC(
+                      ((m."likes"::bigint + m."comments" + m."shares" + COALESCE(m."saves", 0))::float8
+                        / m."views"::float8) * 100 * 100
+                    ) / 100
+                  )
                 )
-              )
-            ELSE 0
-          END
+              ELSE 0
+            END
+          ) * m."scoreMultiplierBps" / 10000)
         `
-      : Prisma.sql`m."views"::float8`;
+      : Prisma.sql`FLOOR(m."views"::float8 * m."scoreMultiplierBps" / 10000)`;
 
   const rows = await db.$queryRaw<LiveRankRow[]>`
     WITH metrics AS (${metricsSql}),
@@ -380,6 +389,7 @@ export async function loadLiveDailyRanking(
     SELECT
       r."id", r."username", r."platform", r."thumbnailUrl", r."postedAt",
       r."views", r."likes", r."comments", r."shares", r."saves",
+      r."scoreMultiplierBps"::int4 AS "scoreMultiplierBps",
       prof."userId", prof."fullName", prof."artisticName",
       u."imageUrl",
       cl."tag" AS "clanTag", cl."emoji" AS "clanEmoji", cl."emojiColor" AS "clanEmojiColor"
@@ -410,6 +420,7 @@ export async function loadLiveDailyRanking(
       clanTag: row.clanTag ?? null,
       clanEmoji: row.clanEmoji ?? null,
       clanEmojiColor: row.clanEmojiColor ?? null,
+      scoreMultiplierBps: row.scoreMultiplierBps,
     })),
     metricType: params.metricType,
     topCount: params.topCount,
