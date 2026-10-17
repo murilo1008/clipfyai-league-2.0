@@ -1,5 +1,5 @@
 -- Alteração aditiva para bancos existentes que usam prisma db push.
--- Aplicar com: npx prisma db execute --file prisma/competition-announcements.sql --schema prisma/schema.prisma
+-- Aplicar com: npx prisma db execute --file docs/db/competition-announcements.sql --schema prisma/schema.prisma
 -- Pode ser reaplicado para atualizar destinatários individuais e notificações.
 -- Atualiza apenas a estrutura do mural e não inclui dados do ADMIN nas postagens.
 BEGIN;

@@ -14,7 +14,7 @@
 | Clientes elegíveis | `User.role = CLIENT` com ≥ 1 competição `ACTIVE` ou `COMPLETED` |
 | Página admin | `/settings/cs-team` (Configurações → Equipe CS) |
 | Router tRPC | `cs` (`cs.view.clients`, `cs.admin.*`) |
-| SQL de produção | `prisma/cs-role.sql` |
+| SQL de produção | `docs/db/cs-role.sql` |
 
 ---
 
@@ -72,7 +72,7 @@ Consequências:
 
 | Arquivo | Papel |
 | --- | --- |
-| `prisma/cs-role.sql` | SQL idempotente: enum + tabela (seção 5) |
+| `docs/db/cs-role.sql` | SQL idempotente: enum + tabela (seção 5) |
 | `src/server/cs-view/cookie.ts` | nome, formato, parser e opções do cookie |
 | `src/server/cs-view/eligibility.ts` | regras de elegibilidade e allowlist (Prisma `where`) |
 | `src/server/cs-view/resolve.ts` | `resolveCsView` + versão memoizada por request |
@@ -162,7 +162,7 @@ no banco (cascade limpa os acessos) e no Clerk.
 
 1. **Antes do deploy**, aplicar o SQL no banco de produção:
    ```bash
-   npx prisma db execute --file prisma/cs-role.sql --schema prisma/schema.prisma
+   npx prisma db execute --file docs/db/cs-role.sql --schema prisma/schema.prisma
    ```
    O `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'CUSTOMER_SUCCESS'` fica fora da
    transação (Postgres não permite usar um valor de enum na mesma transação que o

@@ -1,5 +1,5 @@
 -- Alteração aditiva para bancos existentes que usam prisma db push.
--- Aplicar com: npx prisma db execute --file prisma/cs-role.sql --schema prisma/schema.prisma
+-- Aplicar com: npx prisma db execute --file docs/db/cs-role.sql --schema prisma/schema.prisma
 -- Pode ser reaplicado (idempotente).
 -- Adiciona o papel CUSTOMER_SUCCESS (CS) e a tabela de clientes liberados por usuário CS.
 --

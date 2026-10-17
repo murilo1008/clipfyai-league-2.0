@@ -1,6 +1,6 @@
 -- Sistema de advertências de clipadores: tipos, tabelas, índices e FKs novos.
 -- Mudança 100% aditiva: nenhum objeto existente é alterado.
--- Aplicar com: npx prisma db execute --file prisma/clipper-discipline.sql --schema prisma/schema.prisma
+-- Aplicar com: npx prisma db execute --file docs/db/clipper-discipline.sql --schema prisma/schema.prisma
 -- O mesmo SQL é a migration 20261016120000_add_clipper_discipline do backend league;
 -- em produção, aplique uma única vez pelo runbook do league (MIGRATIONS.md).
 -- Pode ser reaplicado.
