@@ -70,6 +70,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { REVERSED_PRIZE_STATUS } from "@/lib/clipper-discipline/constants";
 import { buildDailyRankDiscordExportText } from "@/lib/daily-ranking-preview";
 import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
@@ -352,6 +353,18 @@ export function DailyRankResultModal({
   );
   const resetDisqualifyWarning = disqualifyWarning.reset;
   const invalidateDiscipline = useInvalidateDiscipline();
+  // Mesmo critério do dia "travado" das advertências (lockedDailyRankingIds):
+  // com pagamento no dia, a advertência mantém a posição e estorna o prêmio.
+  const dayHasPayments =
+    preview?.dailyPixPayoutCompleted === true ||
+    (preview?.entries ?? []).some(
+      (entry) =>
+        entry.dailyPrizeStatus === "PAID" ||
+        entry.dailyPrizeStatus === REVERSED_PRIZE_STATUS ||
+        entry.dailyPixStatus === "PAID" ||
+        entry.dailyPixStatus === "PROCESSING" ||
+        entry.dailyPixStatus === "QUEUED",
+    );
   const [playerEntryId, setPlayerEntryId] = React.useState<string | null>(null);
   const hasTikTokEntries =
     preview?.entries.some((entry) => entry.platform === "TIKTOK") ?? false;
@@ -803,8 +816,11 @@ export function DailyRankResultModal({
   // a advertência devolve o vídeo ao ranking).
   const disqualifyWithWarning = api.clipperDiscipline.applyWarning.useMutation({
     onSuccess: async (result, variables) => {
+      const title = quickWarningTitle(variables.infractionType, result.level);
       toast.success(
-        `Vídeo desclassificado · ${quickWarningTitle(variables.infractionType, result.level)}`,
+        dayHasPayments
+          ? `${title} · prêmio do vídeo estornado`
+          : `Vídeo desclassificado · ${title}`,
         {
           description: result.emailSent
             ? "O clipador foi avisado por notificação e e-mail."
@@ -1106,6 +1122,8 @@ export function DailyRankResultModal({
       : undefined;
     const PlatformIcon = platformInfo?.icon;
     const isDisqualified = entry.isDisqualified;
+    // Prêmio estornado por advertência: a posição fica e o PIX é pulado.
+    const isReversed = entry.dailyPrizeStatus === REVERSED_PRIZE_STATUS;
     const pos = computedPosition;
     const isTop3 = pos !== null && pos <= 3;
     const medalColors = [
@@ -1215,10 +1233,19 @@ export function DailyRankResultModal({
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
-                {!isDisqualified && computedPrize > 0 && (
+                {!isDisqualified && computedPrize > 0 && !isReversed && (
                   <Badge className="border border-emerald-500/40 bg-gradient-to-r from-emerald-500/20 to-green-500/20 px-1.5 py-0.5 text-[10px] text-emerald-600 sm:px-2 sm:text-xs dark:text-emerald-300">
                     <CurrencyDollar className="mr-0.5 size-3" weight="bold" />
                     {formatCurrency(computedPrize)}
+                  </Badge>
+                )}
+                {!isDisqualified && isReversed && (
+                  <Badge
+                    className="border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 sm:px-2 sm:text-xs dark:text-amber-300"
+                    title="Prêmio estornado por advertência"
+                  >
+                    <ArrowCounterClockwise className="mr-0.5 size-3" weight="bold" />
+                    Estornado
                   </Badge>
                 )}
                 {!isDisqualified && entry.dailyPrizeStatus === "PAID" && (
@@ -1234,6 +1261,7 @@ export function DailyRankResultModal({
                 )}
                 {data.campaign.dailyPix &&
                   !isDisqualified &&
+                  !isReversed &&
                   computedPrize > 0 &&
                   entry.pixPayoutEligible && (
                     <PixPaymentStatusBadge
@@ -3901,7 +3929,12 @@ export function DailyRankResultModal({
               quick={disqualifyWarning}
               disabled={disqualifyPending}
               idPrefix="disqualify-warning"
-              note="A advertência desclassifica o vídeo: revogar a advertência devolve o vídeo ao ranking. Se o dia já tiver pagamento, a posição fica e o prêmio do vídeo é estornado."
+              note={
+                dayHasPayments
+                  ? "Este dia já tem pagamento: com a advertência, o vídeo fica na posição e o prêmio dele é estornado (aparece como Estornado). Revogar a advertência desfaz tudo."
+                  : "A advertência desclassifica o vídeo: revogar a advertência devolve o vídeo ao ranking."
+              }
+              noteTone={dayHasPayments ? "warning" : "info"}
             />
             <ConfirmWordInput
               word="DESCLASSIFICAR"
@@ -3932,11 +3965,6 @@ export function DailyRankResultModal({
                 disqualifyInput !== "DESCLASSIFICAR" ||
                 disqualifyPending ||
                 (disqualifyWarning.enabled && !disqualifyWarning.payload)
-              }
-              title={
-                disqualifyWarning.enabled && disqualifyWarning.missing.length > 0
-                  ? `Falta preencher: ${disqualifyWarning.missing.join(", ")}`
-                  : undefined
               }
               onClick={() => {
                 if (!disqualifyConfirm) return;
@@ -3970,9 +3998,11 @@ export function DailyRankResultModal({
               ) : (
                 <>
                   <XCircle className="size-4" weight="fill" />
-                  {disqualifyWarning.enabled
-                    ? "Desclassificar e advertir"
-                    : "Desclassificar"}
+                  {!disqualifyWarning.enabled
+                    ? "Desclassificar"
+                    : dayHasPayments
+                      ? "Advertir e estornar"
+                      : "Desclassificar e advertir"}
                 </>
               )}
             </Button>

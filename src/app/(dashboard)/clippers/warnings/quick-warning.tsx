@@ -25,6 +25,7 @@ import {
   INFRACTION_TYPE_LABELS,
   warningLevelLabel,
 } from "@/lib/clipper-discipline/levels"
+import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
 
 import { BAN_CONFIRMATION_WORD } from "./apply-warning-dialog"
@@ -128,6 +129,7 @@ export function QuickWarningFields({
   disabled,
   idPrefix,
   note,
+  noteTone = "info",
 }: {
   quick: QuickWarning
   disabled?: boolean
@@ -135,6 +137,7 @@ export function QuickWarningFields({
   idPrefix: string
   /** Explica o que a advertência muda na ação em que ela foi ligada. */
   note?: string
+  noteTone?: "info" | "warning"
 }) {
   const settings = quick.context.data?.settings
   const activeCount = quick.context.data?.activeCount ?? 0
@@ -296,7 +299,24 @@ export function QuickWarningFields({
               </div>
             )}
 
-            {note && <p className="text-muted-foreground text-xs">{note}</p>}
+            {quick.missing.length > 0 && (
+              <p className="text-muted-foreground text-xs">
+                Falta preencher: {quick.missing.join(", ")}.
+              </p>
+            )}
+
+            {note && (
+              <p
+                className={cn(
+                  "text-xs",
+                  noteTone === "warning"
+                    ? "rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-700 dark:text-amber-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {note}
+              </p>
+            )}
           </div>
         ))}
     </div>

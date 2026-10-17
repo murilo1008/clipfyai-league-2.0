@@ -777,6 +777,11 @@ export function PostsTab({
   const [warningPost, setWarningPost] = React.useState<AdminClipPost | null>(
     null,
   )
+  const [isWarningOpen, setIsWarningOpen] = React.useState(false)
+  const openWarningDialog = (post: AdminClipPost) => {
+    setWarningPost(post)
+    setIsWarningOpen(true)
+  }
   const [isPlayerOpen, setIsPlayerOpen] = React.useState(false)
   const [playerPostId, setPlayerPostId] = React.useState<string | null>(null)
   const [failedVideoPostId, setFailedVideoPostId] = React.useState<
@@ -1663,7 +1668,7 @@ export function PostsTab({
                           variant="outline"
                           size="sm"
                           className="col-span-2 h-8 min-w-0 cursor-pointer rounded-lg border-red-500/40 px-2 text-xs text-red-600 hover:text-red-600 dark:text-red-400"
-                          onClick={() => setWarningPost(post)}
+                          onClick={() => openWarningDialog(post)}
                         >
                           <ShieldWarning className="size-3 shrink-0" weight="fill" />
                           <span className="truncate">Advertir</span>
@@ -1920,7 +1925,7 @@ export function PostsTab({
                     onClick={() => {
                       setIsPlayerOpen(false)
                       setPlayerPostId(null)
-                      setWarningPost(playerPost)
+                      openWarningDialog(playerPost)
                     }}
                     className="h-8 cursor-pointer rounded-lg border-red-500/40 text-xs text-red-600 hover:text-red-600 dark:text-red-400"
                   >
@@ -2332,10 +2337,8 @@ export function PostsTab({
         <ApplyWarningDialog
           clipperProfileId={warningPost.clipperProfileId}
           clipperName={warningPost.clipperName}
-          open
-          onOpenChange={(open) => {
-            if (!open) setWarningPost(null)
-          }}
+          open={isWarningOpen}
+          onOpenChange={setIsWarningOpen}
           defaultCampaignId={campaignId}
           defaultPost={toWarningVideo(warningPost)}
           onApplied={() => {

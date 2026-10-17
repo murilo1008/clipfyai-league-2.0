@@ -225,6 +225,11 @@ export function ApplicationsTab(props: CompetitionTabProps) {
   const [warningApp, setWarningApp] = React.useState<AdminApplication | null>(
     null,
   );
+  const [isWarningOpen, setIsWarningOpen] = React.useState(false);
+  const openWarningDialog = (app: AdminApplication) => {
+    setWarningApp(app);
+    setIsWarningOpen(true);
+  };
 
   /* ===== Aprovar Todos ===== */
   const [isApproveAllDialogOpen, setIsApproveAllDialogOpen] =
@@ -959,7 +964,10 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 size="sm"
                 className="h-9 cursor-pointer rounded-xl border-red-500/40 text-red-600 hover:text-red-600 dark:text-red-400"
                 title="Aplicar advertência"
-                onClick={() => setWarningApp(app)}
+                onClick={() => {
+                  setWarningApp(app);
+                  setIsWarningOpen(true);
+                }}
               >
                 <ShieldWarning className="size-3.5" weight="fill" />
                 <span className="hidden xl:inline">Advertir</span>
@@ -1338,7 +1346,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                       variant="outline"
                       size="sm"
                       className="h-9 flex-1 cursor-pointer rounded-xl border-red-500/40 text-red-600 hover:text-red-600 dark:text-red-400"
-                      onClick={() => setWarningApp(app)}
+                      onClick={() => openWarningDialog(app)}
                     >
                       <ShieldWarning className="size-3.5" weight="fill" />
                       Advertir
@@ -1487,10 +1495,8 @@ export function ApplicationsTab(props: CompetitionTabProps) {
               warningApp.clipperArtisticName ||
               "Clipador"
             }
-            open
-            onOpenChange={(open) => {
-              if (!open) setWarningApp(null);
-            }}
+            open={isWarningOpen}
+            onOpenChange={setIsWarningOpen}
             defaultCampaignId={campaignId}
             onApplied={() => {
               void utils.admin.getCompetitionApplicationsAdmin.invalidate({

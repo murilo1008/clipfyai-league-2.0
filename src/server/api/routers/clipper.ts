@@ -1580,6 +1580,14 @@ export const clipperRouter = createTRPCRouter({
         });
       }
 
+      // Banir de novo criaria outro banimento e outra retenção.
+      if (clipper.verificationStatus === "BANNED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O clipador já está banido.",
+        });
+      }
+
       // O ban também tira o clipador das competições em andamento (sem
       // estorno) e retém a carteira.
       await banClipperManually(ctx.db, {
