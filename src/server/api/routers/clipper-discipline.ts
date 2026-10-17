@@ -220,7 +220,7 @@ export const clipperDisciplineRouter = createTRPCRouter({
       }),
     ),
 
-  apply: adminProcedure
+  applyWarning: adminProcedure
     .input(
       z.object({
         clipperProfileId: z.string(),

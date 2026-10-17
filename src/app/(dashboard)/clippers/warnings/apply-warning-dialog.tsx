@@ -426,7 +426,7 @@ function ApplyWarningForm({
     missing.push(`a confirmação "${BAN_CONFIRMATION_WORD}"`)
   }
 
-  const applyMutation = api.clipperDiscipline.apply.useMutation({
+  const applyMutation = api.clipperDiscipline.applyWarning.useMutation({
     onSuccess: (result) => {
       const title = isSevere
         ? "Infração grave registrada"
