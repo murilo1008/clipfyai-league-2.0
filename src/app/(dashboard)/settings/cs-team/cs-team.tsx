@@ -1370,7 +1370,7 @@ function AddCsDialog({
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                placeholder="cs@clipfy.ai"
+                placeholder="cs@clipfyai.com"
                 className="focus-visible:ring-brand-cyan/40 h-11 rounded-xl"
                 autoComplete="off"
                 required
