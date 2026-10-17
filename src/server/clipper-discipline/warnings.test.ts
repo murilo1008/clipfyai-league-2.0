@@ -95,7 +95,6 @@ function makeDb({ activeWarnings = [] as Array<{ infractionType: string; level: 
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubEnv("CLIPPER_DISCIPLINE_ENABLED", "true");
   effects.applyVideoInvalidation.mockResolvedValue({
     posts: [{ id: "post-1", status: "ELIGIBLE", ineligibilityReason: null }],
   });
@@ -140,15 +139,6 @@ const baseInput = {
 };
 
 describe("applyClipperWarning", () => {
-  it("fica bloqueado enquanto o sistema não é liberado no ambiente", async () => {
-    vi.stubEnv("CLIPPER_DISCIPLINE_ENABLED", "false");
-    const { db } = makeDb();
-    await expect(applyClipperWarning(db as never, baseInput)).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-    });
-    expect(db.$transaction).not.toHaveBeenCalled();
-  });
-
   it("nível 4 exige a confirmação do banimento", async () => {
     const { db } = makeDb();
     await expect(

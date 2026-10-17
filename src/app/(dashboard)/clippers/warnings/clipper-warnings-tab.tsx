@@ -7,7 +7,6 @@ import {
   Eye,
   Gavel,
   ShieldWarning,
-  WarningCircle,
 } from "@phosphor-icons/react"
 
 import {
@@ -15,7 +14,6 @@ import {
   type SanctionListItem,
 } from "@/components/clippers/discipline-sanction-list"
 import {
-  DISCIPLINE_DISABLED_MESSAGE,
   InfractionTypeBadge,
   RestrictionBadges,
   WarningStatusBadge,
@@ -95,18 +93,10 @@ export function ClipperWarningsTab({
     )
   }
 
-  const enabled = data.enabled
   const activeCount = data.activeCount
 
   return (
     <div className="flex flex-col gap-4">
-      {!enabled && (
-        <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-sm text-amber-700 dark:text-amber-400">
-          <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
-          {DISCIPLINE_DISABLED_MESSAGE}
-        </div>
-      )}
-
       {/* Restrições em vigor + ações */}
       <div className="border-border/60 bg-muted/20 flex flex-col gap-3 rounded-2xl border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -123,7 +113,6 @@ export function ClipperWarningsTab({
               variant="outline"
               size="sm"
               className="h-9 cursor-pointer rounded-xl"
-              disabled={!enabled}
               onClick={() => setIsSanctionOpen(true)}
             >
               <Gavel className="size-3.5" weight="fill" />
@@ -132,7 +121,6 @@ export function ClipperWarningsTab({
             <Button
               size="sm"
               className="h-9 cursor-pointer rounded-xl bg-red-600 font-semibold text-white hover:bg-red-700"
-              disabled={!enabled}
               onClick={() => setIsApplyOpen(true)}
             >
               <ShieldWarning className="size-3.5" weight="fill" />

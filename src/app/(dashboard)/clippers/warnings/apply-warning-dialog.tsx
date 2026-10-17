@@ -19,7 +19,6 @@ import {
 import { toast } from "sonner"
 
 import {
-  DISCIPLINE_DISABLED_MESSAGE,
   CLIP_POST_STATUS_LABELS,
   RestrictionBadges,
   SEVERE_DESCRIPTION,
@@ -341,7 +340,8 @@ function ApplyWarningForm({
   const suggestedLevel = context?.suggestedLevel ?? 0
   const level = isSevere ? null : (levelChoice ?? suggestedLevel)
   const requirements = levelRequirements(infractionType, level)
-  const disabled = !context?.enabled
+  // Campos travados enquanto o contexto do clipador carrega.
+  const disabled = !context
 
   // Para os níveis 0 e 1 o vídeo precisa vir da lista (é ele que deixa de pontuar).
   const effectiveVideoMode = requirements.requiresVideo ? "post" : videoMode
@@ -524,13 +524,6 @@ function ApplyWarningForm({
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 sm:p-6">
-        {disabled && (
-          <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-sm text-amber-700 dark:text-amber-400">
-            <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
-            {DISCIPLINE_DISABLED_MESSAGE}
-          </div>
-        )}
-
         {/* Situação atual do clipador */}
         <div className="border-border/60 bg-muted/20 flex flex-col gap-2 rounded-2xl border px-3.5 py-3">
           <p className="text-sm font-semibold">

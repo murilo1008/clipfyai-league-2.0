@@ -24,7 +24,6 @@ import {
   applyClipperWarning,
   applyManualSanction,
   decideBanReview,
-  isDisciplineEnabled,
   revokeClipperWarning,
   revokeSanction,
   reviewObservationPost,
@@ -139,8 +138,6 @@ async function withAdminNames<T extends WarningRow>(
 
 export const clipperDisciplineRouter = createTRPCRouter({
   // ------------------------------------------------------------------ admin
-  status: adminProcedure.query(() => ({ enabled: isDisciplineEnabled() })),
-
   getSettings: adminProcedure.query(({ ctx }) => getDisciplineSettings(ctx.db)),
 
   updateSettings: adminProcedure
@@ -174,7 +171,6 @@ export const clipperDisciplineRouter = createTRPCRouter({
           }),
         ]);
       return {
-        enabled: isDisciplineEnabled(),
         ...suggestion,
         activeWarnings,
         settings,
@@ -364,7 +360,6 @@ export const clipperDisciplineRouter = createTRPCRouter({
         suggestLevelForClipper(ctx.db, input.clipperProfileId, now),
       ]);
       return {
-        enabled: isDisciplineEnabled(),
         warnings: await withAdminNames(ctx.db, warnings, now),
         sanctions: standalone.map(toSanctionView),
         restrictions,

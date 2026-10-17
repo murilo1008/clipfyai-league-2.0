@@ -24,7 +24,6 @@ import {
   MagnifyingGlass,
   ShieldWarning,
   VideoCamera,
-  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 
@@ -33,7 +32,6 @@ import {
   ClippersHeroVizSkeleton,
 } from "@/components/clippers/clippers-hero-viz";
 import {
-  DISCIPLINE_DISABLED_MESSAGE,
   InfractionTypeBadge,
   WarningStatusBadge,
   formatBrtDateTime,
@@ -355,7 +353,6 @@ export default function Warnings() {
     { placeholderData: (prev) => prev },
   );
   const { data: campaigns } = api.clipperDiscipline.campaignOptions.useQuery();
-  const { data: status } = api.clipperDiscipline.status.useQuery();
 
   const total = data?.total ?? 0;
   const pageCount = Math.ceil(total / PAGE_SIZE);
@@ -430,13 +427,6 @@ export default function Warnings() {
           },
         ]}
       />
-
-      {status && !status.enabled && (
-        <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
-          <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
-          {DISCIPLINE_DISABLED_MESSAGE}. A consulta continua disponível.
-        </div>
-      )}
 
       {/* ===== Resumo ===== */}
       <Reveal immediate>
