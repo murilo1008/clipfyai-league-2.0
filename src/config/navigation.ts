@@ -12,6 +12,7 @@ import {
   ChartLineUp,
   Shield,
   Trophy,
+  UsersThree,
   Wallet,
 } from "@phosphor-icons/react/dist/ssr";
 
@@ -113,6 +114,7 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
         { title: "Leads", url: "/settings/leads" },
         { title: "Clientes", url: "/settings/clients" },
         { title: "Membros", url: "/settings/members" },
+        { title: "Equipe CS", url: "/settings/cs-team" },
       ],
     },
   ],
@@ -137,6 +139,16 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
         { title: "Geral", url: "/settings" },
         { title: "Perfil", url: "/settings/profile" },
       ],
+    },
+  ],
+  // Customer Success SEM cliente selecionado: só a tela de escolha. Com um cliente
+  // selecionado, `getCurrentUser` devolve role CLIENT e o menu do cliente é usado.
+  CUSTOMER_SUCCESS: [
+    {
+      title: "Clientes",
+      url: "/",
+      icon: UsersThree,
+      items: [],
     },
   ],
   CLIENT: [

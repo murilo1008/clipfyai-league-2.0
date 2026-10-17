@@ -2031,7 +2031,13 @@ export const adminRouter = createTRPCRouter({
           page: z.number().min(1).default(1),
           limit: z.number().min(1).max(100).default(20),
           role: z
-            .enum(["ADMIN", "ORGANIZER_ADMIN", "CLIENT", "CLIPPER"])
+            .enum([
+                "ADMIN",
+                "ORGANIZER_ADMIN",
+                "CLIENT",
+                "CLIPPER",
+                "CUSTOMER_SUCCESS",
+              ])
             .optional(),
           search: z.string().optional(), // Buscar por email ou nome
         }),
@@ -2146,7 +2152,13 @@ export const adminRouter = createTRPCRouter({
           id: z.string(), // Clerk ID
           email: z.string().email(),
           name: z.string().optional(),
-          role: z.enum(["ADMIN", "ORGANIZER_ADMIN", "CLIENT", "CLIPPER"]),
+          role: z.enum([
+                "ADMIN",
+                "ORGANIZER_ADMIN",
+                "CLIENT",
+                "CLIPPER",
+                "CUSTOMER_SUCCESS",
+              ]),
           imageUrl: z.string().url().optional(),
         }),
       )
@@ -2258,7 +2270,13 @@ export const adminRouter = createTRPCRouter({
             name: z.string().optional(),
             email: z.string().email().optional(),
             role: z
-              .enum(["ADMIN", "ORGANIZER_ADMIN", "CLIENT", "CLIPPER"])
+              .enum([
+                "ADMIN",
+                "ORGANIZER_ADMIN",
+                "CLIENT",
+                "CLIPPER",
+                "CUSTOMER_SUCCESS",
+              ])
               .optional(),
             imageUrl: z.string().url().optional(),
           }),
@@ -2333,6 +2351,13 @@ export const adminRouter = createTRPCRouter({
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Use a rota client.delete para deletar clientes",
+          });
+        }
+
+        if (user.role === "CUSTOMER_SUCCESS") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Use a rota cs.admin.delete para deletar usuários de CS",
           });
         }
 

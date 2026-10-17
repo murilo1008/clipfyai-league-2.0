@@ -51,6 +51,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   clippers: "Clipadores",
   users: "Usuários",
   members: "Membros",
+  "cs-team": "Equipe CS",
   clients: "Clientes",
   leads: "Leads",
   clans: "Clãs",

@@ -1,22 +1,16 @@
-import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
 import { VideoDownloadsView } from "@/components/video-downloads/video-downloads-view";
-import { db } from "@/server/db";
+import { getViewer } from "@/server/cs-view/viewer";
 
 export default async function ClientDownloadsPage() {
-  const { userId } = await auth();
+  const viewer = await getViewer();
 
-  if (!userId) {
+  if (!viewer) {
     redirect("/sign-in");
   }
 
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  });
-
-  if (!user || user.role !== "CLIENT") {
+  if (viewer.effective.role !== "CLIENT") {
     redirect("/");
   }
 

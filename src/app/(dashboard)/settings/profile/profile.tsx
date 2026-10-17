@@ -589,6 +589,7 @@ export default function Profile() {
     ORGANIZER_ADMIN: "Organizador",
     CLIENT: "Cliente",
     CLIPPER: "Clipador",
+    CUSTOMER_SUCCESS: "Customer Success",
   };
   const roleLabel = userData
     ? (ROLE_LABELS[userData.role] ??

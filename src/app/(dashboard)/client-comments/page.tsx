@@ -1,23 +1,17 @@
-import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
-import { db } from "@/server/db";
+import { getViewer } from "@/server/cs-view/viewer";
 
 import ClientComments from "./client-comments";
 
 export default async function ClientCommentsPage() {
-  const { userId } = await auth();
+  const viewer = await getViewer();
 
-  if (!userId) {
+  if (!viewer) {
     redirect("/sign-in");
   }
 
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  });
-
-  if (!user || user.role !== "CLIENT") {
+  if (viewer.effective.role !== "CLIENT") {
     redirect("/");
   }
 

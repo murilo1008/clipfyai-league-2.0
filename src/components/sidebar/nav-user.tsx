@@ -21,6 +21,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { clearCsClient } from "@/server/cs-view/actions"
 import { api } from "@/trpc/react"
 
 const ROLE_LABELS: Record<string, string> = {
@@ -28,6 +29,7 @@ const ROLE_LABELS: Record<string, string> = {
   ORGANIZER_ADMIN: "Organizador",
   CLIENT: "Cliente",
   CLIPPER: "Clipador",
+  CUSTOMER_SUCCESS: "Customer Success",
 }
 
 export function NavUser() {
@@ -36,12 +38,25 @@ export function NavUser() {
   const { isMobile } = useSidebar()
   const { data: dbUser } = api.user.getCurrentUser.useQuery()
 
+  // Em modo Customer Success, `dbUser` é o CLIENTE visualizado; aqui mostramos
+  // sempre a identidade real de quem está logado (o CS) e qual cliente ele vê.
+  const csView = dbUser?.csView ?? null
   const name =
-    dbUser?.name ?? clerkUser?.fullName ?? clerkUser?.username ?? "Usuário"
+    (csView ? csView.actor.name : dbUser?.name) ??
+    clerkUser?.fullName ??
+    clerkUser?.username ??
+    "Usuário"
   const email =
-    dbUser?.email ?? clerkUser?.primaryEmailAddress?.emailAddress ?? ""
-  const imageUrl = dbUser?.imageUrl ?? clerkUser?.imageUrl
-  const roleLabel = dbUser?.role ? ROLE_LABELS[dbUser.role] : undefined
+    (csView ? csView.actor.email : dbUser?.email) ??
+    clerkUser?.primaryEmailAddress?.emailAddress ??
+    ""
+  const imageUrl =
+    (csView ? csView.actor.imageUrl : dbUser?.imageUrl) ?? clerkUser?.imageUrl
+  const roleLabel = csView
+    ? `CS · ${csView.client.company ?? csView.client.name ?? csView.client.email}`
+    : dbUser?.role
+      ? ROLE_LABELS[dbUser.role]
+      : undefined
   const initials = name
     .split(" ")
     .map((part) => part[0])
@@ -116,7 +131,11 @@ export function NavUser() {
               <DropdownMenuItem
                 variant="destructive"
                 className="cursor-pointer"
-                onClick={() => void signOut({ redirectUrl: "/sign-in" })}
+                onClick={() =>
+                  void clearCsClient()
+                    .catch(() => undefined)
+                    .then(() => signOut({ redirectUrl: "/sign-in" }))
+                }
               >
                 <SignOut className="size-4" />
                 Sair

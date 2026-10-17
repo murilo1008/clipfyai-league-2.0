@@ -61,11 +61,16 @@ export function AuthTemplate({ children, requireAuth = true }: AuthTemplateProps
 
   // Cache de outra conta (saiu e entrou com outra sem recarregar a página):
   // o dado antigo não vale nem por um render; espera o da conta atual.
+  // Em modo Customer Success `cachedDbUser` é o CLIENTE visualizado; quem está
+  // logado de verdade vem em `csView.actor`.
+  const cachedSessionOwnerId = cachedDbUser
+    ? (cachedDbUser.csView?.actor.id ?? cachedDbUser.id)
+    : undefined
   const isOtherAccountCache =
     !!isSignedIn &&
     !isPublicRoute &&
     !!cachedDbUser &&
-    cachedDbUser.id !== userId
+    cachedSessionOwnerId !== userId
   const dbUser = isOtherAccountCache ? undefined : cachedDbUser
   const isLoadingDbUser = isLoadingQuery || isOtherAccountCache
 

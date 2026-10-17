@@ -20,6 +20,7 @@ enum UserRole {
   ORGANIZER_ADMIN // Admin Organizador - gerencia campanhas
   CLIENT // Cliente - empresa/influenciador que vê resultados
   CLIPPER // Clipador - participante das competições
+  CUSTOMER_SUCCESS // Customer Success (CS) - visualiza e opera contas de clientes
 }
 
 enum SubscriptionStatus {
@@ -84,6 +85,8 @@ model User {
   clientCampaigns          Campaign[]                     @relation("CampaignClient") // Campanhas do cliente
   clipperProfile           ClipperProfile?
   clientProfile            ClientProfile?
+  csClientAccess           CsClientAccess[]               @relation("CsClientAccessCs") // Clientes liberados para este usuário CS
+  csViewers                CsClientAccess[]               @relation("CsClientAccessClient") // Usuários CS com acesso a este cliente
   auditLogs                AuditLog[]
   notifications            Notification[]
   googleCalendarConnection GoogleCalendarConnection?
@@ -852,6 +855,25 @@ enum ClientStatus {
   ACTIVE // Cliente ativo
   INACTIVE // Cliente inativo
   PENDING // Aguardando ativação
+}
+
+// ============================================================================
+// CUSTOMER SUCCESS — CLIENTES LIBERADOS POR USUÁRIO CS
+// Zero linhas para um usuário CS = acesso a todos os clientes elegíveis.
+// ============================================================================
+
+model CsClientAccess {
+  id        String   @id @default(cuid())
+  csUserId  String
+  clientId  String
+  grantedBy String? // Admin que concedeu o acesso
+  createdAt DateTime @default(now())
+
+  csUser User @relation("CsClientAccessCs", fields: [csUserId], references: [id], onDelete: Cascade)
+  client User @relation("CsClientAccessClient", fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([csUserId, clientId])
+  @@index([clientId])
 }
 
 // ============================================================================

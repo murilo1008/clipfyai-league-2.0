@@ -17,6 +17,7 @@ import { commentsAnalysisRouter } from "@/server/api/routers/comments-analysis";
 import { videoDownloadsRouter } from "@/server/api/routers/video-downloads";
 import { competitionAnnouncementsRouter } from "@/server/api/routers/competition-announcements";
 import { notificationsRouter } from "@/server/api/routers/notifications";
+import { csRouter } from "@/server/api/routers/cs";
 import { createCallerFactory, createTRPCRouter } from "@/server/api/trpc";
 
 /**
@@ -44,6 +45,7 @@ export const appRouter = createTRPCRouter({
   videoDownloads: videoDownloadsRouter,
   competitionAnnouncements: competitionAnnouncementsRouter,
   notifications: notificationsRouter,
+  cs: csRouter,
 });
 
 // export type definition of API

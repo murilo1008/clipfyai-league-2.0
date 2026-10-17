@@ -7,12 +7,13 @@
  * need to use are documented accordingly near the end.
  */
 import { type UserRole } from "@prisma/client";
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
 
 import { db } from "@/server/db";
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { resolveCsViewForRequest } from "@/server/cs-view/resolve";
 
 /**
  * 1. CONTEXT
@@ -100,18 +101,34 @@ function getCachedClipperProfileId(ctx: { db: typeof db }, userId: string) {
   return profileId;
 }
 
-const isAuth = middleware(async (opts) => {
-  const { userId } = await auth();
+// Customer Success: se houver uma seleção de cliente válida no cookie, o "usuário
+// atual" passa a ser o cliente visualizado. Para todos os outros papéis (ou sem
+// cookie) isto é um passthrough sem nenhuma query extra. Resolvido uma vez por
+// requisição (memoizado pelo objeto Headers do contexto).
+function resolveCsForRequest(ctx: { db: typeof db; headers: Headers }, actorId: string) {
+  return resolveCsViewForRequest({ db: ctx.db, actorId, headers: ctx.headers });
+}
 
-  if (!userId) {
+const isAuth = middleware(async (opts) => {
+  const { userId: actorUserId } = await auth();
+
+  if (!actorUserId) {
     throw new Error("Unauthorized");
   }
+
+  const view = await resolveCsForRequest(opts.ctx, actorUserId);
+  const userId = view.effectiveUserId;
 
   const baseCtx = opts.ctx;
   return opts.next({
     ctx: {
       ...opts.ctx, // Propagar o contexto original (incluindo db)
+      /** Id efetivo: o cliente visualizado (modo CS) ou o próprio usuário logado. */
       userId,
+      /** Id de quem está realmente logado (igual a `userId` fora do modo CS). */
+      actorUserId,
+      csView: view.csView,
+      csSelectionStale: view.stale,
       /** id do ClipperProfile do usuário (null se não tiver), 1 consulta por requisição. */
       getClipperProfileId: () => getCachedClipperProfileId(baseCtx, userId),
     },
@@ -125,11 +142,18 @@ const isAuthWithUser = middleware(async (opts) => {
     throw new Error("Unauthorized");
   }
 
+  // Mesma troca de usuário efetivo do `isAuth`; `user` continua sendo o objeto
+  // Clerk de quem está logado (o CS, em modo de visualização).
+  const view = await resolveCsForRequest(opts.ctx, user.id);
+
   return opts.next({
     ctx: {
       ...opts.ctx, // Propagar o contexto original (incluindo db)
-      userId: user.id,
+      userId: view.effectiveUserId,
+      actorUserId: user.id,
       user,
+      csView: view.csView,
+      csSelectionStale: view.stale,
     },
   });
 });
@@ -231,3 +255,20 @@ export const privateProcedureWithUser = t.procedure
   .use(durationLogMiddleware)
   .use(isAuthWithUser);
 export const adminProcedure = t.procedure.use(timingMiddleware).use(isAdmin);
+
+/**
+ * Procedure restrita a usuários de Customer Success. Checa o papel de quem está
+ * REALMENTE logado (`actorUserId`), e não o do cliente visualizado.
+ */
+export const csProcedure = privateProcedure.use(async ({ ctx, next }) => {
+  const role = await getCachedUserRole(ctx, ctx.actorUserId);
+
+  if (role !== "CUSTOMER_SUCCESS") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Acesso restrito a usuários de Customer Success",
+    });
+  }
+
+  return next({ ctx: { ...ctx, actorRole: role } });
+});

@@ -3,25 +3,44 @@ import { createTRPCRouter, privateProcedure, publicProcedure } from "../trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { normalizePixKeyForType } from "@/lib/pix-key";
+import { resolveCsViewForRequest } from "@/server/cs-view/resolve";
 
 export const userRouter = createTRPCRouter({
   getCurrentUser: publicProcedure.query(async ({ ctx }) => {
     // auth() valida a sessão localmente; currentUser() faria uma chamada ao Clerk
     const { userId } = await auth()
-    
+
     // Se não houver usuário logado, retornar null
     if (!userId) {
       return null
     }
-    
-    return ctx.db.user.findUnique({
-      where: { id: userId },
+
+    // Customer Success: com uma seleção de cliente válida, o "usuário atual" da UI
+    // é o cliente visualizado (role CLIENT). `csView` carrega a identidade real do CS.
+    const view = await resolveCsViewForRequest({
+      db: ctx.db,
+      actorId: userId,
+      headers: ctx.headers,
+    })
+
+    const dbUser = await ctx.db.user.findUnique({
+      where: { id: view.effectiveUserId },
       // Segredo da integração Kiwify não deve ir para o navegador
       omit: { kiwifySecretKey: true },
       include: {
         clipperProfile: true,
       },
     });
+
+    if (!dbUser) {
+      return null
+    }
+
+    return {
+      ...dbUser,
+      csView: view.csView,
+      csSelectionStale: view.stale,
+    }
   }),
 
   create: publicProcedure
@@ -639,18 +658,9 @@ export const userRouter = createTRPCRouter({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const user = await currentUser()
-        
-        if (!user) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message: 'Usuário não autenticado',
-          })
-        }
-
         // Buscar perfil do clipper
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
         })
 
         if (!clipperProfile) {
@@ -662,7 +672,7 @@ export const userRouter = createTRPCRouter({
 
         // Atualizar Discord
         const updatedProfile = await ctx.db.clipperProfile.update({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
           data: {
             discordUsername: input.discordUsername,
             discordId: input.discordId,
@@ -693,17 +703,8 @@ export const userRouter = createTRPCRouter({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const user = await currentUser()
-
-        if (!user) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message: 'Usuário não autenticado',
-          })
-        }
-
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
         })
 
         if (!clipperProfile) {
@@ -723,7 +724,7 @@ export const userRouter = createTRPCRouter({
         }
 
         const updatedProfile = await ctx.db.clipperProfile.update({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
           data: { pixKey: normalized.value },
         })
 
@@ -747,17 +748,8 @@ export const userRouter = createTRPCRouter({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const user = await currentUser()
-
-        if (!user) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message: 'Usuário não autenticado',
-          })
-        }
-
         const clipperProfile = await ctx.db.clipperProfile.findUnique({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
         })
 
         if (!clipperProfile) {
@@ -768,7 +760,7 @@ export const userRouter = createTRPCRouter({
         }
 
         const updatedProfile = await ctx.db.clipperProfile.update({
-          where: { userId: user.id },
+          where: { userId: ctx.userId },
           data: {
             artisticName: input.artisticName.trim() || null,
           },
@@ -794,18 +786,9 @@ export const userRouter = createTRPCRouter({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const user = await currentUser()
-        
-        if (!user) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message: 'Usuário não autenticado',
-          })
-        }
-
         // Atualizar imageUrl no banco de dados
         const updatedUser = await ctx.db.user.update({
-          where: { id: user.id },
+          where: { id: ctx.userId },
           data: { imageUrl: input.imageUrl },
           select: {
             id: true,

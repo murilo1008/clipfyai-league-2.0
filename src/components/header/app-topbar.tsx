@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { AppBreadcrumbs } from "@/components/header/app-breadcrumbs"
+import { CsClientSelector } from "@/components/header/cs-client-selector"
 import { FinancialVisibilityToggle } from "@/components/header/financial-visibility-toggle"
 import { NotificationsBell } from "@/components/header/notifications-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -23,6 +24,7 @@ export function AppTopbar() {
         </div>
 
         <div className="flex flex-1 items-center justify-end gap-1.5">
+          <CsClientSelector />
           <FinancialVisibilityToggle />
           <NotificationsBell />
           <ThemeToggle />

@@ -1,25 +1,21 @@
-import { auth } from "@clerk/nextjs/server";
 import { notFound, redirect } from "next/navigation";
 
+import { getViewer } from "@/server/cs-view/viewer";
 import { db } from "@/server/db";
 import { hasInvestedAmountInEveryCampaign } from "@/server/performance/visibility";
 
 import ClientPerformance from "./performance";
 
 export default async function ClientPerformancePage() {
-  const { userId } = await auth();
+  const viewer = await getViewer();
 
-  if (!userId) redirect("/sign-in");
+  if (!viewer) redirect("/sign-in");
 
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  });
+  if (viewer.effective.role !== "CLIENT") redirect("/");
 
-  if (!user || user.role !== "CLIENT") redirect("/");
-
+  // Em modo Customer Success, `effective.id` é o cliente visualizado.
   const campaigns = await db.campaign.findMany({
-    where: { clientId: userId },
+    where: { clientId: viewer.effective.id },
     select: {
       performanceSettings: { select: { investedAmount: true } },
     },

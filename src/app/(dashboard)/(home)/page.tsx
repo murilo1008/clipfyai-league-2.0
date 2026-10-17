@@ -1,26 +1,22 @@
 import { redirect } from "next/navigation"
 
-import { auth } from "@clerk/nextjs/server"
-
-import { db } from "@/server/db"
+import { getViewer } from "@/server/cs-view/viewer"
 
 import { HomeByRole } from "./home-by-role"
+import HomeCs from "./home-cs"
 
 export default async function HomePage() {
-  const { userId } = await auth()
+  const viewer = await getViewer()
 
-  if (!userId) {
+  if (!viewer) {
     redirect("/sign-in")
   }
 
-  const user = await db.user.findUnique({
-    where: {
-      id: userId,
-    },
-    select: {
-      role: true,
-    },
-  })
+  // Customer Success sem cliente selecionado: tela de escolha de cliente.
+  if (viewer.actor.role === "CUSTOMER_SUCCESS" && !viewer.csView) {
+    return <HomeCs stale={viewer.stale} />
+  }
 
-  return <HomeByRole role={user?.role} />
+  // A partir daqui vale o papel EFETIVO (um CS visualizando um cliente é CLIENT).
+  return <HomeByRole role={viewer.effective.role ?? undefined} />
 }

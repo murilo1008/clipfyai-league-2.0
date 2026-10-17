@@ -1,5 +1,4 @@
-import { auth } from "@clerk/nextjs/server";
-
+import { getViewer } from "@/server/cs-view/viewer";
 import { db } from "@/server/db";
 
 export const runtime = "nodejs";
@@ -19,41 +18,36 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ downloadId: string }> },
 ) {
-  const { userId } = await auth();
-  if (!userId) {
+  // Em modo Customer Success, `viewer.effective.id` é o cliente visualizado.
+  const viewer = await getViewer();
+  if (!viewer) {
     return new Response("Unauthorized", { status: 401 });
   }
 
   const { downloadId } = await context.params;
-  // As duas leituras são independentes; a ordem das respostas (404, 403,
-  // 409) continua a mesma.
-  const [download, user] = await Promise.all([
-    db.clipPostBucketVideo.findUnique({
-      where: { id: downloadId },
-      select: {
-        status: true,
-        publicUrl: true,
-        fileName: true,
-        destinationPath: true,
-        campaign: {
-          select: {
-            clientId: true,
-          },
+  // O papel do usuário já veio em `viewer`; só falta o download.
+  const download = await db.clipPostBucketVideo.findUnique({
+    where: { id: downloadId },
+    select: {
+      status: true,
+      publicUrl: true,
+      fileName: true,
+      destinationPath: true,
+      campaign: {
+        select: {
+          clientId: true,
         },
       },
-    }),
-    db.user.findUnique({
-      where: { id: userId },
-      select: { role: true },
-    }),
-  ]);
+    },
+  });
 
   if (!download) {
     return new Response("Download not found", { status: 404 });
   }
 
   const canDownload =
-    user?.role === "ADMIN" || download.campaign.clientId === userId;
+    viewer.actor.role === "ADMIN" ||
+    download.campaign.clientId === viewer.effective.id;
 
   if (!canDownload) {
     return new Response("Forbidden", { status: 403 });
