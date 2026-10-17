@@ -11,6 +11,7 @@ import {
   Newspaper,
   ChartLineUp,
   Shield,
+  ShieldWarning,
   Trophy,
   UsersThree,
   Wallet,
@@ -73,6 +74,8 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
         { title: "Contas", url: "/clippers/accounts" },
         { title: "Ranking", url: "/clippers/ranking" },
         { title: "Afiliados", url: "/clippers/affiliates" },
+        { title: "Advertências", url: "/clippers/warnings" },
+        { title: "Revisões", url: "/clippers/warnings/review" },
       ],
     },
     {
@@ -207,6 +210,12 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
       title: "Financeiro",
       url: "/financial",
       icon: Wallet,
+      items: [],
+    },
+    {
+      title: "Advertências",
+      url: "/warnings",
+      icon: ShieldWarning,
       items: [],
     },
     // Indicações desativada por enquanto — a rota também saiu do ar:

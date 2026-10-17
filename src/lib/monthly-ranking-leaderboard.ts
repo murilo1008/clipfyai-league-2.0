@@ -1,5 +1,9 @@
 import { type PrismaClient, Prisma, RankingMetricType } from "@prisma/client";
 import {
+  loadMonthlyScoreMultiplierCuts,
+  type MonthlyScoreMultiplierCut,
+} from "@/lib/clipper-discipline/score-multiplier-queries";
+import {
   calculateEngagementRate,
   calculateRankingScore,
 } from "@/lib/ranking-helpers";
@@ -81,6 +85,26 @@ type MonthlyScoredTotals = MonthlyTotals & {
   engagementRate: number;
   rankingScore: number;
 };
+
+/** Redutor de advertência: tira das somas o que os posts com redutor perdem. */
+function applyScoreMultiplierCuts(
+  totals: MonthlyTotals[],
+  cuts: Map<string, MonthlyScoreMultiplierCut>,
+): MonthlyTotals[] {
+  if (cuts.size === 0) return totals;
+  return totals.map((row) => {
+    const cut = cuts.get(row.applicationId);
+    if (!cut) return row;
+    return {
+      ...row,
+      totalViews: Math.max(0, row.totalViews - cut.views),
+      totalLikes: Math.max(0, row.totalLikes - cut.likes),
+      totalComments: Math.max(0, row.totalComments - cut.comments),
+      totalShares: Math.max(0, row.totalShares - cut.shares),
+      totalSaves: Math.max(0, row.totalSaves - cut.saves),
+    };
+  });
+}
 
 /** Mesma ordenação/desempate do ranking mensal do ADMIN (sort estável). */
 function sortMonthlyTotals(
@@ -235,8 +259,9 @@ export async function computeMonthlyLeaderboard(
 
   const buildResult = async (
     totals: MonthlyTotals[],
+    cuts: Map<string, MonthlyScoreMultiplierCut>,
   ): Promise<MonthlyLeaderboardResult> => {
-    const sorted = sortMonthlyTotals(totals, metricType);
+    const sorted = sortMonthlyTotals(applyScoreMultiplierCuts(totals, cuts), metricType);
     const rows = await hydrateMonthlyRows(db, sorted, monthlyTopCount);
     const positionByClipperProfileId = new Map<string, number>();
     sorted.forEach((row, index) => {
@@ -251,7 +276,7 @@ export async function computeMonthlyLeaderboard(
   // FAST PATH: campanha ativa — ClipPost.views já está atualizado
   // ============================================================
   if (isActive) {
-    const [postGroups, applications] = await Promise.all([
+    const [postGroups, applications, cuts] = await Promise.all([
       db.clipPost.groupBy({
         by: ["applicationId"],
         where: { campaignId, status: "ELIGIBLE" },
@@ -268,6 +293,7 @@ export async function computeMonthlyLeaderboard(
         where: { campaignId, status: "APPROVED" },
         select: { id: true, clipperProfileId: true },
       }),
+      loadMonthlyScoreMultiplierCuts(db, { campaignId }),
     ]);
     const appMap = new Map(applications.map((a) => [a.id, a]));
     const totals: MonthlyTotals[] = [];
@@ -289,7 +315,7 @@ export async function computeMonthlyLeaderboard(
       });
     }
 
-    return buildResult(totals);
+    return buildResult(totals, cuts);
   }
 
   // ============================================================
@@ -311,7 +337,7 @@ export async function computeMonthlyLeaderboard(
   // busca por post no índice em vez de varrer todo o ClipPostMetrics até o corte.
   // `ORDER BY MIN(p.id)` reproduz a ordem de inserção do antigo DISTINCT ON
   // (por clipPostId), que define o desempate do sort estável.
-  const [metricRows, applications] = await Promise.all([
+  const [metricRows, applications, cuts] = await Promise.all([
     db.$queryRaw<MetricAggRow[]>`
       SELECT
         p."applicationId",
@@ -348,6 +374,10 @@ export async function computeMonthlyLeaderboard(
       where: { campaignId, status: "APPROVED" },
       select: { id: true, clipperProfileId: true },
     }),
+    loadMonthlyScoreMultiplierCuts(db, {
+      campaignId,
+      cutoff: cutoffAtCompetitionEnd,
+    }),
   ]);
   if (metricRows.length === 0) return emptyResult();
 
@@ -370,5 +400,5 @@ export async function computeMonthlyLeaderboard(
     });
   }
 
-  return buildResult(totals);
+  return buildResult(totals, cuts);
 }

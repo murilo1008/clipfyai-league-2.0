@@ -36,6 +36,11 @@ import {
 import dynamic from "next/dynamic"
 
 import { CreatePostDialog } from "@/components/clippers/create-post-dialog"
+import { DisciplineBanner } from "@/components/clippers/discipline-banner"
+import {
+  COMPETITION_APPLICATION_REVOKED_MESSAGE,
+  COMPETITION_REMOVED_BY_WARNING_MESSAGE,
+} from "@/lib/clipper-discipline/constants"
 import { LeaveCompetitionButton } from "@/components/clippers/leave-competition-button"
 import { DarkScope } from "@/components/shared/dark-scope"
 import { Reveal } from "@/components/shared/reveal"
@@ -247,9 +252,28 @@ export default function Competition({
     },
   )
 
+  /* ===== Removido da competição (inscrição REVOKED) =====
+     getCompetitionDetails recusa a inscrição REVOKED com uma mensagem
+     própria, que diz se a remoção foi por advertência. */
+  const removedByWarning =
+    error?.message === COMPETITION_REMOVED_BY_WARNING_MESSAGE
+  const isRevoked =
+    removedByWarning ||
+    error?.message === COMPETITION_APPLICATION_REVOKED_MESSAGE
+
   /* ===== Loading ===== */
   if (isLoading) {
     return <CompetitionSkeleton />
+  }
+
+  /* ===== Removido por advertência (detalhes recusados pelo servidor) ===== */
+  if ((error || !competition) && isRevoked) {
+    return (
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+        <RemovedFromCompetition byWarning={removedByWarning} />
+        <DisciplineBanner />
+      </div>
+    )
   }
 
   /* ===== Erro (ex.: não participa desta competição) ===== */
@@ -648,6 +672,9 @@ export default function Competition({
           </section>
         </Reveal>
       </DarkScope>
+
+      {/* Advertências e restrições em vigor (some quando não há nenhuma) */}
+      <DisciplineBanner />
 
       <RequiredVideos videos={competition.requiredVideos} />
 
@@ -1535,6 +1562,47 @@ export default function Competition({
         onOpenChange={setIsCreatePostOpen}
         preSelectedCampaignId={competition.id}
       />
+    </div>
+  )
+}
+
+/* ============================================================
+   Inscrição revogada (removido por advertência)
+   ============================================================ */
+
+function RemovedFromCompetition({ byWarning }: { byWarning: boolean }) {
+  const title = byWarning
+    ? "Você foi removido desta competição por advertência"
+    : "Sua inscrição nesta competição foi revogada"
+  const description = byWarning
+    ? "Sua inscrição foi encerrada pela equipe: você não pode mais enviar vídeos nem disputar o ranking desta competição. Veja o motivo e, se quiser, envie sua defesa em Minhas advertências."
+    : "A equipe encerrou sua participação. Você não pode mais enviar vídeos nesta competição."
+
+  return (
+    <div className="glass-card flex flex-col items-center gap-4 rounded-3xl px-6 py-20 text-center">
+      <span className="flex size-14 items-center justify-center rounded-2xl bg-red-500/15 text-red-500 dark:text-red-400">
+        <ShieldWarning className="size-7" weight="fill" />
+      </span>
+      <div className="max-w-md">
+        <p className="text-lg font-bold">{title}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {byWarning && (
+          <Button
+            asChild
+            className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
+          >
+            <Link href="/warnings">
+              <ShieldWarning className="size-4" weight="fill" />
+              Ver minhas advertências
+            </Link>
+          </Button>
+        )}
+        <Button asChild variant="outline" className="cursor-pointer rounded-xl">
+          <Link href="/my-competitions">Minhas Competições</Link>
+        </Button>
+      </div>
     </div>
   )
 }

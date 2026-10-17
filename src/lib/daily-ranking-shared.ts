@@ -7,6 +7,10 @@ import {
   getUtcRankingDayBounds,
   parsePrizeTable,
 } from "@/lib/daily-ranking-preview";
+import {
+  applyScoreMultiplierBps,
+  SCORE_MULTIPLIER_NEUTRAL_BPS,
+} from "@/lib/clipper-discipline/score-multiplier";
 
 type DailyLivePostInput = {
   postId: string;
@@ -25,6 +29,8 @@ type DailyLivePostInput = {
   clanTag: string | null;
   clanEmoji: string | null;
   clanEmojiColor: string | null;
+  /** Redutor de score por advertência (bps; ausente = sem redutor). */
+  scoreMultiplierBps?: number;
 };
 
 export type DailyClipperRankingItem = {
@@ -175,13 +181,16 @@ export function rankLiveDailyPosts(params: {
         post.shares,
         post.saves
       );
-      const rankingScore = calculateRankingScore(
-        params.metricType,
-        post.views,
-        post.likes,
-        post.comments,
-        post.shares,
-        post.saves
+      const rankingScore = applyScoreMultiplierBps(
+        calculateRankingScore(
+          params.metricType,
+          post.views,
+          post.likes,
+          post.comments,
+          post.shares,
+          post.saves
+        ),
+        post.scoreMultiplierBps ?? SCORE_MULTIPLIER_NEUTRAL_BPS
       );
       return { ...post, engagementRate, rankingScore };
     })

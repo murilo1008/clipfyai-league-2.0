@@ -49,6 +49,8 @@ describe("ranking mensal (campanha ativa)", () => {
   it("hidrata só o top e devolve a posição real de todos", async () => {
     const findMany = hydrationMock();
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipPost: {
         groupBy: vi
           .fn()
@@ -100,8 +102,53 @@ describe("ranking mensal (campanha ativa)", () => {
     });
   });
 
+  it("o redutor de advertência tira das somas o que os posts punidos perdem", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      // app-1 tinha 1000 views em posts com ×0,8: perde 200.
+      { applicationId: "app-1", views: 200n, likes: 0n, comments: 0n, shares: 0n, saves: 0n },
+    ]);
+    const db = {
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue({ id: "sanction-1" }) },
+      $queryRaw: queryRaw,
+      clipPost: {
+        groupBy: vi
+          .fn()
+          .mockResolvedValue([group("app-1", 1000n), group("app-2", 900n)]),
+      },
+      clipperApplication: { findMany: hydrationMock() },
+    };
+    const board = await computeMonthlyLeaderboard(
+      db as never,
+      "campaign-1",
+      campaign("ACTIVE", RankingMetricType.VIEWS, 2),
+    );
+    expect(board!.rows.map((row) => [row.applicationId, row.totalViews])).toEqual([
+      ["app-2", 900],
+      ["app-1", 800],
+    ]);
+    expect(queryRaw).toHaveBeenCalledOnce();
+  });
+
+  it("sem redutor na campanha não roda a consulta dos cortes", async () => {
+    const queryRaw = vi.fn();
+    const db = {
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null) },
+      $queryRaw: queryRaw,
+      clipPost: { groupBy: vi.fn().mockResolvedValue([group("app-1", 1000n)]) },
+      clipperApplication: { findMany: hydrationMock() },
+    };
+    await computeMonthlyLeaderboard(
+      db as never,
+      "campaign-1",
+      campaign("ACTIVE", RankingMetricType.VIEWS, 2),
+    );
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
   it("VIEWS: empate em views mantém a ordem do agrupamento (sort estável)", async () => {
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipPost: {
         groupBy: vi
           .fn()
@@ -127,6 +174,8 @@ describe("ranking mensal (campanha ativa)", () => {
 
   it("VIEWS_X_ENGAGEMENT: score e depois views", async () => {
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       clipPost: {
         groupBy: vi.fn().mockResolvedValue([
           group("app-1", 100n, 10), // ER 10% → score 1000
@@ -183,6 +232,8 @@ describe("ranking mensal (campanha concluída)", () => {
       },
     ]);
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       $queryRaw: queryRaw,
       clipperApplication: { findMany: hydrationMock() },
       clipPost: { groupBy: vi.fn() },
@@ -218,6 +269,8 @@ describe("ranking mensal (campanha concluída)", () => {
 
   it("sem métricas até o corte devolve ranking vazio", async () => {
     const db = {
+      // Sem sanções de advertência (redutor, suspensão, retenção).
+      clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
       $queryRaw: vi.fn().mockResolvedValue([]),
       clipperApplication: { findMany: hydrationMock() },
     };

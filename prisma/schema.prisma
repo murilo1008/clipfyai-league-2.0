@@ -318,6 +318,8 @@ model Campaign {
   performanceProfiles       CampaignPerformanceProfile[]
   performanceVideos         CampaignPerformanceVideo[]
   announcements             CompetitionAnnouncement[]
+  clipperWarnings           ClipperWarning[]
+  clipperSanctions          ClipperSanction[]
 
   @@index([organizationId])
   @@index([slug])
@@ -804,6 +806,8 @@ model ClipperProfile {
   tiktokConnections     TikTokConnection[]
   referredUsers         User[]                @relation("ClipperReferrals")
   receivedAnnouncements CompetitionAnnouncement[] @relation("CompetitionAnnouncementRecipient")
+  warnings              ClipperWarning[] // Advertências recebidas
+  sanctions             ClipperSanction[] // Punições (da escala ou avulsas)
 
   @@index([userId])
   @@index([clanId])
@@ -1454,6 +1458,7 @@ model ClipPost {
   commentAnalysisJobs       CommentAnalysisJob[]
   commentAnalysisJobItems   CommentAnalysisJobItem[]
   commentAnalysisAggregates CommentAnalysisAggregate[]
+  clipperWarnings           ClipperWarning[]
 
   @@unique([campaignId, platformVideoId, platform])
   @@index([campaignId])
@@ -4210,4 +4215,123 @@ model AiClip {
 
   @@index([projectId, status])
   @@index([status, updatedAt])
+}
+
+// ============================================================================
+// SISTEMA DE ADVERTÊNCIAS (clipadores)
+// ============================================================================
+// Tabelas novas e aditivas (prisma/clipper-discipline.sql). O mesmo modelo
+// existe no schema do backend league, que lê as sanções no payout e na
+// promoção de posts a ELIGIBLE.
+
+enum ClipperInfractionType {
+  LIGHT // Leve: hashtag/marcação faltando, fora do direcionamento, formato errado
+  MEDIUM // Média: reincidência no dia, baixa qualidade proposital, spam
+  SEVERE // Grave: bot, engajamento comprado, reupload, conteúdo roubado
+}
+
+enum ClipperWarningStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum ClipperSanctionType {
+  VIDEO_INVALIDATION // Vídeo da infração não pontua
+  POSTING_SUSPENSION // Sem enviar vídeos até endsAt
+  SCORE_MULTIPLIER // Redutor sobre o score dos vídeos postados na janela
+  COMPETITION_REMOVAL // Removido da competição (campaignId)
+  PAYOUT_HOLD // Pagamentos/saques retidos até liberação manual
+  OBSERVATION_MODE // Vídeos precisam de aprovação manual para pontuar
+  BONUS_LOSS // Sem bônus/extras até endsAt (registro)
+  PREMIUM_CAMPAIGN_BLOCK // Não pode se inscrever em campanhas premium
+  DAY_POINTS_RESET // Zera os pontos de um dia do ranking
+  PLATFORM_BAN // Banimento da plataforma
+  PODIUM_INELIGIBLE // Vídeos de um dia (startsAt–endsAt) fora dos rankings diários da competição
+}
+
+enum ClipperBanReviewStatus {
+  PENDING // Infração grave aguardando decisão da equipe
+  BANNED
+  DISMISSED
+}
+
+model ClipperWarning {
+  id                 String                  @id @default(cuid())
+  clipperProfileId   String
+  campaignId         String?
+  clipPostId         String?
+  videoUrl           String?
+  infractionType     ClipperInfractionType
+  level              Int? // 0–4 na escala; null na infração grave
+  suggestedLevel     Int?
+  reason             String                  @db.Text
+  status             ClipperWarningStatus    @default(ACTIVE)
+  appliedById        String // User.id do admin
+  appliedAt          DateTime                @default(now())
+  expiresAt          DateTime // Janela rolante: nova infração empurra todas as ativas
+  revokedAt          DateTime?
+  revokedById        String?
+  revokeReason       String?                 @db.Text
+  defenseText        String?                 @db.Text
+  defenseSubmittedAt DateTime?
+  banReviewStatus    ClipperBanReviewStatus?
+  banReviewedAt      DateTime?
+  banReviewedById    String?
+  configSnapshot     Json // Valores do painel usados nesta advertência
+  effects            Json? // Ids e estados anteriores, para revogar
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  clipperProfile ClipperProfile    @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  campaign       Campaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  clipPost       ClipPost?         @relation(fields: [clipPostId], references: [id], onDelete: SetNull)
+  sanctions      ClipperSanction[]
+
+  @@index([clipperProfileId, status, expiresAt])
+  @@index([campaignId])
+  @@index([infractionType, appliedAt])
+  @@index([appliedAt])
+  @@index([banReviewStatus])
+}
+
+model ClipperSanction {
+  id                 String              @id @default(cuid())
+  clipperProfileId   String
+  warningId          String?
+  type               ClipperSanctionType
+  campaignId         String?
+  clipPostId         String?
+  scoreMultiplierBps Int? // 8000 = ×0,8 (SCORE_MULTIPLIER)
+  startsAt           DateTime            @default(now())
+  endsAt             DateTime? // null = até liberação manual
+  reason             String?             @db.Text
+  createdById        String
+  revokedAt          DateTime?
+  revokedById        String?
+  revokeReason       String?             @db.Text
+  metadata           Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  clipperProfile ClipperProfile  @relation(fields: [clipperProfileId], references: [id], onDelete: Cascade)
+  warning        ClipperWarning? @relation(fields: [warningId], references: [id], onDelete: SetNull)
+  campaign       Campaign?       @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([clipperProfileId, type, startsAt])
+  @@index([warningId])
+  @@index([type, endsAt])
+}
+
+/// Linha única (id = "default") com os valores configuráveis da escala.
+model ClipperDisciplineSettings {
+  id                        String   @id @default("default")
+  level1SuspensionHours     Int      @default(24)
+  level2SuspensionHours     Int      @default(72)
+  level2ScoreMultiplierBps  Int      @default(8000)
+  level2ScoreMultiplierDays Int      @default(7)
+  warningExpiryDays         Int      @default(60)
+  updatedById               String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 }

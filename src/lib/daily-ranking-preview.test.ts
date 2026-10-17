@@ -52,6 +52,39 @@ describe("daily ranking prize table", () => {
     }
   });
 
+  it("o redutor de advertência reduz o score do post e reordena o ranking ao vivo", () => {
+    const base = {
+      clipperImageUrl: null,
+      username: "",
+      platform: "TIKTOK",
+      thumbnailUrl: "",
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      saves: 0,
+      postedAtIso: "2026-09-29T12:00:00.000Z",
+      isCurrentUser: false,
+      clanTag: null,
+      clanEmoji: null,
+      clanEmojiColor: null,
+    };
+    const ranking = rankLiveDailyPosts({
+      posts: [
+        { ...base, postId: "punido", clipperName: "A", views: 1000, scoreMultiplierBps: 8000 },
+        { ...base, postId: "normal", clipperName: "B", views: 900 },
+      ],
+      metricType: RankingMetricType.VIEWS,
+      topCount: 15,
+      dailyPrizeTable: { "1": 100, "2": 50 },
+    });
+    expect(ranking.map((row) => [row.postId, row.rankingScore, row.prize])).toEqual([
+      ["normal", 900, 100],
+      ["punido", 800, 50],
+    ]);
+    // As views exibidas continuam as reais.
+    expect(ranking[1]?.views).toBe(1000);
+  });
+
   it("recusa tabela inválida", () => {
     expect(() => parsePrizeTable({ "1": -1 })).toThrow();
     expect(() => parsePrizeTable("invalid-json")).toThrow();

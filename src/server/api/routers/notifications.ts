@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
+import { CLIPPER_WARNING_NOTIFICATION_KIND } from "@/lib/clipper-discipline/constants";
 import { createTRPCRouter, privateProcedure } from "@/server/api/trpc";
 import {
   accessibleAnnouncementApplicationStatuses,
@@ -72,6 +73,21 @@ function visibleNotificationsWhere(
   };
 }
 
+/**
+ * Alertas do sistema que não são avisos de competição (hoje, advertências).
+ * Não têm announcementId nem campaignId, então ficam fora do contador por
+ * competição e só aparecem no sino (sem `slug`).
+ */
+function alertNotificationsWhere(userId: string): Prisma.NotificationWhereInput {
+  return {
+    userId,
+    channel: "IN_APP",
+    announcementId: null,
+    type: "SYSTEM_ALERT",
+    metadata: { path: ["kind"], equals: CLIPPER_WARNING_NOTIFICATION_KIND },
+  };
+}
+
 export const notificationsRouter = createTRPCRouter({
   unreadSummary: privateProcedure
     .input(
@@ -106,12 +122,19 @@ export const notificationsRouter = createTRPCRouter({
           for (const group of groups)
             if (group.campaignId)
               byCampaign[group.campaignId] = group._count.id;
+          const alerts = input?.slug
+            ? 0
+            : await ctx.db.notification.count({
+                where: { ...alertNotificationsWhere(ctx.userId), isRead: false },
+              });
           return {
-            total: Object.values(byCampaign).reduce(
-              (total, count) => total + count,
-              0,
-            ),
+            total:
+              Object.values(byCampaign).reduce(
+                (total, count) => total + count,
+                0,
+              ) + alerts,
             byCampaign,
+            alerts,
           };
         },
       );
@@ -135,13 +158,17 @@ export const notificationsRouter = createTRPCRouter({
     )
     .query(async ({ ctx, input }) => {
       const clipperProfileId = await requireInboxClipperId(ctx.db, ctx.userId);
+      const visible = visibleNotificationsWhere(
+        ctx.userId,
+        clipperProfileId,
+        input.slug,
+      );
       const records = await ctx.db.notification.findMany({
         where: {
-          ...visibleNotificationsWhere(
-            ctx.userId,
-            clipperProfileId,
-            input.slug,
-          ),
+          // Com `slug`, só avisos daquela competição; no sino, também os alertas.
+          ...(input.slug
+            ? visible
+            : { AND: [{ OR: [visible, alertNotificationsWhere(ctx.userId)] }] }),
           ...(input.cursor
             ? {
                 OR: [
@@ -160,6 +187,9 @@ export const notificationsRouter = createTRPCRouter({
           id: true,
           isRead: true,
           createdAt: true,
+          title: true,
+          message: true,
+          actionUrl: true,
           announcement: {
             select: {
               id: true,
@@ -174,10 +204,10 @@ export const notificationsRouter = createTRPCRouter({
       if (hasMore) records.pop();
       const last = records.at(-1);
       return {
-        items: records.flatMap((record) =>
+        items: records.map((record) =>
           record.announcement
-            ? [
-                {
+            ? {
+                  kind: "announcement" as const,
                   id: record.id,
                   isRead: record.isRead,
                   createdAt: record.createdAt,
@@ -189,9 +219,16 @@ export const notificationsRouter = createTRPCRouter({
                     record.announcement.campaign.slug,
                     record.announcement.id,
                   ),
-                },
-              ]
-            : [],
+                }
+            : {
+                kind: "clipper_warning" as const,
+                id: record.id,
+                isRead: record.isRead,
+                createdAt: record.createdAt,
+                title: record.title,
+                message: record.message,
+                actionUrl: record.actionUrl ?? "/warnings",
+              },
         ),
         nextCursor:
           hasMore && last
@@ -263,6 +300,23 @@ export const notificationsRouter = createTRPCRouter({
         data: { isRead: true, readAt: new Date() },
       });
       // O cliente invalida o contador logo após marcar como lido.
+      invalidateCachedQueries(unreadSummaryCachePrefix(ctx.userId));
+      return { success: true, updated: result.count };
+    }),
+
+  /** Marca como lido um alerta do sistema (advertências). */
+  markAlertRead: privateProcedure
+    .input(z.object({ notificationId: z.string().min(1) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      await requireInboxClipperId(ctx.db, ctx.userId);
+      const result = await ctx.db.notification.updateMany({
+        where: {
+          ...alertNotificationsWhere(ctx.userId),
+          id: input.notificationId,
+          isRead: false,
+        },
+        data: { isRead: true, readAt: new Date() },
+      });
       invalidateCachedQueries(unreadSummaryCachePrefix(ctx.userId));
       return { success: true, updated: result.count };
     }),

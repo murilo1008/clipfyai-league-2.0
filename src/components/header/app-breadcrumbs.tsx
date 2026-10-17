@@ -58,6 +58,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   acquisition: "Captação",
   aquisition: "Captação",
   affiliates: "Afiliados",
+  warnings: "Advertências",
+  review: "Revisões",
 
   /* ── Financeiro ──────────────────────────────────────────────────────── */
   financial: "Financeiro",

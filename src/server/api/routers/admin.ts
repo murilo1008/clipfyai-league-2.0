@@ -52,6 +52,19 @@ import {
   parseTopClippersPrizeTable,
 } from "@/lib/top-clippers-ranking";
 import { canRejoinCompetition, rankingApplicationWhere } from "@/lib/competition-participation";
+import {
+  PODIUM_LOCK_MESSAGE,
+  hasActivePodiumSanction,
+  loadPodiumExcludedPostIds,
+} from "@/lib/clipper-discipline/podium-queries";
+import { loadScoreMultipliersForPosts } from "@/lib/clipper-discipline/score-multiplier-queries";
+import { disciplineScoringLockMessage } from "@/server/clipper-discipline/restrictions";
+import { findReversedPrizeCreditIds } from "@/server/prize-reversals";
+import {
+  expectsDailyPix,
+  isSettledDailyPrizeStatus,
+  REVERSED_PRIZE_STATUS,
+} from "@/lib/clipper-discipline/constants";
 import { disconnectGoogleCalendar } from "@/server/google-calendar";
 import {
   DEFAULT_REFERENCE_CPM,
@@ -664,7 +677,7 @@ async function countTopPostersClippersByDate(
     JOIN "ClipperApplication" ca ON ca.id = p."applicationId"
     WHERE (
         ca.status = 'APPROVED'
-        OR (ca.status = 'WITHDRAWN' AND ca."withdrawnAt" >= p.day + interval '20 hours')
+        OR (ca.status IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= p.day + interval '20 hours')
       )
       AND NOT EXISTS (
         SELECT 1
@@ -3577,7 +3590,10 @@ export const adminRouter = createTRPCRouter({
 
         // Atualizar status da aplicação
         const changed = await ctx.db.clipperApplication.updateMany({
-          where: { id: input.applicationId, status: { not: "WITHDRAWN" } },
+          where: {
+            id: input.applicationId,
+            status: { notIn: ["WITHDRAWN", "REVOKED"] },
+          },
           data: {
             status: "APPROVED",
             approvedAt: new Date(),
@@ -3588,7 +3604,7 @@ export const adminRouter = createTRPCRouter({
         });
 
         if (changed.count !== 1) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "O clipador saiu desta competição. A inscrição não pode ser reativada." });
+          throw new TRPCError({ code: "FORBIDDEN", message: "O clipador saiu ou foi removido desta competição. A inscrição não pode ser reativada." });
         }
 
         // Buscar todos os MonthlyRanking da campanha
@@ -4012,7 +4028,10 @@ export const adminRouter = createTRPCRouter({
 
         // Atualizar status da aplicação
         const changed = await ctx.db.clipperApplication.updateMany({
-          where: { id: input.applicationId, status: { not: "WITHDRAWN" } },
+          where: {
+            id: input.applicationId,
+            status: { notIn: ["WITHDRAWN", "REVOKED"] },
+          },
           data: {
             status: "REJECTED",
             reviewedBy: ctx.userId,
@@ -5123,8 +5142,14 @@ export const adminRouter = createTRPCRouter({
         const todayPostsCount = todayPostsCountResult;
         const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
         const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
+        const [todayScoreMultipliers, todayPodiumExcluded] = await Promise.all([
+          loadScoreMultipliersForPosts(ctx.db, todayPosts),
+          loadPodiumExcludedPostIds(ctx.db, campaign.id, todayPosts),
+        ]);
         const rankedDailyPosts = rankLiveDailyPosts({
           posts: todayPosts.flatMap((post) => {
+            // Inelegível ao pódio no dia: fora do ranking do dia.
+            if (todayPodiumExcluded.has(post.id)) return [];
             const clipTotals = {
               views: Number(post.views),
               likes: post.likes,
@@ -5160,6 +5185,7 @@ export const adminRouter = createTRPCRouter({
               clanTag: null,
               clanEmoji: null,
               clanEmojiColor: null,
+              scoreMultiplierBps: todayScoreMultipliers.get(post.id),
             };
           }),
           metricType:
@@ -7715,6 +7741,19 @@ export const adminRouter = createTRPCRouter({
               message: "O post já está vinculado a esta aplicação",
             });
           }
+          // Mover força ELIGIBLE: não pode ressuscitar um vídeo punido nem
+          // levar o post para uma inscrição removida por advertência.
+          const lockMessage =
+            disciplineScoringLockMessage({
+              postStatus: clipPost.status,
+              ineligibilityReason: clipPost.ineligibilityReason,
+            }) ??
+            disciplineScoringLockMessage({
+              applicationStatus: targetApplication.status,
+            });
+          if (lockMessage) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: lockMessage });
+          }
 
           if (
             targetApplication.clipperProfileId !==
@@ -7841,6 +7880,16 @@ export const adminRouter = createTRPCRouter({
             code: "NOT_FOUND",
             message: "Post não encontrado",
           });
+        }
+        if (input.status !== "DISQUALIFIED") {
+          const lockMessage = disciplineScoringLockMessage({
+            postStatus: clipPost.status,
+            ineligibilityReason: clipPost.ineligibilityReason,
+            applicationStatus: clipPost.application.status,
+          });
+          if (lockMessage) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: lockMessage });
+          }
         }
 
         // Atualizar status
@@ -9452,6 +9501,7 @@ export const adminRouter = createTRPCRouter({
             username: row.username,
             pixKey: row.pixKey,
             pixPayoutEligible: row.pixPayoutEligible,
+            walletActive: row.walletActive,
           };
         });
 
@@ -9465,12 +9515,14 @@ export const adminRouter = createTRPCRouter({
         const withExpectedPrize = activeForPayment.filter(
           (e) => e.effectivePrize > 0,
         );
-        const withPixExpectedPrize = withExpectedPrize.filter(
-          (e) => e.pixPayoutEligible,
+        const withPixExpectedPrize = withExpectedPrize.filter((e) =>
+          expectsDailyPix(e),
         );
         const canUndoRankPayments =
           withExpectedPrize.length > 0 &&
-          withExpectedPrize.every((e) => e.dailyPrizeStatus === "PAID");
+          withExpectedPrize.every((e) =>
+            isSettledDailyPrizeStatus(e.dailyPrizeStatus),
+          );
         const processingPixTransactions = await ctx.db.transaction.findMany({
           where: {
             status: "PROCESSING",
@@ -9487,10 +9539,12 @@ export const adminRouter = createTRPCRouter({
           select: { metadata: true },
         });
         const isPixEntrySettled = (e: (typeof withPixExpectedPrize)[number]) =>
-          e.dailyPrizeStatus === "PAID" &&
-          Math.abs(e.dailyPrizeAmount - e.effectivePrize) < 0.01 &&
-          e.dailyPrizePaid &&
-          e.dailyPixStatus === "PAID";
+          // Estornado por advertência: o league pula o PIX dessa entrada.
+          e.dailyPrizeStatus === REVERSED_PRIZE_STATUS ||
+          (e.dailyPrizeStatus === "PAID" &&
+            Math.abs(e.dailyPrizeAmount - e.effectivePrize) < 0.01 &&
+            e.dailyPrizePaid &&
+            e.dailyPixStatus === "PAID");
         const expectedPixEntryIds = new Set(
           withPixExpectedPrize.map((e) => e.dailyRankingEntryId),
         );
@@ -9954,7 +10008,28 @@ export const adminRouter = createTRPCRouter({
             message: "Não é possível alterar uma entrada já paga.",
           });
         }
-        const cutoff = getPostedAtWindowUtc(entry.ranking.rankingDate.toISOString().slice(0, 10)).endDate;
+        const removal = await tx.clipperApplication.findUnique({
+          where: { id: entry.applicationId },
+          select: { status: true },
+        });
+        const removalMessage = disciplineScoringLockMessage({
+          applicationStatus: removal?.status,
+        });
+        if (removalMessage) {
+          throw new TRPCError({ code: "FORBIDDEN", message: removalMessage });
+        }
+        const day = getPostedAtWindowUtc(entry.ranking.rankingDate.toISOString().slice(0, 10));
+        if (
+          await hasActivePodiumSanction(tx, {
+            clipperProfileId: entry.clipperProfileId,
+            campaignId: entry.ranking.campaignId,
+            from: day.startDate,
+            to: day.endDate,
+          })
+        ) {
+          throw new TRPCError({ code: "FORBIDDEN", message: PODIUM_LOCK_MESSAGE });
+        }
+        const cutoff = day.endDate;
         const eligible = await tx.clipperApplication.count({
           where: { id: entry.applicationId, ...rankingApplicationWhere(cutoff) },
         });
@@ -10877,6 +10952,18 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
+          if (dre.dailyPrizeStatus === REVERSED_PRIZE_STATUS) {
+            plan.push({
+              kind: "skip",
+              position,
+              clipperName,
+              fullName,
+              amount,
+              skipReason: "Prêmio estornado por advertência",
+            });
+            continue;
+          }
+
           if (amount <= 0) {
             plan.push({
               kind: "skip",
@@ -10970,6 +11057,9 @@ export const adminRouter = createTRPCRouter({
                   }
                   if (currentEntry.dailyPrizeStatus === "PAID") {
                     throw new Error("Prêmio diário já marcado como pago");
+                  }
+                  if (currentEntry.dailyPrizeStatus === REVERSED_PRIZE_STATUS) {
+                    throw new Error("Prêmio estornado por advertência");
                   }
 
                   let wallet = await tx.wallet.findUnique({
@@ -11366,7 +11456,9 @@ export const adminRouter = createTRPCRouter({
         const plan: PlanRow[] = [];
 
         // Prêmios mensais já creditados, para todas as posições premiadas de
-        // uma vez (mesmo critério da consulta por posição e clipador)
+        // uma vez. A posição já paga não paga de novo (mesmo para outro
+        // clipador, quando uma remoção por advertência reordena o ranking), e
+        // quem já recebeu um prêmio mensal desta campanha não recebe outro.
         const prizedRows = board.rows.filter(
           (row) => getPrizeForPosition(prizeTable, row.position) > 0,
         );
@@ -11379,10 +11471,20 @@ export const adminRouter = createTRPCRouter({
                   status: "COMPLETED",
                   clipPostId: null,
                   description: { contains: "Ranking Mensal" },
-                  OR: prizedRows.map((row) => ({
-                    rankingPosition: row.position,
-                    wallet: { clipperProfileId: row.clipperProfileId },
-                  })),
+                  OR: [
+                    {
+                      rankingPosition: {
+                        in: prizedRows.map((row) => row.position),
+                      },
+                    },
+                    {
+                      wallet: {
+                        clipperProfileId: {
+                          in: prizedRows.map((row) => row.clipperProfileId),
+                        },
+                      },
+                    },
+                  ],
                 },
                 select: {
                   rankingPosition: true,
@@ -11390,11 +11492,11 @@ export const adminRouter = createTRPCRouter({
                 },
               })
             : [];
-        const priorPrizeKeys = new Set(
-          priorPrizes.map(
-            (prize) =>
-              `${prize.rankingPosition}:${prize.wallet.clipperProfileId}`,
-          ),
+        const paidPositions = new Set(
+          priorPrizes.map((prize) => prize.rankingPosition),
+        );
+        const paidClippers = new Set(
+          priorPrizes.map((prize) => prize.wallet.clipperProfileId),
         );
 
         for (const row of board.rows) {
@@ -11415,14 +11517,19 @@ export const adminRouter = createTRPCRouter({
             continue;
           }
 
-          if (priorPrizeKeys.has(`${position}:${row.clipperProfileId}`)) {
+          if (
+            paidPositions.has(position) ||
+            paidClippers.has(row.clipperProfileId)
+          ) {
             plan.push({
               kind: "skip",
               position,
               clipperName,
               fullName,
               amount,
-              skipReason: "Prêmio mensal já creditado para esta posição",
+              skipReason: paidPositions.has(position)
+                ? "Prêmio mensal já creditado para esta posição"
+                : "Clipador já recebeu prêmio mensal nesta competição",
             });
             continue;
           }
@@ -11495,6 +11602,11 @@ export const adminRouter = createTRPCRouter({
           try {
             let newTransactionId = "";
             await ctx.db.$transaction(async (tx) => {
+              // A checagem de duplicidade é por posição: serializa os
+              // pagamentos mensais da campanha, não só os do clipador.
+              await tx.$executeRaw`
+                SELECT pg_advisory_xact_lock(hashtext(${`monthly-ranking-prize:${input.campaignId}`}))
+              `;
               await tx.$executeRaw`
                 SELECT id FROM "ClipperApplication"
                 WHERE "campaignId" = ${input.campaignId} AND "clipperProfileId" = ${line.clipperProfileId}
@@ -11531,10 +11643,15 @@ export const adminRouter = createTRPCRouter({
                   campaignId: input.campaignId,
                   type: "PRIZE_CREDIT",
                   status: "COMPLETED",
-                  rankingPosition: line.position,
                   clipPostId: null,
-                  wallet: { clipperProfileId: line.clipperProfileId },
-                  metadata: { equals: aggregateMeta },
+                  metadata: {
+                    path: ["source"],
+                    equals: "monthly_ranking_prize_aggregate",
+                  },
+                  OR: [
+                    { rankingPosition: line.position },
+                    { wallet: { clipperProfileId: line.clipperProfileId } },
+                  ],
                 },
               });
               if (dupAgg) {
@@ -11746,6 +11863,7 @@ export const adminRouter = createTRPCRouter({
           rankingPosition: true,
           wallet: {
             select: {
+              isActive: true,
               clipperProfile: {
                 select: { fullName: true, artisticName: true },
               },
@@ -11754,25 +11872,11 @@ export const adminRouter = createTRPCRouter({
         },
         orderBy: { rankingPosition: "asc" },
       });
-      const reversals = await ctx.db.transaction.findMany({
-        where: {
-          campaignId: input.campaignId,
-          type: "ADJUSTMENT",
-          status: "COMPLETED",
-        },
-        select: { metadata: true },
-      });
-      const reversedCreditIds = new Set(
-        reversals
-          .map((row) => {
-            const metadata = row.metadata as {
-              reversedPrizeCreditId?: unknown;
-            } | null;
-            return typeof metadata?.reversedPrizeCreditId === "string"
-              ? metadata.reversedPrizeCreditId
-              : null;
-          })
-          .filter((id): id is string => Boolean(id)),
+      // Estornado (pelo admin ou por advertência) e não devolvido: fora do PIX,
+      // mesma regra do league.
+      const reversedCreditIds = await findReversedPrizeCreditIds(
+        ctx.db,
+        credits.map((credit) => credit.id),
       );
       const activeCredits = credits.filter(
         (credit) => !reversedCreditIds.has(credit.id),
@@ -11804,7 +11908,19 @@ export const adminRouter = createTRPCRouter({
         LIMIT 1
       `;
       const isQueued = queuedRetry.length > 0;
-      const lines = activeCredits.map((credit) => {
+      // Carteira retida sem PIX iniciado: o league pula a linha; ela não pode
+      // deixar o lote "parcial" para sempre.
+      const heldCredits = activeCredits.filter(
+        (credit) =>
+          !credit.wallet.isActive &&
+          !payoutByKey.has(
+            `top_posters_daily_pix:${input.campaignId}:${input.date}:${credit.id}`,
+          ),
+      );
+      const heldIds = new Set(heldCredits.map((credit) => credit.id));
+      const lines = activeCredits
+        .filter((credit) => !heldIds.has(credit.id))
+        .map((credit) => {
         const key = `top_posters_daily_pix:${input.campaignId}:${input.date}:${credit.id}`;
         const payout = payoutByKey.get(key);
         return {
@@ -11854,6 +11970,7 @@ export const adminRouter = createTRPCRouter({
         failed,
         pending,
         queued,
+        held: heldCredits.length,
         nextAttemptAt: queuedRetry[0]?.nextAttemptAt ?? null,
         lines,
       };
@@ -12513,6 +12630,9 @@ export const adminRouter = createTRPCRouter({
 
           const dre = entryMap.get(row.dailyRankingEntryId);
 
+          // Já estornado por advertência: não há o que desfazer nessa posição.
+          if (dre?.dailyPrizeStatus === REVERSED_PRIZE_STATUS) continue;
+
           if (!dre || dre.dailyPrizeStatus !== "PAID") {
             throw new TRPCError({
               code: "BAD_REQUEST",
@@ -13016,7 +13136,14 @@ export const adminRouter = createTRPCRouter({
             dailyRanking: {
               include: { campaign: { select: { id: true, name: true } } },
             },
-            clipPost: { select: { id: true, status: true } },
+            clipPost: {
+              select: {
+                id: true,
+                status: true,
+                ineligibilityReason: true,
+                postedAt: true,
+              },
+            },
             application: {
               include: {
                 clipperProfile: {
@@ -13039,6 +13166,27 @@ export const adminRouter = createTRPCRouter({
             code: "BAD_REQUEST",
             message: "Esta entrada não está desclassificada",
           });
+        }
+
+        const lockMessage = disciplineScoringLockMessage({
+          postStatus: entry.clipPost.status,
+          ineligibilityReason: entry.clipPost.ineligibilityReason,
+          applicationStatus: entry.application.status,
+        });
+        if (lockMessage) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: lockMessage });
+        }
+        const postedAt = entry.clipPost.postedAt;
+        if (
+          postedAt &&
+          (await hasActivePodiumSanction(ctx.db, {
+            clipperProfileId: entry.application.clipperProfileId,
+            campaignId: entry.dailyRanking.campaignId,
+            from: postedAt,
+            to: new Date(postedAt.getTime() + 1),
+          }))
+        ) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: PODIUM_LOCK_MESSAGE });
         }
 
         await ctx.db.$transaction(async (tx) => {
@@ -13563,7 +13711,10 @@ export const adminRouter = createTRPCRouter({
                 application: {
                   select: {
                     clipperProfile: {
-                      select: { pixPayoutEligible: true },
+                      select: {
+                        pixPayoutEligible: true,
+                        wallet: { select: { isActive: true } },
+                      },
                     },
                   },
                 },
@@ -13634,11 +13785,11 @@ export const adminRouter = createTRPCRouter({
         const dateStr = dr.rankingDate.toISOString().split("T")[0]!;
         const prizeEntries = prizeEntriesByDailyRankingId.get(dr.id) ?? [];
         const totalEntries = activeEntriesByDailyRankingId.get(dr.id) ?? 0;
-        const paidEntries = prizeEntries.filter(
-          (e) => e.dailyPrizeStatus === "PAID",
+        const paidEntries = prizeEntries.filter((e) =>
+          isSettledDailyPrizeStatus(e.dailyPrizeStatus),
         ).length;
         const pendingEntries = prizeEntries.filter(
-          (e) => e.dailyPrizeStatus !== "PAID",
+          (e) => !isSettledDailyPrizeStatus(e.dailyPrizeStatus),
         ).length;
         const dailyRankingPrizeAmount = prizeEntries.reduce(
           (sum, e) => sum + e.dailyPrizeAmount,
@@ -13674,8 +13825,13 @@ export const adminRouter = createTRPCRouter({
           paymentStatus,
           announced: dr.announced,
           dailyPixPayoutCompleted: (() => {
-            const pixRequiredEntries = prizeEntries.filter(
-              (e) => e.application.clipperProfile.pixPayoutEligible,
+            const pixRequiredEntries = prizeEntries.filter((e) =>
+              expectsDailyPix({
+                pixPayoutEligible:
+                  e.application.clipperProfile.pixPayoutEligible,
+                walletActive: e.application.clipperProfile.wallet?.isActive,
+                dailyPrizeStatus: e.dailyPrizeStatus,
+              }),
             );
             return (
               pixRequiredEntries.length > 0 &&

@@ -18,6 +18,15 @@ import {
 import { env } from "@/env";
 import { canUseSocialIntegrations } from "@/server/api/utils/social-integrations-access";
 import { calculateEngagementRate } from "@/lib/ranking-helpers";
+import {
+  assertCanSubmitPosts,
+  assertCanWithdraw,
+} from "@/server/clipper-discipline/restrictions";
+import {
+  banClipperManually,
+  isDisciplineEnabled,
+  unbanClipperManually,
+} from "@/server/clipper-discipline/warnings";
 
 // Inicializar Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -1572,6 +1581,17 @@ export const clipperRouter = createTRPCRouter({
         });
       }
 
+      // Com o sistema de advertências ligado, o ban também tira o clipador
+      // das competições em andamento (sem estorno) e retém a carteira.
+      if (isDisciplineEnabled()) {
+        await banClipperManually(ctx.db, {
+          clipperProfileId: input.id,
+          reason: input.reason ?? "",
+          actorUserId: ctx.userId,
+        });
+        return ctx.db.clipperProfile.findUniqueOrThrow({ where: { id: input.id } });
+      }
+
       const updatedClipper = await ctx.db.clipperProfile.update({
         where: { id: input.id },
         data: {
@@ -1609,6 +1629,29 @@ export const clipperRouter = createTRPCRouter({
           message: "Clipper não está banido",
         });
       }
+
+      const warningBan = await ctx.db.clipperSanction.findFirst({
+        where: {
+          clipperProfileId: input.id,
+          type: "PLATFORM_BAN",
+          warningId: { not: null },
+          revokedAt: null,
+        },
+        select: { id: true },
+      });
+      if (warningBan) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Este banimento veio de uma advertência. Revogue a advertência para desbanir e liberar a carteira.",
+        });
+      }
+
+      // Encerra o banimento manual (e a retenção dele) e restaura as inscrições.
+      await unbanClipperManually(ctx.db, {
+        clipperProfileId: input.id,
+        actorUserId: ctx.userId,
+      });
 
       const updatedClipper = await ctx.db.clipperProfile.update({
         where: { id: input.id },
@@ -2268,6 +2311,15 @@ export const clipperRouter = createTRPCRouter({
         }
 
         const wallet = clipperProfile.wallet;
+
+        // Conta banida ou pagamento retido por advertência.
+        await assertCanWithdraw(ctx.db, clipperProfile.id);
+        if (!wallet.isActive) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Sua carteira está bloqueada para saques no momento.",
+          });
+        }
 
         // Verificar saldo disponível
         if (wallet.balance < input.amount) {
@@ -3175,6 +3227,8 @@ export const clipperRouter = createTRPCRouter({
           message: "Perfil de clipper não encontrado",
         });
       }
+      // Suspensão/ban: avisa já na validação do link (o envio checa de novo).
+      await assertCanSubmitPosts(ctx.db, clipperProfile.id);
 
       const account = await ctx.db.socialAccount.findFirst({
         where: {
@@ -3351,9 +3405,12 @@ export const clipperRouter = createTRPCRouter({
             code: "FORBIDDEN",
             message: application.status === "WITHDRAWN"
               ? "Você saiu desta competição e não pode enviar novos posts."
-              : "Sua inscrição ainda não foi aprovada",
+              : application.status === "REVOKED"
+                ? "Você foi removido desta competição e não pode enviar novos posts."
+                : "Sua inscrição ainda não foi aprovada",
           });
         }
+        await assertCanSubmitPosts(ctx.db, clipperProfile.id);
 
         if (application.campaign.status !== "ACTIVE") {
           throw new TRPCError({
@@ -3596,6 +3653,8 @@ export const clipperRouter = createTRPCRouter({
               message: "Sua inscrição não permite enviar novos posts.",
             });
           }
+          // Dentro do lock: uma advertência aplicada durante o envio também vale.
+          await assertCanSubmitPosts(tx, clipperProfile.id);
           if (
             current.campaign.status !== "ACTIVE" ||
             current.campaign.endDate <= new Date()

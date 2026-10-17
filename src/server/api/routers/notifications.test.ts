@@ -80,6 +80,8 @@ function setup(role = "CLIPPER") {
       ]),
       findMany: vi.fn().mockResolvedValue([record]),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      // Alertas de advertência não lidos (contador do sino).
+      count: vi.fn().mockResolvedValue(0),
     },
   };
   return {
@@ -111,6 +113,14 @@ const visibility = {
       },
     },
   },
+};
+
+const alertVisibility = {
+  userId: "user-1",
+  channel: "IN_APP",
+  announcementId: null,
+  type: "SYSTEM_ALERT",
+  metadata: { path: ["kind"], equals: "clipper_warning" },
 };
 
 beforeEach(() => {
@@ -174,6 +184,7 @@ describe("notificações de avisos da competição", () => {
     expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
       total: 2,
       byCampaign: { "campaign-1": 2 },
+      alerts: 0,
     });
     expect(db.notification.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -231,6 +242,7 @@ describe("notificações de avisos da competição", () => {
     expect(await api.unreadSummary({ slug: "sem-avisos" })).toEqual({
       total: 0,
       byCampaign: {},
+      alerts: 0,
     });
     expect(db.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -259,6 +271,7 @@ describe("notificações de avisos da competição", () => {
     expect(await api.unreadSummary()).toEqual({
       total: 3,
       byCampaign: { "campaign-1": 2, "campaign-2": 1 },
+      alerts: 0,
     });
     expect(db.notification.groupBy).toHaveBeenCalledWith({
       by: ["campaignId"],
@@ -270,7 +283,7 @@ describe("notificações de avisos da competição", () => {
   it("retorna zero quando não há alertas não lidos", async () => {
     const { api, db } = setup();
     db.notification.groupBy.mockResolvedValue([]);
-    expect(await api.unreadSummary()).toEqual({ total: 0, byCampaign: {} });
+    expect(await api.unreadSummary()).toEqual({ total: 0, byCampaign: {}, alerts: 0 });
   });
 
   it("lista notificações com link direto ao aviso e sem identidade do admin", async () => {
@@ -278,6 +291,7 @@ describe("notificações de avisos da competição", () => {
     const result = await api.list({ direction: "forward" });
     expect(result.items).toEqual([
       {
+        kind: "announcement",
         id: "notification-1",
         isRead: false,
         createdAt,
@@ -291,7 +305,10 @@ describe("notificações de avisos da competição", () => {
     ]);
     expect(result.nextCursor).toBeUndefined();
     expect(db.notification.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: visibility, take: 21 }),
+      expect.objectContaining({
+        where: { AND: [{ OR: [visibility, alertVisibility] }] },
+        take: 21,
+      }),
     );
     expect(result.items[0]).not.toHaveProperty("userId");
     expect(result.items[0]).not.toHaveProperty("metadata");
@@ -318,7 +335,7 @@ describe("notificações de avisos da competição", () => {
     expect(db.notification.findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         where: {
-          ...visibility,
+          AND: [{ OR: [visibility, alertVisibility] }],
           OR: [
             { createdAt: { lt: createdAt } },
             { createdAt, id: { lt: record.id } },
@@ -483,7 +500,7 @@ describe("notificações de avisos da competição", () => {
     const { api, db } = setup();
     db.notification.groupBy.mockResolvedValue([]);
     const first = await api.unreadSummary({ slug: "competicao" });
-    expect(first).toEqual({ total: 0, byCampaign: {} });
+    expect(first).toEqual({ total: 0, byCampaign: {}, alerts: 0 });
     expect(await api.unreadSummary({ slug: "competicao" })).toEqual(first);
     expect(db.notification.groupBy).toHaveBeenCalledTimes(1);
     expect(db.clipperProfile.findUnique).toHaveBeenCalledTimes(1);
@@ -502,6 +519,7 @@ describe("notificações de avisos da competição", () => {
     expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
       total: 1,
       byCampaign: { "campaign-1": 1 },
+      alerts: 0,
     });
     expect(db.notification.groupBy).toHaveBeenCalledTimes(2);
   });
@@ -527,11 +545,12 @@ describe("notificações de avisos da competição", () => {
         ? []
         : [{ campaignId: "campaign-9", _count: { id: 5 } }],
     );
-    expect(await api.unreadSummary()).toEqual({ total: 0, byCampaign: {} });
+    expect(await api.unreadSummary()).toEqual({ total: 0, byCampaign: {}, alerts: 0 });
     currentUser.mockResolvedValue({ id: "user-2" });
     expect(await api.unreadSummary()).toEqual({
       total: 5,
       byCampaign: { "campaign-9": 5 },
+      alerts: 0,
     });
     expect(db.notification.groupBy).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -556,6 +575,7 @@ describe("notificações de avisos da competição", () => {
     expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
       total: 1,
       byCampaign: { "campaign-1": 1 },
+      alerts: 0,
     });
     expect(db.notification.groupBy).toHaveBeenCalledTimes(2);
   });
@@ -588,5 +608,75 @@ describe("notificações de avisos da competição", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.notification.findMany).not.toHaveBeenCalled();
     expect(db.notification.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("alertas de advertência no sino", () => {
+  const alert = {
+    id: "notification-alert",
+    isRead: false,
+    createdAt,
+    title: "Advertência 1 aplicada",
+    message: "Motivo: hashtag faltando.",
+    actionUrl: "/warnings",
+    announcement: null,
+  };
+
+  it("soma os alertas não lidos ao total, fora do contador por competição", async () => {
+    const { api, db } = setup();
+    db.notification.count.mockResolvedValue(2);
+    expect(await api.unreadSummary()).toEqual({
+      total: 5,
+      byCampaign: { "campaign-1": 2, "campaign-2": 1 },
+      alerts: 2,
+    });
+    expect(db.notification.count).toHaveBeenCalledWith({
+      where: { ...alertVisibility, isRead: false },
+    });
+  });
+
+  it("não conta alertas no contador de uma competição", async () => {
+    const { api, db } = setup();
+    db.notification.count.mockResolvedValue(2);
+    db.notification.groupBy.mockResolvedValue([
+      { campaignId: "campaign-1", _count: { id: 2 } },
+    ]);
+    expect(await api.unreadSummary({ slug: "competicao" })).toEqual({
+      total: 2,
+      byCampaign: { "campaign-1": 2 },
+      alerts: 0,
+    });
+    expect(db.notification.count).not.toHaveBeenCalled();
+  });
+
+  it("lista o alerta com título, mensagem e link", async () => {
+    const { api, db } = setup();
+    db.notification.findMany.mockResolvedValue([alert, record]);
+    const result = await api.list({});
+    expect(result.items[0]).toEqual({
+      kind: "clipper_warning",
+      id: "notification-alert",
+      isRead: false,
+      createdAt,
+      title: "Advertência 1 aplicada",
+      message: "Motivo: hashtag faltando.",
+      actionUrl: "/warnings",
+    });
+    expect(result.items[1]).toMatchObject({ kind: "announcement", id: "notification-1" });
+  });
+
+  it("marca como lido só o alerta do próprio usuário", async () => {
+    const { api, db } = setup();
+    expect(
+      await api.markAlertRead({ notificationId: "notification-alert" }),
+    ).toEqual({ success: true, updated: 1 });
+    expect(db.notification.updateMany).toHaveBeenCalledWith({
+      where: {
+        ...alertVisibility,
+        id: "notification-alert",
+        isRead: false,
+      },
+      data: { isRead: true, readAt: expect.any(Date) },
+    });
   });
 });

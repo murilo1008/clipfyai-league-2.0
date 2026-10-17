@@ -28,6 +28,8 @@ function fixture() {
     socialAccounts: [{ accountId: "account-1" }],
   };
   const db = {
+    // Sem sanções de advertência (redutor, suspensão, retenção).
+    clipperSanction: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
     $transaction: vi.fn(),
     $executeRaw: vi.fn().mockResolvedValue(1),
     $queryRaw: vi.fn().mockResolvedValue([]),

@@ -27,6 +27,9 @@ export const env = createEnv({
     SOCIAL_INTEGRATIONS_ALLOWED_USER_IDS: z.string().optional(),
     SOCIAL_INTEGRATIONS_ALLOWED_EMAILS: z.string().optional(),
     MANUAL_METRICS_EXTRACTION_ALLOWED_USER_IDS: z.string().optional(),
+    // "true" libera aplicar advertências e punições. Fail-closed: só ligue depois
+    // que o backend league com a leitura das sanções estiver em produção.
+    CLIPPER_DISCIPLINE_ENABLED: z.enum(["true", "false"]).optional(),
   },
 
   /**
@@ -61,6 +64,7 @@ export const env = createEnv({
       process.env.SOCIAL_INTEGRATIONS_ALLOWED_EMAILS,
     MANUAL_METRICS_EXTRACTION_ALLOWED_USER_IDS:
       process.env.MANUAL_METRICS_EXTRACTION_ALLOWED_USER_IDS,
+    CLIPPER_DISCIPLINE_ENABLED: process.env.CLIPPER_DISCIPLINE_ENABLED,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
   },
   /**

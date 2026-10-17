@@ -60,7 +60,10 @@ describe("participação e ranking após saída", () => {
     expect(rankingApplicationWhere(cutoff)).toEqual({
       OR: [
         { status: "APPROVED" },
-        { status: "WITHDRAWN", withdrawnAt: { gte: cutoff } },
+        {
+          status: { in: ["WITHDRAWN", "REVOKED"] },
+          withdrawnAt: { gte: cutoff },
+        },
       ],
     });
   });
@@ -88,7 +91,7 @@ describe("participação e ranking após saída", () => {
         50,
       );
       expect(query).toContain(
-        'WHERE ca."status" = \'APPROVED\' OR (ca."status" = \'WITHDRAWN\' AND ca."withdrawnAt" >= ?)',
+        'WHERE ca."status" = \'APPROVED\' OR (ca."status" IN (\'WITHDRAWN\', \'REVOKED\') AND ca."withdrawnAt" >= ?)',
       );
       expect(query.indexOf('WHERE ca."status"')).toBeLessThan(
         query.indexOf("LIMIT"),

@@ -1,6 +1,13 @@
 import type { PrismaClient } from "@prisma/client";
 import { RankingMetricType, TransactionStatus } from "@prisma/client";
 
+import {
+  expectsDailyPix,
+  isSettledDailyPrizeStatus,
+  REVERSED_PRIZE_STATUS,
+} from "@/lib/clipper-discipline/constants";
+import { scoreMultiplierBpsSql } from "@/lib/clipper-discipline/score-multiplier";
+
 function amountsClose(a: number, b: number) {
   return Math.round(a * 100) === Math.round(b * 100);
 }
@@ -31,6 +38,10 @@ export interface DailyRankPreviewRowRaw {
   pixPayoutEligible: boolean;
   platform: string | null;
   thumbnailUrl: string | null;
+  /** Redutor de score por advertência (10000 = sem redutor). */
+  scoreMultiplierBps: number;
+  /** Carteira ativa (false = retida/bloqueada: o league pula o PIX). */
+  walletActive: boolean;
 }
 
 function getDefaultPrizeTable(): PrizeTableEntry[] {
@@ -233,24 +244,33 @@ export async function fetchDailyRankPreviewByViews(
             )
           ELSE 0
         END AS er,
-        CASE
-          WHEN e."views" > 0 THEN
-            TRUNC(
-              e."views" *
+        TRUNC(
+          (CASE
+            WHEN e."views" > 0 THEN
               TRUNC(
-                ((e."likes" + e."comments" + e."shares" + COALESCE(e."saves", 0))::numeric / e."views") * 100,
-                2
+                e."views" *
+                TRUNC(
+                  ((e."likes" + e."comments" + e."shares" + COALESCE(e."saves", 0))::numeric / e."views") * 100,
+                  2
+                )
               )
-            )
-          ELSE 0
-        END AS "score"
+            ELSE 0
+          END) * sm."scoreMultiplierBps" / 10000
+        ) AS "score",
+        sm."scoreMultiplierBps",
+        COALESCE(w."isActive", true) AS "walletActive"
       FROM entries e
       JOIN "ClipperApplication" ca
         ON ca."id" = e."applicationId"
       JOIN "ClipperProfile" cp2
         ON cp2."id" = ca."clipperProfileId"
-      WHERE ca."status" = 'APPROVED' OR (ca."status" = 'WITHDRAWN' AND ca."withdrawnAt" >= ${endDate})
-      ORDER BY e."views" DESC
+      LEFT JOIN "Wallet" w
+        ON w."clipperProfileId" = ca."clipperProfileId"
+      CROSS JOIN LATERAL (
+        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"')} AS "scoreMultiplierBps"
+      ) sm
+      WHERE ca."status" = 'APPROVED' OR (ca."status" IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= ${endDate})
+      ORDER BY (e."views"::int8 * sm."scoreMultiplierBps") / 10000 DESC, e."views" DESC
       LIMIT ${limit}
     )
     SELECT
@@ -273,7 +293,9 @@ export async function fetchDailyRankPreviewByViews(
       "fullName",
       "artisticName",
       "pixKey",
-      "pixPayoutEligible"
+      "pixPayoutEligible",
+      "scoreMultiplierBps"::int4 AS "scoreMultiplierBps",
+      "walletActive"
     FROM joined
   `;
 }
@@ -335,23 +357,32 @@ export async function fetchDailyRankPreviewByEngagement(
             )
           ELSE 0
         END AS er,
-        CASE
-          WHEN e."views" > 0 THEN
-            TRUNC(
-              e."views" *
+        TRUNC(
+          (CASE
+            WHEN e."views" > 0 THEN
               TRUNC(
-                ((e."likes" + e."comments" + e."shares" + COALESCE(e."saves", 0))::numeric / e."views") * 100,
-                2
+                e."views" *
+                TRUNC(
+                  ((e."likes" + e."comments" + e."shares" + COALESCE(e."saves", 0))::numeric / e."views") * 100,
+                  2
+                )
               )
-            )
-          ELSE 0
-        END AS "score"
+            ELSE 0
+          END) * sm."scoreMultiplierBps" / 10000
+        ) AS "score",
+        sm."scoreMultiplierBps",
+        COALESCE(w."isActive", true) AS "walletActive"
       FROM entries e
       JOIN "ClipperApplication" ca
         ON ca."id" = e."applicationId"
       JOIN "ClipperProfile" cp2
         ON cp2."id" = ca."clipperProfileId"
-      WHERE ca."status" = 'APPROVED' OR (ca."status" = 'WITHDRAWN' AND ca."withdrawnAt" >= ${endDate})
+      LEFT JOIN "Wallet" w
+        ON w."clipperProfileId" = ca."clipperProfileId"
+      CROSS JOIN LATERAL (
+        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"')} AS "scoreMultiplierBps"
+      ) sm
+      WHERE ca."status" = 'APPROVED' OR (ca."status" IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= ${endDate})
       ORDER BY "score" DESC, e."views" DESC
       LIMIT ${limit}
     )
@@ -375,7 +406,9 @@ export async function fetchDailyRankPreviewByEngagement(
       "fullName",
       "artisticName",
       "pixKey",
-      "pixPayoutEligible"
+      "pixPayoutEligible",
+      "scoreMultiplierBps"::int4 AS "scoreMultiplierBps",
+      "walletActive"
     FROM joined
   `;
 }
@@ -681,7 +714,12 @@ export async function loadDailyRankingDateContext(
   }
 
   const topCount = campaign.activeRankingRule?.dailyTopCount ?? 15;
-  const fetchLimit = Math.max(topCount + 35, 50);
+  // Desclassificados saem depois, em JS: a folga cobre todos eles, para que o
+  // top pago aqui seja o mesmo que o league calcula (lá o filtro é no SQL).
+  const disqualifiedCount = await db.dailyRankingEntry.count({
+    where: { dailyRankingId: dailyRanking.id, isDisqualified: true },
+  });
+  const fetchLimit = Math.max(topCount + 35, 50) + disqualifiedCount;
   const sortedByEngagement =
     campaign.rankingMetricType === RankingMetricType.VIEWS_X_ENGAGEMENT;
 
@@ -1014,7 +1052,7 @@ export async function computeDailyRankWalletPaidGate(
   );
   const canUndoRankPayments =
     withExpectedPrize.length > 0 &&
-    withExpectedPrize.every((e) => e.dailyPrizeStatus === "PAID");
+    withExpectedPrize.every((e) => isSettledDailyPrizeStatus(e.dailyPrizeStatus));
 
   return { core, canUndoRankPayments };
 }
@@ -1068,7 +1106,15 @@ export async function computeDailyPixPayoutSettledGate(
       expectedPrize: getPrizeForPosition(prizeTable, idx + 1),
       dre: dreMap.get(row.dailyRankingEntryId),
     }))
-    .filter((entry) => entry.expectedPrize > 0 && entry.row.pixPayoutEligible);
+    .filter(
+      (entry) =>
+        entry.expectedPrize > 0 &&
+        expectsDailyPix({
+          pixPayoutEligible: entry.row.pixPayoutEligible,
+          walletActive: entry.row.walletActive,
+          dailyPrizeStatus: entry.dre?.dailyPrizeStatus,
+        }),
+    );
 
   const isSettledEntry = (entry: {
     dre: (typeof dreRows)[number] | undefined;
@@ -1076,6 +1122,8 @@ export async function computeDailyPixPayoutSettledGate(
   }) => {
     const { dre, expectedPrize } = entry;
     if (!dre) return false;
+    // Estornado por advertência: o league pula o PIX dessa entrada.
+    if (dre.dailyPrizeStatus === REVERSED_PRIZE_STATUS) return true;
     return (
       dre.dailyPrizeStatus === "PAID" &&
       amountsClose(dre.dailyPrizeAmount, expectedPrize) &&

@@ -51,6 +51,7 @@ import {
 } from "recharts"
 import { toast } from "sonner"
 
+import { useMyDisciplineStatus } from "@/components/clippers/discipline-shared"
 import { WalletPaydayHeroViz, WalletPaydayHeroVizSkeleton } from "@/components/financial/wallet-payday-hero-viz"
 import { CountUp, formatCompact } from "@/components/shared/count-up"
 import { DarkScope } from "@/components/shared/dark-scope"
@@ -283,6 +284,11 @@ export default function Financial() {
       { enabled: !!clipperProfileId },
     )
 
+  // Retenção de pagamento por advertência (aviso acima dos cards)
+  const { data: discipline } = useMyDisciplineStatus({
+    enabled: !!clipperProfileId,
+  })
+
   const { data: walletStats, isLoading: isLoadingWalletStats } =
     api.clipper.getWalletStats.useQuery(
       { clipperProfileId: clipperProfileId ?? "" },
@@ -419,6 +425,9 @@ export default function Financial() {
     : filteredWithdrawals.slice(0, 5)
 
   const availableBalance = wallet?.balance ?? 0
+  // Estorno de prêmio por advertência pode deixar a carteira negativa.
+  const hasDebt = availableBalance < -0.005
+  const payoutHeld = !!discipline?.payoutHold
 
   // ===== Chave PIX do clipador (o banco guarda só a chave; o tipo é inferido) =====
   const pixKey = userData?.clipperProfile?.pixKey?.trim() ?? ""
@@ -594,17 +603,65 @@ export default function Financial() {
         </Reveal>
       </DarkScope>
 
+      {/* ===== Retenção de pagamento (advertência) ===== */}
+      {payoutHeld && (
+        <div
+          role="status"
+          className="flex flex-col gap-3 rounded-3xl border border-amber-500/30 bg-amber-500/[0.07] p-4 sm:flex-row sm:items-center sm:p-5"
+        >
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400">
+              <Prohibit className="size-5" weight="fill" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-bold sm:text-base">
+                Pagamentos retidos pela equipe
+              </p>
+              <p className="text-muted-foreground text-xs sm:text-sm">
+                {hasDebt
+                  ? "Seu saldo ficou negativo após o estorno de prêmios por advertência. Os saques ficam bloqueados até a equipe liberar."
+                  : "Os saques ficam bloqueados até a equipe liberar a retenção."}
+              </p>
+            </div>
+          </div>
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="h-9 shrink-0 cursor-pointer rounded-xl font-semibold"
+          >
+            <Link href="/warnings">Ver minhas advertências</Link>
+          </Button>
+        </div>
+      )}
+
       {/* ===== Resumo: 4 cards ===== */}
       <Reveal immediate delayMs={60}>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard
-            icon={<Wallet className="size-4" weight="fill" />}
-            chipClass="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-            label="Saldo Disponível"
-            value={availableBalance}
-            valueClass="text-emerald-600 dark:text-emerald-400"
-            sub="Pronto para saque"
-          />
+          {hasDebt ? (
+            // Saldo negativo: prêmios estornados por advertência viram dívida
+            <SummaryCard
+              icon={<Wallet className="size-4" weight="fill" />}
+              chipClass="bg-red-500/15 text-red-600 dark:text-red-400"
+              label="Saldo devedor"
+              value={availableBalance}
+              valueClass="text-red-600 dark:text-red-400"
+              sub="Prêmios estornados por advertência são descontados dos próximos prêmios"
+              subClass="text-red-600/80 dark:text-red-400/80"
+            />
+          ) : (
+            <SummaryCard
+              icon={<Wallet className="size-4" weight="fill" />}
+              chipClass="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              label="Saldo Disponível"
+              value={availableBalance}
+              valueClass="text-emerald-600 dark:text-emerald-400"
+              sub={payoutHeld ? "Retido pela equipe" : "Pronto para saque"}
+              subClass={
+                payoutHeld ? "text-amber-600 dark:text-amber-400" : undefined
+              }
+            />
+          )}
           <SummaryCard
             icon={<TrendUp className="size-4" weight="bold" />}
             chipClass="bg-green-500/15 text-green-600 dark:text-green-400"
