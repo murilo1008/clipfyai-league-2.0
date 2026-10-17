@@ -1,10 +1,15 @@
-"use client"
+"use client";
 
-import { useClerk, useUser } from "@clerk/nextjs"
-import { CaretUpDown, GearSix, SignOut, UserCircle } from "@phosphor-icons/react"
-import Link from "next/link"
+import { useClerk, useUser } from "@clerk/nextjs";
+import {
+  CaretUpDown,
+  GearSix,
+  SignOut,
+  UserCircle,
+} from "@phosphor-icons/react";
+import Link from "next/link";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,16 +18,17 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@/components/ui/dropdown-menu";
 import {
   SidebarFooter,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
-} from "@/components/ui/sidebar"
-import { clearCsClient } from "@/server/cs-view/actions"
-import { api } from "@/trpc/react"
+} from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
+import { clearCsClient } from "@/server/cs-view/actions";
+import { api } from "@/trpc/react";
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Admin",
@@ -30,40 +36,40 @@ const ROLE_LABELS: Record<string, string> = {
   CLIENT: "Cliente",
   CLIPPER: "Clipador",
   CUSTOMER_SUCCESS: "Customer Success",
-}
+};
 
 export function NavUser() {
-  const { user: clerkUser } = useUser()
-  const { signOut } = useClerk()
-  const { isMobile } = useSidebar()
-  const { data: dbUser } = api.user.getCurrentUser.useQuery()
+  const { user: clerkUser } = useUser();
+  const { signOut } = useClerk();
+  const { isMobile } = useSidebar();
+  const { data: dbUser } = api.user.getCurrentUser.useQuery();
 
   // Em modo Customer Success, `dbUser` é o CLIENTE visualizado; aqui mostramos
   // sempre a identidade real de quem está logado (o CS) e qual cliente ele vê.
-  const csView = dbUser?.csView ?? null
+  const csView = dbUser?.csView ?? null;
   const name =
     (csView ? csView.actor.name : dbUser?.name) ??
     clerkUser?.fullName ??
     clerkUser?.username ??
-    "Usuário"
+    "Usuário";
   const email =
     (csView ? csView.actor.email : dbUser?.email) ??
     clerkUser?.primaryEmailAddress?.emailAddress ??
-    ""
+    "";
   const imageUrl =
-    (csView ? csView.actor.imageUrl : dbUser?.imageUrl) ?? clerkUser?.imageUrl
+    (csView ? csView.actor.imageUrl : dbUser?.imageUrl) ?? clerkUser?.imageUrl;
   const roleLabel = csView
     ? `CS · ${csView.client.company ?? csView.client.name ?? csView.client.email}`
     : dbUser?.role
       ? ROLE_LABELS[dbUser.role]
-      : undefined
+      : undefined;
   const initials = name
     .split(" ")
     .map((part) => part[0])
     .filter(Boolean)
     .slice(0, 2)
     .join("")
-    .toUpperCase()
+    .toUpperCase();
 
   return (
     <SidebarFooter className="border-sidebar-border/60 border-t pb-2">
@@ -75,15 +81,42 @@ export function NavUser() {
                 size="lg"
                 className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground cursor-pointer"
               >
-                <Avatar className="ring-sidebar-border size-8 rounded-lg ring-1">
-                  <AvatarImage src={imageUrl ?? undefined} alt={name} />
-                  <AvatarFallback className="bg-gradient-custom rounded-lg text-xs font-semibold text-[#04222A]">
-                    {initials || "CL"}
-                  </AvatarFallback>
-                </Avatar>
+                <span className="relative shrink-0">
+                  <Avatar className="ring-sidebar-border size-8 rounded-lg ring-1">
+                    <AvatarImage src={imageUrl ?? undefined} alt={name} />
+                    <AvatarFallback className="bg-gradient-custom rounded-lg text-xs font-semibold text-[#04222A]">
+                      {initials || "CL"}
+                    </AvatarFallback>
+                  </Avatar>
+                  {/* Modo CS: o cliente visualizado aparece como selo sobre o avatar do CS */}
+                  {csView && (
+                    <Avatar className="ring-sidebar absolute -right-1.5 -bottom-1.5 size-4 rounded-md ring-2">
+                      <AvatarImage
+                        src={csView.client.imageUrl ?? undefined}
+                        alt={csView.client.name ?? csView.client.email}
+                      />
+                      <AvatarFallback className="bg-gradient-custom rounded-md text-[7px] font-bold text-[#04222A]">
+                        {(
+                          csView.client.company ??
+                          csView.client.name ??
+                          csView.client.email
+                        )
+                          .charAt(0)
+                          .toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                </span>
                 <span className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
                   <span className="truncate text-sm font-medium">{name}</span>
-                  <span className="text-muted-foreground truncate text-xs">
+                  <span
+                    className={cn(
+                      "truncate text-xs",
+                      csView
+                        ? "text-brand-cyan not-dark:text-primary font-semibold"
+                        : "text-muted-foreground",
+                    )}
+                  >
                     {roleLabel ?? email}
                   </span>
                 </span>
@@ -145,5 +178,5 @@ export function NavUser() {
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarFooter>
-  )
+  );
 }

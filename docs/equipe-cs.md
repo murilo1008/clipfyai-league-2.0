@@ -81,6 +81,9 @@ Consequências:
 | `src/server/clerk-errors.ts` | `getClerkUserCreationError` (extraído de `client.ts`, compartilhado) |
 | `src/server/api/routers/cs.ts` | router `cs` (`view.clients`, `admin.list/stats/clientOptions/create/update/delete`) |
 | `src/hooks/use-cs-view.ts` | `useCsView()` e `useSelectCsClient()` |
+| `src/components/cs/cs-hero-viz.tsx` | visualizações animadas dos heros (`CsTeamHeroViz` "a ponte", `CsPickerHeroViz` "a lente") e seus fantasmas de skeleton |
+| `src/components/cs/segmented-filter.tsx` | filtro segmentado em pílulas (gradiente da marca, contagens, rolagem horizontal no mobile) |
+| `src/lib/initials.ts` | `initialsOf()` para os avatares |
 | `src/components/header/cs-client-selector.tsx` | seletor no header (só para CS) |
 | `src/app/(dashboard)/(home)/home-cs.tsx` | landing de escolha de cliente |
 | `src/app/(dashboard)/settings/cs-team/{page,cs-team}.tsx` | página admin Equipe CS |
@@ -102,7 +105,7 @@ Consequências:
 | `posts/page.tsx`, `posts/[postId]/page.tsx`, `performance/page.tsx`, `client-comments/page.tsx`, `client-downloads/page.tsx` | guards usam `viewer.effective` |
 | `src/config/navigation.ts` | menu `CUSTOMER_SUCCESS` (só "Clientes"); "Equipe CS" no menu ADMIN |
 | `src/components/header/app-topbar.tsx` | renderiza `CsClientSelector` |
-| `src/components/sidebar/nav-user.tsx` | mostra a identidade do CS + cliente visualizado; limpa o cookie ao sair |
+| `src/components/sidebar/nav-user.tsx` | mostra a identidade do CS com o avatar do cliente visualizado como selo; limpa o cookie ao sair |
 | `src/components/header/app-breadcrumbs.tsx`, `settings/profile/profile.tsx` | rótulos |
 
 ## 4. Fluxos
@@ -139,6 +142,21 @@ senha, remover. Criação espelha `customers.create`: Clerk primeiro
 (`publicMetadata.role = CUSTOMER_SUCCESS`), depois `User` + `CsClientAccess` +
 `AuditLog` em transação; se o banco falhar, a conta do Clerk é removida. Remoção apaga
 no banco (cascade limpa os acessos) e no Clerk.
+
+## 4.6 Linguagem visual e responsividade
+
+- **Heros** com visualização animada própria (`CsTeamHeroViz` / `CsPickerHeroViz`) e fantasma
+  equivalente no skeleton, no mesmo kit das demais páginas (vidro petróleo, hairline ciano,
+  aurora, grid em pan, sparkles, partículas e cometa). A viz some abaixo de `md`.
+- **Skeletons** espelham o layout real (hero, KPIs, toolbar, tabela/cards, grid de clientes)
+  com o shimmer da marca e stagger por `delay`, sem salto de layout.
+- **Animações**: `Reveal` com stagger nos blocos, `animate-fade-in-up` com atraso por índice
+  nas linhas/cards, `glass-card-hover` nos cartões, anel pulsante no seletor sem cliente,
+  ponto "ao vivo" nos clientes com competição ativa. Tudo respeita `prefers-reduced-motion`.
+- **Responsividade**: tabela em `lg+` e cards abaixo; grid de clientes 1→2→3→4 colunas;
+  filtros segmentados com rolagem horizontal no mobile; dialogs com cabeçalho/corpo rolável/
+  rodapé fixos (`max-h-[92svh]`, botões em coluna no mobile); seletor do header só com avatar
+  abaixo de `sm` e popover limitado a `calc(100vw-1rem)`.
 
 ## 5. Banco de dados e deploy
 
