@@ -24,7 +24,6 @@ import {
 } from "@/server/clipper-discipline/restrictions";
 import {
   banClipperManually,
-  isDisciplineEnabled,
   unbanClipperManually,
 } from "@/server/clipper-discipline/warnings";
 
@@ -1581,26 +1580,22 @@ export const clipperRouter = createTRPCRouter({
         });
       }
 
-      // Com o sistema de advertências ligado, o ban também tira o clipador
-      // das competições em andamento (sem estorno) e retém a carteira.
-      if (isDisciplineEnabled()) {
-        await banClipperManually(ctx.db, {
-          clipperProfileId: input.id,
-          reason: input.reason ?? "",
-          actorUserId: ctx.userId,
+      // Banir de novo criaria outro banimento e outra retenção.
+      if (clipper.verificationStatus === "BANNED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O clipador já está banido.",
         });
-        return ctx.db.clipperProfile.findUniqueOrThrow({ where: { id: input.id } });
       }
 
-      const updatedClipper = await ctx.db.clipperProfile.update({
-        where: { id: input.id },
-        data: {
-          verificationStatus: "BANNED",
-          verifiedAt: null,
-        },
+      // O ban também tira o clipador das competições em andamento (sem
+      // estorno) e retém a carteira.
+      await banClipperManually(ctx.db, {
+        clipperProfileId: input.id,
+        reason: input.reason ?? "",
+        actorUserId: ctx.userId,
       });
-
-      return updatedClipper;
+      return ctx.db.clipperProfile.findUniqueOrThrow({ where: { id: input.id } });
     }),
 
   // Desbanir clipador (reverter para VERIFIED)

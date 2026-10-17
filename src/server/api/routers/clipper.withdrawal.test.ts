@@ -387,3 +387,19 @@ describe("inelegível ao pódio", () => {
     expect(db.topClippersDailyRankingEntry.update).not.toHaveBeenCalled();
   });
 });
+
+describe("banir", () => {
+  it("não bane de novo quem já está banido", async () => {
+    const { db, clipper } = fixture();
+    db.clipperProfile.findUnique.mockResolvedValue({
+      id: "clipper-1",
+      verificationStatus: "BANNED",
+    });
+
+    await expect(clipper.ban({ id: "clipper-1" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    // Nenhum banimento nem retenção novos.
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+});

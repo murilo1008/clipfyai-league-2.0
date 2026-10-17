@@ -19,7 +19,6 @@ import {
 import { toast } from "sonner"
 
 import {
-  DISCIPLINE_DISABLED_MESSAGE,
   CLIP_POST_STATUS_LABELS,
   RestrictionBadges,
   SEVERE_DESCRIPTION,
@@ -80,8 +79,16 @@ import { useInvalidateDiscipline } from "./use-invalidate-discipline"
 type ApplyContext = RouterOutputs["clipperDiscipline"]["applyContext"]
 type ClipperPost = RouterOutputs["clipperDiscipline"]["clipperPosts"][number]
 
+/** Vídeo da infração: um da lista ou o que a tela que abriu o dialog já indicou. */
+export type WarningVideo = Pick<ClipperPost, "id" | "submittedUrl" | "status"> & {
+  platform: string
+  views: number | bigint
+  postedAt: Date | string | null
+  createdAt: Date | string
+}
+
 const NO_CAMPAIGN = "__none__"
-const BAN_CONFIRMATION_WORD = "BANIR"
+export const BAN_CONFIRMATION_WORD = "BANIR"
 /** Placeholder só para montar a prévia enquanto o formulário está incompleto. */
 const PENDING_ID = "__pending__"
 
@@ -264,6 +271,10 @@ export interface ApplyWarningDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onApplied?: () => void
+  /** Competição já escolhida (aberto de dentro de uma competição). */
+  defaultCampaignId?: string | null
+  /** Vídeo já escolhido (aberto a partir de um post). */
+  defaultPost?: WarningVideo | null
 }
 
 export function ApplyWarningDialog({
@@ -272,6 +283,8 @@ export function ApplyWarningDialog({
   open,
   onOpenChange,
   onApplied,
+  defaultCampaignId,
+  defaultPost,
 }: ApplyWarningDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -291,6 +304,8 @@ export function ApplyWarningDialog({
         {open && (
           <ApplyWarningForm
             clipperProfileId={clipperProfileId}
+            defaultCampaignId={defaultCampaignId ?? null}
+            defaultPost={defaultPost ?? null}
             onCancel={() => onOpenChange(false)}
             onApplied={() => {
               onOpenChange(false)
@@ -305,10 +320,14 @@ export function ApplyWarningDialog({
 
 function ApplyWarningForm({
   clipperProfileId,
+  defaultCampaignId,
+  defaultPost,
   onCancel,
   onApplied,
 }: {
   clipperProfileId: string
+  defaultCampaignId: string | null
+  defaultPost: WarningVideo | null
   onCancel: () => void
   onApplied: () => void
 }) {
@@ -325,9 +344,11 @@ function ApplyWarningForm({
     React.useState<ClipperInfractionType>("LIGHT")
   /** null = ainda segue a sugestão do sistema. */
   const [levelChoice, setLevelChoice] = React.useState<number | null>(null)
-  const [campaignId, setCampaignId] = React.useState("")
+  const [campaignId, setCampaignId] = React.useState(defaultCampaignId ?? "")
   const [videoMode, setVideoMode] = React.useState<"post" | "manual">("post")
-  const [selectedPost, setSelectedPost] = React.useState<ClipperPost | null>(null)
+  const [selectedPost, setSelectedPost] = React.useState<WarningVideo | null>(
+    defaultPost,
+  )
   const [manualUrl, setManualUrl] = React.useState("")
   const [postSearch, setPostSearch] = React.useState("")
   const [reason, setReason] = React.useState("")
@@ -341,7 +362,8 @@ function ApplyWarningForm({
   const suggestedLevel = context?.suggestedLevel ?? 0
   const level = isSevere ? null : (levelChoice ?? suggestedLevel)
   const requirements = levelRequirements(infractionType, level)
-  const disabled = !context?.enabled
+  // Campos travados enquanto o contexto do clipador carrega.
+  const disabled = !context
 
   // Para os níveis 0 e 1 o vídeo precisa vir da lista (é ele que deixa de pontuar).
   const effectiveVideoMode = requirements.requiresVideo ? "post" : videoMode
@@ -524,13 +546,6 @@ function ApplyWarningForm({
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 sm:p-6">
-        {disabled && (
-          <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-sm text-amber-700 dark:text-amber-400">
-            <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
-            {DISCIPLINE_DISABLED_MESSAGE}
-          </div>
-        )}
-
         {/* Situação atual do clipador */}
         <div className="border-border/60 bg-muted/20 flex flex-col gap-2 rounded-2xl border px-3.5 py-3">
           <p className="text-sm font-semibold">
@@ -1005,7 +1020,7 @@ function PostRow({
   onToggle,
   disabled,
 }: {
-  post: ClipperPost
+  post: WarningVideo
   selected: boolean
   onToggle: () => void
   disabled?: boolean

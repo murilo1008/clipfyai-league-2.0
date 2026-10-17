@@ -15,7 +15,6 @@ import {
   Prohibit,
   ShieldWarning,
   VideoCamera,
-  WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -26,7 +25,6 @@ import {
 } from "@/components/clippers/clippers-hero-viz";
 import { SanctionList } from "@/components/clippers/discipline-sanction-list";
 import {
-  DISCIPLINE_DISABLED_MESSAGE,
   formatBrtDateTime,
   useNow,
 } from "@/components/clippers/discipline-shared";
@@ -70,10 +68,8 @@ export default function Review() {
   const now = useNow(60_000);
   const invalidate = useInvalidateDiscipline();
 
-  const { data: status } = api.clipperDiscipline.status.useQuery();
   const observation = api.clipperDiscipline.observationQueue.useQuery();
   const banQueue = api.clipperDiscipline.banReviewQueue.useQuery();
-  const enabled = status?.enabled ?? false;
 
   /* ===== Vídeos em observação ===== */
   const [rejectTarget, setRejectTarget] =
@@ -231,13 +227,6 @@ export default function Review() {
             description="A infração grave já removeu o clipador da competição e reteve os pagamentos. Aqui a equipe decide se ele é banido."
             count={banCount}
           />
-          {!enabled && status && (
-            <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-sm text-amber-700 dark:text-amber-400">
-              <WarningCircle className="mt-0.5 size-4 shrink-0" weight="fill" />
-              {DISCIPLINE_DISABLED_MESSAGE}
-            </div>
-          )}
-
           {banQueue.isLoading ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 2 }).map((_, index) => (
@@ -293,7 +282,7 @@ export default function Review() {
                         variant="outline"
                         size="sm"
                         className="h-9 cursor-pointer rounded-xl"
-                        disabled={!enabled || decideMutation.isPending}
+                        disabled={decideMutation.isPending}
                         onClick={() => setDecision({ warning, ban: false })}
                       >
                         <XCircle className="size-3.5" />
@@ -302,7 +291,7 @@ export default function Review() {
                       <Button
                         size="sm"
                         className="h-9 cursor-pointer rounded-xl bg-red-600 font-semibold text-white hover:bg-red-700"
-                        disabled={!enabled || decideMutation.isPending}
+                        disabled={decideMutation.isPending}
                         onClick={() => setDecision({ warning, ban: true })}
                       >
                         <Prohibit className="size-3.5" weight="bold" />

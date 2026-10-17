@@ -21,6 +21,7 @@ import {
   Play,
   Pulse,
   ShareFat,
+  ShieldWarning,
   Spinner,
   Trash,
   TrendUp,
@@ -33,6 +34,10 @@ import { format } from "date-fns"
 import { ptBR } from "date-fns/locale"
 import { toast } from "sonner"
 
+import {
+  ApplyWarningDialog,
+  type WarningVideo,
+} from "@/app/(dashboard)/clippers/warnings/apply-warning-dialog"
 import { PostMetricsHistoryDialog } from "@/app/(dashboard)/posts/post-metrics-history-dialog"
 import { Bone, CardGridSkeleton } from "@/components/shared/skeletons"
 import {
@@ -90,6 +95,19 @@ import {
 
 type AdminClipPost =
   RouterOutputs["admin"]["getCompetitionPostsAdmin"]["posts"][number]
+
+/** O post da lista como vídeo da infração no dialog de advertência. */
+function toWarningVideo(post: AdminClipPost): WarningVideo {
+  return {
+    id: post.id,
+    submittedUrl: post.url,
+    platform: post.platform,
+    status: post.status,
+    views: post.views,
+    postedAt: post.postedAt,
+    createdAt: post.createdAt,
+  }
+}
 
 type PostsSortBy =
   | "recent"
@@ -732,7 +750,12 @@ function PostedAtFilter({
    Tab "Posts Recentes"
    ============================================================ */
 
-export function PostsTab({ slug, data, active }: CompetitionTabProps) {
+export function PostsTab({
+  slug,
+  campaignId,
+  data,
+  active,
+}: CompetitionTabProps) {
   const utils = api.useUtils()
 
   /* ===== Filtros + paginação (server-side) ===== */
@@ -751,6 +774,14 @@ export function PostsTab({ slug, data, active }: CompetitionTabProps) {
   const [metricsHistoryPostId, setMetricsHistoryPostId] = React.useState<
     string | null
   >(null)
+  const [warningPost, setWarningPost] = React.useState<AdminClipPost | null>(
+    null,
+  )
+  const [isWarningOpen, setIsWarningOpen] = React.useState(false)
+  const openWarningDialog = (post: AdminClipPost) => {
+    setWarningPost(post)
+    setIsWarningOpen(true)
+  }
   const [isPlayerOpen, setIsPlayerOpen] = React.useState(false)
   const [playerPostId, setPlayerPostId] = React.useState<string | null>(null)
   const [failedVideoPostId, setFailedVideoPostId] = React.useState<
@@ -1632,6 +1663,17 @@ export function PostsTab({ slug, data, active }: CompetitionTabProps) {
                         <Trash className="size-3 shrink-0" />
                         <span className="truncate">Deletar</span>
                       </Button>
+                      {post.clipperProfileId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="col-span-2 h-8 min-w-0 cursor-pointer rounded-lg border-red-500/40 px-2 text-xs text-red-600 hover:text-red-600 dark:text-red-400"
+                          onClick={() => openWarningDialog(post)}
+                        >
+                          <ShieldWarning className="size-3 shrink-0" weight="fill" />
+                          <span className="truncate">Advertir</span>
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1875,6 +1917,22 @@ export function PostsTab({ slug, data, active }: CompetitionTabProps) {
                     ? "Desclassificado"
                     : "Desclassificar"}
                 </Button>
+                {playerPost.clipperProfileId && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setIsPlayerOpen(false)
+                      setPlayerPostId(null)
+                      openWarningDialog(playerPost)
+                    }}
+                    className="h-8 cursor-pointer rounded-lg border-red-500/40 text-xs text-red-600 hover:text-red-600 dark:text-red-400"
+                  >
+                    <ShieldWarning className="size-3.5" weight="fill" />
+                    Advertir
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -2273,6 +2331,22 @@ export function PostsTab({ slug, data, active }: CompetitionTabProps) {
           if (!open) setMetricsHistoryPostId(null)
         }}
       />
+
+      {/* ===== Dialog: Advertência (competição e vídeo já escolhidos) ===== */}
+      {warningPost?.clipperProfileId && (
+        <ApplyWarningDialog
+          clipperProfileId={warningPost.clipperProfileId}
+          clipperName={warningPost.clipperName}
+          open={isWarningOpen}
+          onOpenChange={setIsWarningOpen}
+          defaultCampaignId={campaignId}
+          defaultPost={toWarningVideo(warningPost)}
+          onApplied={() => {
+            void refetchPosts()
+            void utils.admin.getCompetitionDetailsAdmin.invalidate({ slug })
+          }}
+        />
+      )}
     </div>
   )
 }

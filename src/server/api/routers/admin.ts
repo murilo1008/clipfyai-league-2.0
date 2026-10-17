@@ -6204,6 +6204,7 @@ export const adminRouter = createTRPCRouter({
               },
               application: {
                 select: {
+                  clipperProfileId: true,
                   clipperProfile: {
                     select: {
                       artisticName: true,
@@ -6296,6 +6297,8 @@ export const adminRouter = createTRPCRouter({
           thumbnail: post.thumbnailUrl,
           platform: post.platform,
           username: post.username || "",
+          clipperProfileId: (post.application?.clipperProfileId ??
+            null) as string | null,
           clipperName:
             post.application?.clipperProfile?.artisticName ||
             post.application?.clipperProfile?.fullName ||

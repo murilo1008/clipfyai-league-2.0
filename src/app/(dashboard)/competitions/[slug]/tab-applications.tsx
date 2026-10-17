@@ -27,6 +27,7 @@ import {
   MagnifyingGlass,
   Play,
   ShieldCheck,
+  ShieldWarning,
   Sparkle,
   Spinner,
   Trophy,
@@ -75,6 +76,7 @@ import { platformConfig, type PlatformKey } from "@/lib/platform-config";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
+import { ApplyWarningDialog } from "../../clippers/warnings/apply-warning-dialog";
 import { ApplicationDetailsDialog } from "./application-details-dialog";
 import { ProcessPaymentDialog } from "./process-payment-dialog";
 import {
@@ -220,6 +222,14 @@ export function ApplicationsTab(props: CompetitionTabProps) {
   const [selectedPaymentApp, setSelectedPaymentApp] =
     React.useState<AdminApplication | null>(null);
   const [isPaymentOpen, setIsPaymentOpen] = React.useState(false);
+  const [warningApp, setWarningApp] = React.useState<AdminApplication | null>(
+    null,
+  );
+  const [isWarningOpen, setIsWarningOpen] = React.useState(false);
+  const openWarningDialog = (app: AdminApplication) => {
+    setWarningApp(app);
+    setIsWarningOpen(true);
+  };
 
   /* ===== Aprovar Todos ===== */
   const [isApproveAllDialogOpen, setIsApproveAllDialogOpen] =
@@ -949,6 +959,19 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                 <Eye className="size-3.5" />
                 <span className="hidden sm:inline">Detalhes</span>
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 cursor-pointer rounded-xl border-red-500/40 text-red-600 hover:text-red-600 dark:text-red-400"
+                title="Aplicar advertência"
+                onClick={() => {
+                  setWarningApp(app);
+                  setIsWarningOpen(true);
+                }}
+              >
+                <ShieldWarning className="size-3.5" weight="fill" />
+                <span className="hidden xl:inline">Advertir</span>
+              </Button>
               {app.status === "APPROVED" && (
                 <Button
                   size="sm"
@@ -1319,6 +1342,15 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                       <Eye className="size-3.5" />
                       Detalhes
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 flex-1 cursor-pointer rounded-xl border-red-500/40 text-red-600 hover:text-red-600 dark:text-red-400"
+                      onClick={() => openWarningDialog(app)}
+                    >
+                      <ShieldWarning className="size-3.5" weight="fill" />
+                      Advertir
+                    </Button>
                     {app.status === "APPROVED" && (
                       <Button
                         size="sm"
@@ -1453,6 +1485,27 @@ export function ApplicationsTab(props: CompetitionTabProps) {
           slug={slug}
           campaignId={campaignId}
         />
+
+        {/* ===== Dialog: Advertência (competição já escolhida) ===== */}
+        {warningApp && (
+          <ApplyWarningDialog
+            clipperProfileId={warningApp.clipperProfileId}
+            clipperName={
+              warningApp.clipperName ||
+              warningApp.clipperArtisticName ||
+              "Clipador"
+            }
+            open={isWarningOpen}
+            onOpenChange={setIsWarningOpen}
+            defaultCampaignId={campaignId}
+            onApplied={() => {
+              void utils.admin.getCompetitionApplicationsAdmin.invalidate({
+                slug,
+              });
+              void utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+            }}
+          />
+        )}
 
         {/* ===== Dialog: Processar Pagamento ===== */}
         <ProcessPaymentDialog

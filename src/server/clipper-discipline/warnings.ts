@@ -93,16 +93,6 @@ function invalidateRankingCaches(campaignIds: readonly string[]) {
   }
 }
 
-function assertDisciplineEnabled() {
-  if (process.env.CLIPPER_DISCIPLINE_ENABLED !== "true") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message:
-        "O sistema de advertências ainda não foi liberado neste ambiente (CLIPPER_DISCIPLINE_ENABLED).",
-    });
-  }
-}
-
 /** Dia do ranking de uma sanção PODIUM_INELIGIBLE (metadata.rankingDate). */
 function sanctionRankingDate(metadata: Prisma.JsonValue | null): string | null {
   const value = (metadata as { rankingDate?: unknown } | null)?.rankingDate;
@@ -300,7 +290,6 @@ export async function applyClipperWarning(
   db: PrismaClient,
   input: ApplyWarningInput,
 ) {
-  assertDisciplineEnabled();
   const now = input.now ?? new Date();
   const reason = input.reason.trim();
   if (reason.length < 3) {
@@ -870,7 +859,6 @@ export async function applyManualSanction(
   db: PrismaClient,
   input: ApplySanctionInput,
 ) {
-  assertDisciplineEnabled();
   const now = input.now ?? new Date();
   const reason = input.reason.trim();
   if (reason.length < 3) {
@@ -1262,7 +1250,6 @@ export async function decideBanReview(
   db: PrismaClient,
   input: { warningId: string; ban: boolean; actorUserId: string; now?: Date },
 ) {
-  assertDisciplineEnabled();
   const now = input.now ?? new Date();
   const result = await db.$transaction(async (tx) => {
     const found = await tx.clipperWarning.findUnique({
@@ -1346,10 +1333,6 @@ export async function decideBanReview(
 // ---------------------------------------------------------------------------
 // Botão Banir / Desbanir do painel (sem advertência)
 // ---------------------------------------------------------------------------
-
-export function isDisciplineEnabled() {
-  return process.env.CLIPPER_DISCIPLINE_ENABLED === "true";
-}
 
 /**
  * Banimento manual: conta BANNED, saída das competições em andamento (sem

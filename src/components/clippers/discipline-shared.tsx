@@ -34,9 +34,6 @@ import { api, type RouterOutputs } from "@/trpc/react"
 
 export const DISCIPLINE_TIME_ZONE = "America/Sao_Paulo"
 
-export const DISCIPLINE_DISABLED_MESSAGE =
-  "Sistema de advertências desativado neste ambiente (CLIPPER_DISCIPLINE_ENABLED)"
-
 /** "16/10/2026 às 14:30" (horário de Brasília). */
 export function formatBrtDateTime(date: Date | string) {
   return formatInTimeZone(
