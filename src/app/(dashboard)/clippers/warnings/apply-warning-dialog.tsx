@@ -79,8 +79,16 @@ import { useInvalidateDiscipline } from "./use-invalidate-discipline"
 type ApplyContext = RouterOutputs["clipperDiscipline"]["applyContext"]
 type ClipperPost = RouterOutputs["clipperDiscipline"]["clipperPosts"][number]
 
+/** Vídeo da infração: um da lista ou o que a tela que abriu o dialog já indicou. */
+export type WarningVideo = Pick<ClipperPost, "id" | "submittedUrl" | "status"> & {
+  platform: string
+  views: number | bigint
+  postedAt: Date | string | null
+  createdAt: Date | string
+}
+
 const NO_CAMPAIGN = "__none__"
-const BAN_CONFIRMATION_WORD = "BANIR"
+export const BAN_CONFIRMATION_WORD = "BANIR"
 /** Placeholder só para montar a prévia enquanto o formulário está incompleto. */
 const PENDING_ID = "__pending__"
 
@@ -263,6 +271,10 @@ export interface ApplyWarningDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onApplied?: () => void
+  /** Competição já escolhida (aberto de dentro de uma competição). */
+  defaultCampaignId?: string | null
+  /** Vídeo já escolhido (aberto a partir de um post). */
+  defaultPost?: WarningVideo | null
 }
 
 export function ApplyWarningDialog({
@@ -271,6 +283,8 @@ export function ApplyWarningDialog({
   open,
   onOpenChange,
   onApplied,
+  defaultCampaignId,
+  defaultPost,
 }: ApplyWarningDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -290,6 +304,8 @@ export function ApplyWarningDialog({
         {open && (
           <ApplyWarningForm
             clipperProfileId={clipperProfileId}
+            defaultCampaignId={defaultCampaignId ?? null}
+            defaultPost={defaultPost ?? null}
             onCancel={() => onOpenChange(false)}
             onApplied={() => {
               onOpenChange(false)
@@ -304,10 +320,14 @@ export function ApplyWarningDialog({
 
 function ApplyWarningForm({
   clipperProfileId,
+  defaultCampaignId,
+  defaultPost,
   onCancel,
   onApplied,
 }: {
   clipperProfileId: string
+  defaultCampaignId: string | null
+  defaultPost: WarningVideo | null
   onCancel: () => void
   onApplied: () => void
 }) {
@@ -324,9 +344,11 @@ function ApplyWarningForm({
     React.useState<ClipperInfractionType>("LIGHT")
   /** null = ainda segue a sugestão do sistema. */
   const [levelChoice, setLevelChoice] = React.useState<number | null>(null)
-  const [campaignId, setCampaignId] = React.useState("")
+  const [campaignId, setCampaignId] = React.useState(defaultCampaignId ?? "")
   const [videoMode, setVideoMode] = React.useState<"post" | "manual">("post")
-  const [selectedPost, setSelectedPost] = React.useState<ClipperPost | null>(null)
+  const [selectedPost, setSelectedPost] = React.useState<WarningVideo | null>(
+    defaultPost,
+  )
   const [manualUrl, setManualUrl] = React.useState("")
   const [postSearch, setPostSearch] = React.useState("")
   const [reason, setReason] = React.useState("")
@@ -998,7 +1020,7 @@ function PostRow({
   onToggle,
   disabled,
 }: {
-  post: ClipperPost
+  post: WarningVideo
   selected: boolean
   onToggle: () => void
   disabled?: boolean

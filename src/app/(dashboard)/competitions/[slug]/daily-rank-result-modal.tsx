@@ -76,6 +76,13 @@ import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/trpc/react";
 
 import {
+  QuickWarningFields,
+  quickWarningTitle,
+  useQuickWarning,
+} from "../../clippers/warnings/quick-warning";
+import { useInvalidateDiscipline } from "../../clippers/warnings/use-invalidate-discipline";
+
+import {
   ConfirmWordInput,
   PositionBadge,
   detectPlatformFromPostUrl,
@@ -333,11 +340,18 @@ export function DailyRankResultModal({
   const [disqualifyConfirm, setDisqualifyConfirm] = React.useState<{
     dailyRankingEntryId: string;
     clipPostId: string;
+    clipperProfileId: string;
     clipperName: string;
     submittedUrl: string;
   } | null>(null);
   const [disqualifyInput, setDisqualifyInput] = React.useState("");
   const [disqualifyReason, setDisqualifyReason] = React.useState("");
+  // Toggle "Aplicar advertência" do dialog de desclassificar.
+  const disqualifyWarning = useQuickWarning(
+    disqualifyConfirm?.clipperProfileId ?? null,
+  );
+  const resetDisqualifyWarning = disqualifyWarning.reset;
+  const invalidateDiscipline = useInvalidateDiscipline();
   const [playerEntryId, setPlayerEntryId] = React.useState<string | null>(null);
   const hasTikTokEntries =
     preview?.entries.some((entry) => entry.platform === "TIKTOK") ?? false;
@@ -369,9 +383,10 @@ export function DailyRankResultModal({
       setDisqualifyConfirm(null);
       setDisqualifyInput("");
       setDisqualifyReason("");
+      resetDisqualifyWarning();
       setPlayerEntryId(null);
     }
-  }, [open]);
+  }, [open, resetDisqualifyWarning]);
 
   /* ===== Queries ===== */
   // Início do polling de PIX: reinicia ao abrir o modal (e a cada mudança de
@@ -783,6 +798,36 @@ export function DailyRankResultModal({
         toast.error(err.message || "Erro ao desqualificar vídeo");
       },
     });
+
+  // Com o toggle ligado, quem desclassifica o vídeo é a advertência (revogar
+  // a advertência devolve o vídeo ao ranking).
+  const disqualifyWithWarning = api.clipperDiscipline.applyWarning.useMutation({
+    onSuccess: async (result, variables) => {
+      toast.success(
+        `Vídeo desclassificado · ${quickWarningTitle(variables.infractionType, result.level)}`,
+        {
+          description: result.emailSent
+            ? "O clipador foi avisado por notificação e e-mail."
+            : "O clipador foi avisado por notificação (e-mail não enviado).",
+        },
+      );
+      setDisqualifyConfirm(null);
+      setDisqualifyInput("");
+      setDisqualifyReason("");
+      resetDisqualifyWarning();
+      invalidateDiscipline();
+      refreshPreviewSilently({
+        fallbackErrorMessage:
+          "Advertência aplicada, mas não foi possível atualizar a lista do preview.",
+      });
+      await utils.admin.getCompetitionDetailsAdmin.invalidate({ slug });
+    },
+    onError: (err) => {
+      toast.error(err.message || "Erro ao aplicar advertência");
+    },
+  });
+  const disqualifyPending =
+    disqualifyDailyRankingEntry.isPending || disqualifyWithWarning.isPending;
 
   const undoDisqualifyEntry =
     api.admin.undoDisqualifyDailyRankingEntry.useMutation({
@@ -1312,9 +1357,11 @@ export function DailyRankResultModal({
                   disabled={disqualifyDailyRankingEntry.isPending}
                   onClick={() => {
                     setDisqualifyInput("");
+                    resetDisqualifyWarning();
                     setDisqualifyConfirm({
                       dailyRankingEntryId: entry.dailyRankingEntryId,
                       clipPostId: entry.clipPostId,
+                      clipperProfileId: entry.clipperProfileId,
                       clipperName: entry.clipperName,
                       submittedUrl: entry.submittedUrl,
                     });
@@ -2029,9 +2076,11 @@ export function DailyRankResultModal({
                     onClick={() => {
                       setDisqualifyInput("");
                       setDisqualifyReason("");
+                      resetDisqualifyWarning();
                       setDisqualifyConfirm({
                         dailyRankingEntryId: playerEntry.dailyRankingEntryId,
                         clipPostId: playerEntry.clipPostId,
+                        clipperProfileId: playerEntry.clipperProfileId,
                         clipperName: playerEntry.clipperName,
                         submittedUrl: playerEntry.submittedUrl,
                       });
@@ -3756,10 +3805,11 @@ export function DailyRankResultModal({
       <AlertDialog
         open={disqualifyConfirm !== null}
         onOpenChange={(nextOpen) => {
-          if (!nextOpen && !disqualifyDailyRankingEntry.isPending) {
+          if (!nextOpen && !disqualifyPending) {
             setDisqualifyConfirm(null);
             setDisqualifyInput("");
             setDisqualifyReason("");
+            resetDisqualifyWarning();
           }
         }}
       >
@@ -3829,22 +3879,30 @@ export function DailyRankResultModal({
 
           {/* Motivo + confirmação */}
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 sm:px-6">
-            <div className="flex flex-col gap-1.5">
-              <Label
-                htmlFor="disqualify-reason"
-                className="text-muted-foreground text-xs font-medium sm:text-sm"
-              >
-                Motivo da desclassificação (opcional)
-              </Label>
-              <Textarea
-                id="disqualify-reason"
-                value={disqualifyReason}
-                onChange={(e) => setDisqualifyReason(e.target.value)}
-                placeholder="Ex.: postagem fora das regras da campanha"
-                className="min-h-[88px] rounded-xl text-sm"
-                disabled={disqualifyDailyRankingEntry.isPending}
-              />
-            </div>
+            {!disqualifyWarning.enabled && (
+              <div className="flex flex-col gap-1.5">
+                <Label
+                  htmlFor="disqualify-reason"
+                  className="text-muted-foreground text-xs font-medium sm:text-sm"
+                >
+                  Motivo da desclassificação (opcional)
+                </Label>
+                <Textarea
+                  id="disqualify-reason"
+                  value={disqualifyReason}
+                  onChange={(e) => setDisqualifyReason(e.target.value)}
+                  placeholder="Ex.: postagem fora das regras da campanha"
+                  className="min-h-[88px] rounded-xl text-sm"
+                  disabled={disqualifyPending}
+                />
+              </div>
+            )}
+            <QuickWarningFields
+              quick={disqualifyWarning}
+              disabled={disqualifyPending}
+              idPrefix="disqualify-warning"
+              note="A advertência desclassifica o vídeo: revogar a advertência devolve o vídeo ao ranking. Se o dia já tiver pagamento, a posição fica e o prêmio do vídeo é estornado."
+            />
             <ConfirmWordInput
               word="DESCLASSIFICAR"
               value={disqualifyInput}
@@ -3858,11 +3916,12 @@ export function DailyRankResultModal({
           {/* Footer */}
           <div className="flex shrink-0 flex-col-reverse gap-2 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
             <AlertDialogCancel
-              disabled={disqualifyDailyRankingEntry.isPending}
+              disabled={disqualifyPending}
               className="h-10 cursor-pointer rounded-xl"
               onClick={() => {
                 setDisqualifyInput("");
                 setDisqualifyReason("");
+                resetDisqualifyWarning();
               }}
             >
               Cancelar
@@ -3871,10 +3930,26 @@ export function DailyRankResultModal({
               type="button"
               disabled={
                 disqualifyInput !== "DESCLASSIFICAR" ||
-                disqualifyDailyRankingEntry.isPending
+                disqualifyPending ||
+                (disqualifyWarning.enabled && !disqualifyWarning.payload)
+              }
+              title={
+                disqualifyWarning.enabled && disqualifyWarning.missing.length > 0
+                  ? `Falta preencher: ${disqualifyWarning.missing.join(", ")}`
+                  : undefined
               }
               onClick={() => {
                 if (!disqualifyConfirm) return;
+                if (disqualifyWarning.enabled) {
+                  if (!disqualifyWarning.payload) return;
+                  disqualifyWithWarning.mutate({
+                    ...disqualifyWarning.payload,
+                    clipperProfileId: disqualifyConfirm.clipperProfileId,
+                    campaignId,
+                    clipPostId: disqualifyConfirm.clipPostId,
+                  });
+                  return;
+                }
                 disqualifyDailyRankingEntry.mutate({
                   dailyRankingEntryId: disqualifyConfirm.dailyRankingEntryId,
                   clipPostId: disqualifyConfirm.clipPostId,
@@ -3887,7 +3962,7 @@ export function DailyRankResultModal({
                 "disabled:cursor-not-allowed disabled:opacity-40",
               )}
             >
-              {disqualifyDailyRankingEntry.isPending ? (
+              {disqualifyPending ? (
                 <>
                   <Spinner className="size-4 animate-spin" />
                   Processando…
@@ -3895,7 +3970,9 @@ export function DailyRankResultModal({
               ) : (
                 <>
                   <XCircle className="size-4" weight="fill" />
-                  Desclassificar
+                  {disqualifyWarning.enabled
+                    ? "Desclassificar e advertir"
+                    : "Desclassificar"}
                 </>
               )}
             </Button>
