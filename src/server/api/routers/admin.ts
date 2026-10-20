@@ -60,6 +60,7 @@ import {
 import { loadScoreMultipliersForPosts } from "@/lib/clipper-discipline/score-multiplier-queries";
 import { disciplineScoringLockMessage } from "@/server/clipper-discipline/restrictions";
 import { findReversedPrizeCreditIds } from "@/server/prize-reversals";
+import { getClerkUserCreationError } from "@/server/clerk-errors";
 import {
   expectsDailyPix,
   isSettledDailyPrizeStatus,
@@ -8571,6 +8572,157 @@ export const adminRouter = createTRPCRouter({
           message: error.message || "Erro ao alterar senha",
         });
       }
+    }),
+
+  // Alterar o e-mail de login de um usuário (Clerk + banco)
+  changeUserEmail: adminProcedure
+    .input(
+      z.object({
+        userId: z.string(),
+        newEmail: z.string().trim().toLowerCase().email("E-mail inválido"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await ctx.db.user.findUnique({
+        where: { id: input.userId },
+        select: { id: true, email: true, name: true },
+      });
+
+      if (!user) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Usuário não encontrado",
+        });
+      }
+
+      if (user.email.toLowerCase() === input.newEmail) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O novo e-mail é igual ao atual",
+        });
+      }
+
+      // O Clerk trata e-mails sem diferenciar maiúsculas/minúsculas.
+      const emailOwner = await ctx.db.user.findFirst({
+        where: {
+          email: { equals: input.newEmail, mode: "insensitive" },
+          id: { not: user.id },
+        },
+        select: { id: true },
+      });
+
+      if (emailOwner) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Já existe uma conta com este e-mail.",
+        });
+      }
+
+      // 1. Novo e-mail vira o primário (já verificado) no Clerk
+      const clerk = await clerkClient();
+      const clerkUser = await clerk.users.getUser(user.id).catch((error) => {
+        console.error("Erro ao buscar usuário no Clerk:", error);
+        throw getClerkUserCreationError(error);
+      });
+      const alreadyOnAccount = clerkUser.emailAddresses.find(
+        (address) => address.emailAddress.toLowerCase() === input.newEmail,
+      );
+
+      let newEmailId: string;
+      try {
+        if (alreadyOnAccount) {
+          await clerk.emailAddresses.updateEmailAddress(alreadyOnAccount.id, {
+            verified: true,
+            primary: true,
+          });
+          newEmailId = alreadyOnAccount.id;
+        } else {
+          const created = await clerk.emailAddresses.createEmailAddress({
+            userId: user.id,
+            emailAddress: input.newEmail,
+            verified: true,
+            primary: true,
+          });
+          newEmailId = created.id;
+        }
+      } catch (error) {
+        console.error("Erro ao alterar e-mail no Clerk:", error);
+        throw getClerkUserCreationError(error);
+      }
+
+      // 2. Banco; em falha, devolve o Clerk ao estado anterior
+      try {
+        await ctx.db.user.update({
+          where: { id: user.id },
+          data: { email: input.newEmail },
+        });
+      } catch (error) {
+        console.error("Erro ao salvar novo e-mail no banco:", error);
+        try {
+          if (clerkUser.primaryEmailAddressId) {
+            await clerk.users.updateUser(user.id, {
+              primaryEmailAddressID: clerkUser.primaryEmailAddressId,
+            });
+          }
+          if (!alreadyOnAccount) {
+            await clerk.emailAddresses.deleteEmailAddress(newEmailId);
+          }
+        } catch (rollbackError) {
+          console.error(
+            `Falha ao desfazer a troca de e-mail no Clerk (${user.id}):`,
+            rollbackError,
+          );
+        }
+
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2002"
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Já existe uma conta com este e-mail.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Erro ao salvar o novo e-mail",
+        });
+      }
+
+      // 3. Remove os e-mails antigos: o login com o anterior deixa de valer
+      for (const address of clerkUser.emailAddresses) {
+        if (address.id === newEmailId) continue;
+        try {
+          await clerk.emailAddresses.deleteEmailAddress(address.id);
+        } catch (error) {
+          console.warn(
+            `Não foi possível remover o e-mail antigo ${address.emailAddress} do Clerk (${user.id}):`,
+            error,
+          );
+        }
+      }
+
+      // Log de auditoria
+      await ctx.db.auditLog.create({
+        data: {
+          userId: ctx.userId,
+          action: "UPDATE",
+          entityType: "User",
+          entityId: user.id,
+          changes: {
+            action: "email_changed",
+            before: { email: user.email },
+            after: { email: input.newEmail },
+            changedBy: ctx.userId,
+          },
+        },
+      });
+
+      console.log(
+        `✅ E-mail alterado para usuário ${user.id} (${user.email} → ${input.newEmail}) por admin ${ctx.userId}`,
+      );
+
+      return { success: true, email: input.newEmail };
     }),
 
   // ============================================================================

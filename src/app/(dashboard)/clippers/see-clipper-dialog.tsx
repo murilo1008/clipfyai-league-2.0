@@ -91,6 +91,9 @@ import { ClipperWarningsTab } from "./warnings/clipper-warnings-tab"
 const formatDateTime = (date: Date | string) =>
   format(new Date(date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
 
+/** Checagem de formato do e-mail no cliente; o servidor valida de novo. */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 /** Rótulo em pt-BR do tipo de chave PIX. */
 const pixKeyTypeLabel = (type: PixKeyType) =>
   PIX_KEY_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? "Chave"
@@ -351,6 +354,45 @@ export function SeeClipperDialog({
       return
     }
     changePasswordMutation.mutate({ userId: clipper.userId, newPassword })
+  }
+
+  /* ===== Alterar e-mail ===== */
+  const [isEmailOpen, setIsEmailOpen] = React.useState(false)
+  const [newEmail, setNewEmail] = React.useState("")
+
+  const changeEmailMutation = api.admin.changeUserEmail.useMutation({
+    onSuccess: () => {
+      toast.success("E-mail alterado com sucesso!")
+      setIsEmailOpen(false)
+      setNewEmail("")
+      void utils.clipper.getAll.invalidate()
+      void utils.clipper.getById.invalidate()
+    },
+    onError: (error) => toast.error(error.message || "Erro ao alterar e-mail"),
+  })
+
+  const normalizedNewEmail = newEmail.trim().toLowerCase()
+  const isNewEmailValid = EMAIL_PATTERN.test(normalizedNewEmail)
+  const isSameEmail =
+    !!clipper && normalizedNewEmail === clipper.user.email.toLowerCase()
+
+  const handleChangeEmail = () => {
+    if (!clipper?.userId) {
+      toast.error("ID do usuário não encontrado")
+      return
+    }
+    if (!isNewEmailValid) {
+      toast.error("Informe um e-mail válido")
+      return
+    }
+    if (isSameEmail) {
+      toast.error("O novo e-mail é igual ao atual")
+      return
+    }
+    changeEmailMutation.mutate({
+      userId: clipper.userId,
+      newEmail: normalizedNewEmail,
+    })
   }
 
   /* ===== Ban / Unban ===== */
@@ -627,17 +669,29 @@ export function SeeClipperDialog({
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="text-muted-foreground text-sm">
-                      Defina uma nova senha de acesso para este clipador.
+                      Altere o e-mail de login ou defina uma nova senha de
+                      acesso para este clipador.
                     </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 cursor-pointer rounded-xl"
-                      onClick={() => setIsPasswordOpen(true)}
-                    >
-                      <LockKey className="size-3.5" />
-                      Alterar Senha
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 cursor-pointer rounded-xl"
+                        onClick={() => setIsEmailOpen(true)}
+                      >
+                        <Envelope className="size-3.5" />
+                        Alterar E-mail
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 cursor-pointer rounded-xl"
+                        onClick={() => setIsPasswordOpen(true)}
+                      >
+                        <LockKey className="size-3.5" />
+                        Alterar Senha
+                      </Button>
+                    </div>
                   </div>
                 </SectionCard>
 
@@ -733,9 +787,21 @@ export function SeeClipperDialog({
                       <p className="text-sm font-medium">{clipper.fullName}</p>
                     </FieldBlock>
                     <FieldBlock label="E-mail">
-                      <p className="truncate text-sm font-medium">
-                        {clipper.user.email}
-                      </p>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <p className="min-w-0 truncate text-sm font-medium">
+                          {clipper.user.email}
+                        </p>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Alterar e-mail"
+                          title="Alterar e-mail"
+                          className="text-muted-foreground hover:text-foreground size-7 shrink-0 cursor-pointer rounded-lg"
+                          onClick={() => setIsEmailOpen(true)}
+                        >
+                          <PencilSimple className="size-3.5" />
+                        </Button>
+                      </div>
                     </FieldBlock>
                     <FieldBlock label="Localização">
                       <p className="text-sm font-medium">
@@ -1550,6 +1616,80 @@ export function SeeClipperDialog({
               {changePasswordMutation.isPending
                 ? "Alterando..."
                 : "Alterar Senha"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ===== Alterar E-mail ===== */}
+      <AlertDialog
+        open={isEmailOpen}
+        onOpenChange={(nextOpen) => {
+          setIsEmailOpen(nextOpen)
+          if (!nextOpen) setNewEmail("")
+        }}
+      >
+        <AlertDialogContent className="rounded-3xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Envelope className="size-5" weight="fill" />
+              Alterar E-mail
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              O novo e-mail passa a ser o login de {name}. O e-mail atual deixa
+              de funcionar para entrar na plataforma.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleChangeEmail()
+            }}
+          >
+            <FieldBlock label="E-mail atual">
+              <p className="truncate text-sm font-medium">
+                {clipper.user.email}
+              </p>
+            </FieldBlock>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-email">Novo e-mail</Label>
+              <Input
+                id="new-email"
+                type="email"
+                inputMode="email"
+                autoComplete="off"
+                spellCheck={false}
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="novo@email.com"
+                aria-invalid={
+                  !!normalizedNewEmail && (!isNewEmailValid || isSameEmail)
+                }
+                className="h-10 rounded-xl"
+              />
+              {normalizedNewEmail && isSameEmail && (
+                <p className="text-destructive text-xs">
+                  O novo e-mail é igual ao atual.
+                </p>
+              )}
+            </div>
+          </form>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="cursor-pointer rounded-xl">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="btn-gradient-auth cursor-pointer rounded-xl font-semibold"
+              disabled={
+                changeEmailMutation.isPending || !isNewEmailValid || isSameEmail
+              }
+              onClick={(e) => {
+                e.preventDefault()
+                handleChangeEmail()
+              }}
+            >
+              {changeEmailMutation.isPending ? "Salvando..." : "Alterar E-mail"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
