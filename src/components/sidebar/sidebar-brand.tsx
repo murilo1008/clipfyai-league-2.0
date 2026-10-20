@@ -11,6 +11,15 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 
+/**
+ * Marca no topo da sidebar. Mesmo lugar e tamanho nos dois temas.
+ * Tema claro: a logo clara se perdia no fundo, então ela recebe só uma
+ * tinta um pouco mais profunda (brilho −12 %, saturação +20 %) e uma sombra mínima
+ * — aplicadas num wrapper, porque o WebKit corta filtro direto no <img>.
+ */
+const LIGHT_INK =
+  "not-dark:[filter:brightness(0.88)_saturate(1.2)_drop-shadow(0_1px_1.5px_rgba(11,36,48,0.18))]"
+
 export function SidebarBrand() {
   return (
     <SidebarHeader className="border-sidebar-border/60 border-b px-2 py-3 group-data-[collapsible=icon]:px-0">
@@ -24,7 +33,9 @@ export function SidebarBrand() {
           >
             <Link href="/" aria-label="Ir para a home">
               {/* Ícone da marca — visível apenas colapsado, sem fundo (transparente) */}
-              <span className="hidden w-fit shrink-0 group-data-[collapsible=icon]:block">
+              <span
+                className={`hidden w-fit shrink-0 group-data-[collapsible=icon]:block ${LIGHT_INK}`}
+              >
                 <Image
                   src="/images/icon-clipfy.svg"
                   alt=""
@@ -35,7 +46,9 @@ export function SidebarBrand() {
               </span>
 
               {/* Logo completa — some no modo colapsado */}
-              <span className="flex min-w-0 flex-1 items-center overflow-visible group-data-[collapsible=icon]:hidden">
+              <span
+                className={`flex min-w-0 flex-1 items-center overflow-visible group-data-[collapsible=icon]:hidden ${LIGHT_INK}`}
+              >
                 <Logo
                   width={132}
                   height={33}
