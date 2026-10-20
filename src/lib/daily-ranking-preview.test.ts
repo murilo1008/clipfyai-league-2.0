@@ -1,6 +1,10 @@
 import { RankingMetricType } from "@prisma/client";
 import { describe, expect, it } from "vitest";
-import { getPrizeForPosition, parsePrizeTable } from "./daily-ranking-preview";
+import {
+  getPrizeForPosition,
+  nextPrizeTablePosition,
+  parsePrizeTable,
+} from "./daily-ranking-preview";
 import { rankLiveDailyPosts } from "./daily-ranking-shared";
 
 describe("daily ranking prize table", () => {
@@ -18,6 +22,32 @@ describe("daily ranking prize table", () => {
 
   it("recusa tabela vazia em operações que exigem premiação", () => {
     expect(() => parsePrizeTable({})).toThrow("não pode estar vazia");
+  });
+
+  it("aceita a mesma posição em duas chaves quando o valor é igual", () => {
+    // Tabela real criada pelo antigo "Adicionar Posição" ("5" dentro de "4-15").
+    const entries = parsePrizeTable({
+      "1": 200,
+      "2": 100,
+      "3": 60,
+      "5": 20,
+      "4-15": 20,
+    });
+    expect(entries).toHaveLength(15);
+    expect(getPrizeForPosition(entries, 5)).toBe(20);
+    expect(entries.reduce((total, entry) => total + entry.prize, 0)).toBe(600);
+  });
+
+  it("recusa a mesma posição com valores diferentes", () => {
+    expect(() => parsePrizeTable({ "5": 30, "4-15": 20 })).toThrow(
+      "A posição 5 está duplicada",
+    );
+  });
+
+  it("adiciona posição depois da última coberta, contando faixas", () => {
+    expect(nextPrizeTablePosition({ "1": 350, "2": 200, "3": 150, "4-15": 25 })).toBe(16);
+    expect(nextPrizeTablePosition({ "1": 10, "2": 5 })).toBe(3);
+    expect(nextPrizeTablePosition({})).toBe(1);
   });
 
   it("exibe ranking sem prêmio quando a competição tem tabela vazia", () => {

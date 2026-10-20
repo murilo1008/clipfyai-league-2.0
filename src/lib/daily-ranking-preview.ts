@@ -83,12 +83,17 @@ export function parsePrizeTable(
     if (typeof rawPrize !== "number" || !Number.isFinite(prize) || prize < 0) {
       throw new Error(`Valor de prêmio inválido para a posição ${position}.`);
     }
-    if (result.some((entry) => entry.position === position)) {
+    const roundedPrize = Math.round(prize * 100) / 100;
+    const existing = result.find((entry) => entry.position === position);
+    if (existing) {
+      // Ex.: "5" e "4-15", que o antigo "Adicionar Posição" do editor criava.
+      // Só é ambíguo quando os valores divergem.
+      if (existing.prize === roundedPrize) return;
       throw new Error(
         `A posição ${position} está duplicada na tabela de prêmios.`,
       );
     }
-    result.push({ position, prize: Math.round(prize * 100) / 100 });
+    result.push({ position, prize: roundedPrize });
   };
 
   if (Array.isArray(parsed)) {
@@ -141,6 +146,17 @@ export function getPrizeForPosition(
   position: number,
 ): number {
   return prizeTable.find((entry) => entry.position === position)?.prize ?? 0;
+}
+
+/**
+ * Próxima posição livre de uma tabela de prêmios: a seguinte à maior posição
+ * já coberta, contando as faixas ("4-15" cobre até a 15ª).
+ */
+export function nextPrizeTablePosition(table: Record<string, number>): number {
+  const covered = Object.keys(table)
+    .map((key) => Number(key.split("-").at(-1)))
+    .filter((position) => Number.isSafeInteger(position) && position > 0);
+  return (covered.length > 0 ? Math.max(...covered) : 0) + 1;
 }
 
 /** YYYY-MM-DD como dia civil UTC */

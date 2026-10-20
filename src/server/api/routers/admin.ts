@@ -101,7 +101,15 @@ function assertPrizeTableMatchesTotal(input: {
   topCount: number;
   totalPrize: number;
 }) {
-  const entries = parsePrizeTable(input.table);
+  let entries: ReturnType<typeof parsePrizeTable>;
+  try {
+    entries = parsePrizeTable(input.table);
+  } catch (error) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${input.label}: ${error instanceof Error ? error.message : "tabela inválida."}`,
+    });
+  }
   const outOfRange = entries.find(
     (entry) => entry.position > input.topCount && entry.prize > 0,
   );

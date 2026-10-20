@@ -61,6 +61,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { formatPrizeLabel } from "@/lib/currency"
+import { nextPrizeTablePosition } from "@/lib/daily-ranking-preview"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
 import { api } from "@/trpc/react"
@@ -2372,23 +2373,17 @@ function PrizeTableEditor({
   onChange: (table: Record<string, number>) => void
   label?: string
   hint?: React.ReactNode
-  /** Posições sempre numéricas: ordena por número e nunca duplica ao adicionar. */
+  /** Posições sempre numéricas: ordena por número. */
   numericPositions?: boolean
 }) {
   const entries = numericPositions
     ? Object.entries(table).sort(([a], [b]) => Number(a) - Number(b))
     : Object.entries(table)
 
+  // Depois da última posição coberta: com "4-15", a próxima é a 16ª (contar
+  // as chaves criava "5", repetindo uma posição da faixa).
   const addPosition = () => {
-    if (!numericPositions) {
-      onChange({ ...table, [String(Object.keys(table).length + 1)]: 0 })
-      return
-    }
-    const positions = Object.keys(table)
-      .map(Number)
-      .filter((position) => Number.isFinite(position))
-    const next = (positions.length > 0 ? Math.max(...positions) : 0) + 1
-    onChange({ ...table, [String(next)]: 0 })
+    onChange({ ...table, [String(nextPrizeTablePosition(table))]: 0 })
   }
 
   return (
