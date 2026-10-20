@@ -3,7 +3,6 @@
 import * as React from "react"
 import dynamic from "next/dynamic"
 import Image from "next/image"
-import Link from "next/link"
 import {
   ArrowLeft,
   At,
@@ -36,6 +35,7 @@ import { toast } from "sonner"
 
 import { ExportCompetitionPostsCsvDialog } from "@/components/posts/export-competition-posts-csv-dialog"
 import { StatTile } from "@/components/home/stat-tile"
+import { BackLink } from "@/components/navigation/back-link"
 import { Reveal } from "@/components/shared/reveal"
 import { DarkScope } from "@/components/shared/dark-scope"
 import {
@@ -64,6 +64,7 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
+import { useRestorableState } from "@/hooks/use-restorable-state"
 import { formatPrizeLabel } from "@/lib/currency"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
@@ -159,7 +160,8 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
   })
   const utils = api.useUtils()
 
-  const [activeTab, setActiveTab] = React.useState("overview")
+  // A aba volta como estava ao retornar de uma página aberta daqui
+  const [activeTab, setActiveTab] = useRestorableState("tab", "overview")
   const [isCalendarDisconnectOpen, setIsCalendarDisconnectOpen] =
     React.useState(false)
   const calendarCampaignId = data?.campaign.id ?? ""
@@ -460,10 +462,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
             variant="outline"
             className="cursor-pointer rounded-xl"
           >
-            <Link href="/competitions">
+            <BackLink href="/competitions">
               <ArrowLeft className="size-4" />
               Voltar para Competições
-            </Link>
+            </BackLink>
           </Button>
         </div>
       </div>
@@ -494,10 +496,10 @@ export default function CompetitionAdmin({ slug }: { slug: string }) {
           variant="ghost"
           className="text-muted-foreground hover:text-foreground -ml-2 w-fit cursor-pointer rounded-xl"
         >
-          <Link href="/competitions">
+          <BackLink href="/competitions">
             <ArrowLeft className="size-4" />
             Voltar para Competições
-          </Link>
+          </BackLink>
         </Button>
       </Reveal>
 

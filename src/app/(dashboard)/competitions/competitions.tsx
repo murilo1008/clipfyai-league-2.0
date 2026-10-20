@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { useMaskedCurrency } from "@/contexts/financial-visibility-context"
+import { useRestorableState } from "@/hooks/use-restorable-state"
 import { formatPrizeLabel } from "@/lib/currency"
 import { platformConfig, type PlatformKey } from "@/lib/platform-config"
 import { cn } from "@/lib/utils"
@@ -129,13 +130,14 @@ export default function Competitions() {
   const { data: stats, isLoading: loadingStats } =
     api.admin.getCampaignsStats.useQuery()
 
-  const [search, setSearch] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<StatusKey | "ALL">(
-    "ALL",
-  )
-  const [visibility, setVisibility] = React.useState<"public" | "private">(
-    "public",
-  )
+  // Filtros voltam como estavam ao sair de uma competição pelo "Voltar"
+  const [search, setSearch] = useRestorableState("search", "")
+  const [statusFilter, setStatusFilter] = useRestorableState<
+    StatusKey | "ALL"
+  >("status", "ALL")
+  const [visibility, setVisibility] = useRestorableState<
+    "public" | "private"
+  >("visibility", "public")
   const [isCreateOpen, setIsCreateOpen] = React.useState(false)
   // Depois da primeira abertura o dialog fica montado (animação de fechar)
   const [hasOpenedCreate, setHasOpenedCreate] = React.useState(false)

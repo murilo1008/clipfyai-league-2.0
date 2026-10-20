@@ -1,10 +1,10 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import { auth } from "@clerk/nextjs/server";
 import { CaretLeft } from "@phosphor-icons/react/dist/ssr";
 
 import PostCommentsPanel from "@/app/(dashboard)/posts/[postId]/post-comments-panel";
+import { BackLink } from "@/components/navigation/back-link";
 import { db } from "@/server/db";
 
 interface CompetitionPostCommentsPageProps {
@@ -52,13 +52,13 @@ export default async function CompetitionPostCommentsPage({
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8">
       <div className="flex min-w-0 flex-col gap-2">
-        <Link
+        <BackLink
           href={`/competitions/${slug}`}
           className="text-muted-foreground hover:text-foreground inline-flex w-fit items-center gap-1 text-xs font-semibold transition-colors"
         >
           <CaretLeft className="size-3.5" weight="bold" />
           {post.campaign.name}
-        </Link>
+        </BackLink>
         <h1 className="truncate text-2xl font-bold tracking-tight sm:text-3xl">
           Comentários do post
         </h1>
