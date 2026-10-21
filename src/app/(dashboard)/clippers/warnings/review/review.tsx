@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import {
   ArrowLeft,
   ArrowSquareOut,
@@ -29,6 +28,7 @@ import {
   useNow,
 } from "@/components/clippers/discipline-shared";
 import { HomeHero } from "@/components/home/home-hero";
+import { BackLink } from "@/components/navigation/back-link";
 import { formatCompact } from "@/components/shared/count-up";
 import { Reveal } from "@/components/shared/reveal";
 import { Bone } from "@/components/shared/skeletons";
@@ -149,10 +149,10 @@ export default function Review() {
           size="sm"
           className="h-9 cursor-pointer rounded-xl"
         >
-          <Link href="/clippers/warnings">
+          <BackLink href="/clippers/warnings">
             <ArrowLeft className="size-3.5" weight="bold" />
             Voltar para advertências
-          </Link>
+          </BackLink>
         </Button>
       </div>
 

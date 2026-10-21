@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import {
   ArrowLeft,
   ArrowsDownUp,
@@ -34,6 +33,7 @@ import { toast } from "sonner"
 
 import { ClanTagBadge, getClanIcon } from "@/components/clan-tag-badge"
 import { StatTile } from "@/components/home/stat-tile"
+import { BackLink } from "@/components/navigation/back-link"
 import { DarkScope } from "@/components/shared/dark-scope"
 import { Reveal } from "@/components/shared/reveal"
 import {
@@ -326,10 +326,10 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
             variant="outline"
             className="cursor-pointer rounded-xl"
           >
-            <Link href="/clans">
+            <BackLink href="/clans">
               <ArrowLeft className="size-4" />
               Voltar para Clãs
-            </Link>
+            </BackLink>
           </Button>
         </div>
       </div>
@@ -365,10 +365,10 @@ export default function ClanDetailAdmin({ tag }: ClanDetailAdminProps) {
           variant="ghost"
           className="text-muted-foreground hover:text-foreground -ml-2 w-fit cursor-pointer rounded-xl"
         >
-          <Link href="/clans">
+          <BackLink href="/clans">
             <ArrowLeft className="size-4" />
             Voltar para Clãs
-          </Link>
+          </BackLink>
         </Button>
       </Reveal>
 

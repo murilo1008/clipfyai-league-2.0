@@ -60,6 +60,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { useRestorableState } from "@/hooks/use-restorable-state"
 import { api } from "@/trpc/react"
 
 import { CreateClanDialog } from "./create-clan-dialog"
@@ -342,9 +343,13 @@ function MembersDialog({
    ======================================================================== */
 
 export default function ClansAdmin() {
-  const [search, setSearch] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<string>("all")
-  const [sortBy, setSortBy] = React.useState<string>("members")
+  // Filtros voltam como estavam ao sair de um clã pelo "Voltar"
+  const [search, setSearch] = useRestorableState("search", "")
+  const [statusFilter, setStatusFilter] = useRestorableState<string>(
+    "status",
+    "all",
+  )
+  const [sortBy, setSortBy] = useRestorableState<string>("sort", "members")
   const [isCreateOpen, setIsCreateOpen] = React.useState(false)
   const [membersClanId, setMembersClanId] = React.useState<string | null>(null)
   const [memberSearch, setMemberSearch] = React.useState("")
