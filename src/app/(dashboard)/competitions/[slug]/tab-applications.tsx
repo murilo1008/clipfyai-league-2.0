@@ -102,7 +102,6 @@ type StatusFilter =
   | "REVOKED"
   | "WITHDRAWN";
 type ApproveAllStep = "confirm" | "processing" | "done";
-type ApproveClipperStep = "approving" | "ranking" | "email" | "done";
 type CloneStep = "select" | "confirm" | "processing" | "done";
 
 const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
@@ -115,19 +114,13 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "WITHDRAWN", label: "Desistiram" },
 ];
 
-const APPROVE_STEP_SEQUENCE: ApproveClipperStep[] = [
-  "approving",
-  "ranking",
-  "email",
-  "done",
-];
-
 const APPROVE_STEP_CARDS = [
   {
     number: 1,
     base: "Aprovação",
     active: "Aprovando...",
     done: "Aprovado",
+    summary: "aprovados",
     tone: "emerald",
   },
   {
@@ -135,6 +128,7 @@ const APPROVE_STEP_CARDS = [
     base: "Ranking",
     active: "Adicionando...",
     done: "No ranking",
+    summary: "no ranking",
     tone: "sky",
   },
   {
@@ -142,6 +136,7 @@ const APPROVE_STEP_CARDS = [
     base: "Email",
     active: "Enviando...",
     done: "Email enviado",
+    summary: "emails enviados",
     tone: "violet",
   },
 ] as const;
@@ -236,119 +231,52 @@ export function ApplicationsTab(props: CompetitionTabProps) {
     React.useState(false);
   const [approveAllStep, setApproveAllStep] =
     React.useState<ApproveAllStep>("confirm");
-  const [approveAllProgress, setApproveAllProgress] = React.useState({
-    current: 0,
-    total: 0,
-    approved: 0,
-    errors: 0,
-  });
-  const [approveAllCurrentClipper, setApproveAllCurrentClipper] =
-    React.useState<{
-      name: string;
-      imageUrl: string | null;
-      step: ApproveClipperStep;
-    } | null>(null);
-  const [approveAllProcessedClippers, setApproveAllProcessedClippers] =
-    React.useState<
-      { name: string; imageUrl: string | null; status: "success" | "error" }[]
-    >([]);
+  const [approveAllResult, setApproveAllResult] = React.useState<{
+    approved: number;
+    entriesCreated: number;
+    emailsSent: number;
+    emailError: string | null;
+  } | null>(null);
 
-  const approveApplicationSingle = api.admin.approveApplication.useMutation();
+  const approveAllApplications =
+    api.admin.approveAllApplications.useMutation();
 
   const resetApproveAllState = () => {
     setApproveAllStep("confirm");
-    setApproveAllProgress({ current: 0, total: 0, approved: 0, errors: 0 });
-    setApproveAllCurrentClipper(null);
-    setApproveAllProcessedClippers([]);
+    setApproveAllResult(null);
   };
 
-  const executeApproveAllWithProgress = async () => {
-    if (!campaignId || !applicationsData?.applications) return;
-
-    const pendingApps = applicationsData.applications.filter(
-      (app) => app.status === "PENDING",
-    );
-
-    if (pendingApps.length === 0) {
-      toast.info("Nenhuma aplicação pendente encontrada");
-      return;
-    }
+  // Uma única chamada aprova todos os pendentes da campanha no servidor
+  // (não só os carregados na lista, que é paginada).
+  const executeApproveAll = async () => {
+    if (!campaignId) return;
 
     setApproveAllStep("processing");
-    setApproveAllProgress({
-      current: 0,
-      total: pendingApps.length,
-      approved: 0,
-      errors: 0,
-    });
-    setApproveAllCurrentClipper(null);
-    setApproveAllProcessedClippers([]);
-
-    let approved = 0;
-    let errors = 0;
-
-    for (let i = 0; i < pendingApps.length; i++) {
-      const app = pendingApps[i]!;
-      const clipperName =
-        app.clipperName || app.clipperArtisticName || "Clipador";
-      const clipperImage = app.clipperImageUrl ?? null;
-
-      setApproveAllCurrentClipper({
-        name: clipperName,
-        imageUrl: clipperImage,
-        step: "approving",
+    try {
+      const result = await approveAllApplications.mutateAsync({ campaignId });
+      setApproveAllResult({
+        approved: result.approvedCount,
+        entriesCreated: result.entriesCreated,
+        emailsSent: result.emailsSent,
+        emailError: result.emailError ?? null,
       });
+      setApproveAllStep("done");
 
-      try {
-        await new Promise((r) => setTimeout(r, 150));
-        setApproveAllCurrentClipper({
-          name: clipperName,
-          imageUrl: clipperImage,
-          step: "ranking",
-        });
-
-        await approveApplicationSingle.mutateAsync({ applicationId: app.id });
-
-        setApproveAllCurrentClipper({
-          name: clipperName,
-          imageUrl: clipperImage,
-          step: "email",
-        });
-        await new Promise((r) => setTimeout(r, 200));
-
-        setApproveAllCurrentClipper({
-          name: clipperName,
-          imageUrl: clipperImage,
-          step: "done",
-        });
-        await new Promise((r) => setTimeout(r, 100));
-
-        approved++;
-        setApproveAllProcessedClippers((prev) => [
-          ...prev,
-          { name: clipperName, imageUrl: clipperImage, status: "success" },
-        ]);
-      } catch {
-        errors++;
-        setApproveAllProcessedClippers((prev) => [
-          ...prev,
-          { name: clipperName, imageUrl: clipperImage, status: "error" },
-        ]);
+      if (result.approvedCount > 0) {
+        toast.success(
+          `${result.approvedCount} clipador(es) aprovado(s) com sucesso!`,
+        );
+      } else {
+        toast.info("Nenhuma aplicação pendente encontrada");
       }
-
-      setApproveAllProgress((prev) => ({
-        ...prev,
-        current: i + 1,
-        approved,
-        errors,
-      }));
-    }
-
-    setApproveAllStep("done");
-    setApproveAllCurrentClipper(null);
-
-    if (approved > 0) {
-      toast.success(`${approved} clipador(es) aprovado(s) com sucesso!`);
+      if (result.emailError) {
+        toast.warning(`Alguns e-mails não foram enviados: ${result.emailError}`);
+      }
+    } catch (error) {
+      setApproveAllStep("confirm");
+      toast.error(
+        error instanceof Error ? error.message : "Erro ao aprovar aplicações",
+      );
     }
 
     // A invalidação já busca de novo os detalhes (sem refetch duplicado)
@@ -1566,10 +1494,9 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                       </p>
                       <ul className="text-muted-foreground flex flex-col gap-1.5 text-xs">
                         {[
-                          "Cada clipador pendente será aprovado individualmente",
+                          "Todos os clipadores pendentes serão aprovados de uma vez",
                           "Serão adicionados aos rankings mensais da campanha",
                           "Cada um receberá um email de aprovação",
-                          "Você acompanhará o progresso em tempo real",
                         ].map((item) => (
                           <li key={item} className="flex items-center gap-1.5">
                             <span className="size-1 shrink-0 rounded-full bg-emerald-400" />
@@ -1669,7 +1596,7 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                   </Button>
                   <Button
                     className="cursor-pointer gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 font-semibold text-white shadow-lg shadow-emerald-500/25 hover:opacity-90"
-                    onClick={() => void executeApproveAllWithProgress()}
+                    onClick={() => void executeApproveAll()}
                   >
                     <CheckCircle className="size-4" weight="fill" />
                     Aprovar Todos
@@ -1720,144 +1647,41 @@ export function ApplicationsTab(props: CompetitionTabProps) {
                   )}
                 </div>
 
-                {/* Barra de progresso */}
-                {approveAllProgress.total > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground font-medium">
-                        {approveAllProgress.current} de{" "}
-                        {approveAllProgress.total} processados
-                      </span>
-                      <span className="font-bold text-emerald-500 tabular-nums">
-                        {Math.round(
-                          (approveAllProgress.current /
-                            approveAllProgress.total) *
-                            100,
-                        )}
-                        %
-                      </span>
-                    </div>
-                    <div className="border-border/30 bg-muted/50 relative h-3 w-full overflow-hidden rounded-full border">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-green-500 to-emerald-400 transition-all duration-500 ease-out"
-                        style={{
-                          width: `${(approveAllProgress.current / approveAllProgress.total) * 100}%`,
-                        }}
+                {/* Etapas (todas rodam numa única requisição) */}
+                <div className="grid grid-cols-3 gap-2">
+                  {APPROVE_STEP_CARDS.map((card) => {
+                    const count = approveAllResult
+                      ? [
+                          approveAllResult.approved,
+                          approveAllResult.entriesCreated,
+                          approveAllResult.emailsSent,
+                        ][card.number - 1]
+                      : undefined;
+                    return (
+                      <ApproveStepCard
+                        key={card.number}
+                        card={card}
+                        state={approveAllStep === "done" ? "done" : "active"}
+                        label={
+                          count !== undefined
+                            ? `${count} ${card.summary}`
+                            : undefined
+                        }
                       />
-                    </div>
-                    <div className="flex items-center justify-center gap-4 pt-1 text-[11px]">
-                      <span className="flex items-center gap-1.5">
-                        <span className="size-2 rounded-full bg-emerald-500" />
-                        <span className="text-muted-foreground">
-                          Aprovados:
-                        </span>
-                        <span className="font-bold text-emerald-500 tabular-nums">
-                          {approveAllProgress.approved}
-                        </span>
-                      </span>
-                      {approveAllProgress.errors > 0 && (
-                        <span className="flex items-center gap-1.5">
-                          <span className="size-2 rounded-full bg-red-500" />
-                          <span className="text-muted-foreground">Erros:</span>
-                          <span className="font-bold text-red-500 tabular-nums">
-                            {approveAllProgress.errors}
-                          </span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
 
-                {/* Clipador atual + etapas */}
-                {approveAllStep === "processing" &&
-                  approveAllCurrentClipper && (
-                    <div className="flex flex-col gap-3 rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-500/5 to-green-500/5 p-3.5">
-                      <div className="flex items-center gap-3">
-                        <div className="relative shrink-0">
-                          <span className="absolute -inset-1 animate-pulse rounded-full bg-gradient-to-r from-emerald-500/40 to-green-500/40" />
-                          <Avatar className="relative size-10 border-2 border-emerald-500/50">
-                            <AvatarImage
-                              src={
-                                approveAllCurrentClipper.imageUrl ?? undefined
-                              }
-                              alt={approveAllCurrentClipper.name}
-                            />
-                            <AvatarFallback className="bg-gradient-to-br from-emerald-500/30 to-green-500/30 text-xs font-bold">
-                              {approveAllCurrentClipper.name
-                                .charAt(0)
-                                .toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold">
-                            {approveAllCurrentClipper.name}
-                          </p>
-                          <p className="text-[11px] font-medium text-emerald-500">
-                            Processando agora...
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2">
-                        {APPROVE_STEP_CARDS.map((card, index) => {
-                          const currentIndex = APPROVE_STEP_SEQUENCE.indexOf(
-                            approveAllCurrentClipper.step,
-                          );
-                          const state =
-                            currentIndex > index
-                              ? "done"
-                              : currentIndex === index
-                                ? "active"
-                                : "pending";
-                          return (
-                            <ApproveStepCard
-                              key={card.number}
-                              card={card}
-                              state={state}
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                {/* Lista de processados */}
-                {approveAllProcessedClippers.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <p className="text-muted-foreground flex items-center gap-2 text-xs font-semibold">
-                      <UserCheck className="size-3.5" weight="fill" />
-                      Clipadores processados (
-                      {approveAllProcessedClippers.length})
-                    </p>
-                    <div className="border-border/40 bg-muted/20 divide-border/30 max-h-[200px] divide-y overflow-y-auto rounded-2xl border">
-                      {approveAllProcessedClippers.map((clipper, index) => (
-                        <ProcessedClipperRow
-                          key={index}
-                          name={clipper.name}
-                          imageUrl={clipper.imageUrl}
-                          badge={
-                            clipper.status === "success" ? (
-                              <Badge
-                                variant="outline"
-                                className="shrink-0 gap-1 rounded-full border-emerald-500/30 bg-emerald-500/10 py-0 text-[10px] text-emerald-600 dark:text-emerald-400"
-                              >
-                                <Check className="size-3" weight="bold" />
-                                Aprovado
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="outline"
-                                className="shrink-0 gap-1 rounded-full border-red-500/30 bg-red-500/10 py-0 text-[10px] text-red-500"
-                              >
-                                <X className="size-3" weight="bold" />
-                                Erro
-                              </Badge>
-                            )
-                          }
-                        />
-                      ))}
-                    </div>
+                {approveAllResult?.emailError && (
+                  <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+                    <Warning
+                      className="mt-0.5 size-4 shrink-0"
+                      weight="fill"
+                    />
+                    <span>
+                      Alguns e-mails não foram enviados:{" "}
+                      {approveAllResult.emailError}
+                    </span>
                   </div>
                 )}
 
@@ -2773,9 +2597,11 @@ function ProcessedClipperRow({
 function ApproveStepCard({
   card,
   state,
+  label,
 }: {
   card: (typeof APPROVE_STEP_CARDS)[number];
   state: "pending" | "active" | "done";
+  label?: string;
 }) {
   const tone = STEP_TONES[card.tone];
   return (
@@ -2817,11 +2643,12 @@ function ApproveStepCard({
               : "text-muted-foreground/50",
         )}
       >
-        {state === "active"
-          ? card.active
-          : state === "done"
-            ? card.done
-            : card.base}
+        {label ??
+          (state === "active"
+            ? card.active
+            : state === "done"
+              ? card.done
+              : card.base)}
       </span>
     </div>
   );

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const currentUser = vi.hoisted(() => vi.fn());
+const resendBatchSend = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs/server", () => ({
   currentUser,
   // privateProcedure autentica via auth(); deriva do mesmo mock de currentUser
@@ -25,6 +26,7 @@ vi.mock("@/lib/monthly-ranking-leaderboard", () => ({
 vi.mock("resend", () => ({
   Resend: class {
     emails = { send: vi.fn() };
+    batch = { send: resendBatchSend };
   },
 }));
 
@@ -67,6 +69,7 @@ function fixture() {
       findUnique: vi.fn().mockResolvedValue(application),
       findMany: vi.fn().mockResolvedValue([application]),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      updateManyAndReturn: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),
       findFirst: vi.fn().mockResolvedValue(null),
     },
@@ -83,7 +86,12 @@ function fixture() {
       findFirst: vi.fn().mockResolvedValue(null),
       createManyAndReturn: vi.fn().mockResolvedValue([{ id: "post-1" }]),
     },
-    monthlyRanking: { findMany: vi.fn() },
+    monthlyRanking: { findMany: vi.fn(), update: vi.fn() },
+    monthlyRankingEntry: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+      createMany: vi.fn(),
+    },
     wallet: { findUnique: vi.fn(), update: vi.fn() },
     transaction: {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -141,6 +149,7 @@ const postInput = {
 
 beforeEach(() => {
   currentUser.mockResolvedValue({ id: "user-1" });
+  resendBatchSend.mockReset();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -306,15 +315,85 @@ describe("ações após a saída", () => {
   it("a aprovação em lote ignora quem desistiu depois da consulta inicial", async () => {
     const { admin, db, application } = fixture();
     application.status = "PENDING";
+    db.$transaction.mockImplementation((fn: (tx: typeof db) => unknown) =>
+      fn(db),
+    );
     expect(
       await admin.approveAllApplications({ campaignId: "campaign-1" }),
-    ).toMatchObject({ approvedCount: 0 });
-    expect(db.clipperApplication.updateMany).toHaveBeenCalledWith(
+    ).toMatchObject({ approvedCount: 0, emailsSent: 0 });
+    expect(db.clipperApplication.updateManyAndReturn).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: application.id, status: "PENDING" },
+        where: { id: { in: [application.id] }, status: "PENDING" },
       }),
     );
     expect(db.monthlyRanking.findMany).not.toHaveBeenCalled();
+    expect(resendBatchSend).not.toHaveBeenCalled();
+  });
+
+  it("a aprovação em lote coloca os aprovados no fim do ranking e envia os e-mails em lote", async () => {
+    const { admin, db, application } = fixture();
+    application.status = "PENDING";
+    db.$transaction.mockImplementation((fn: (tx: typeof db) => unknown) =>
+      fn(db),
+    );
+    db.clipperApplication.updateManyAndReturn.mockResolvedValue([
+      { id: application.id },
+    ]);
+    db.monthlyRanking.findMany.mockResolvedValue([{ id: "ranking-1" }]);
+    db.monthlyRankingEntry.count.mockResolvedValue(5);
+    db.monthlyRankingEntry.createMany.mockResolvedValue({ count: 1 });
+    resendBatchSend.mockResolvedValue({
+      data: { data: [{ id: "email-1" }] },
+      error: null,
+    });
+
+    expect(
+      await admin.approveAllApplications({ campaignId: "campaign-1" }),
+    ).toMatchObject({ approvedCount: 1, entriesCreated: 1, emailsSent: 1 });
+    expect(db.monthlyRankingEntry.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          monthlyRankingId: "ranking-1",
+          clipperProfileId: "clipper-1",
+          applicationId: application.id,
+          position: 6,
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(db.monthlyRanking.update).toHaveBeenCalledWith({
+      where: { id: "ranking-1" },
+      data: { totalParticipants: { increment: 1 } },
+    });
+    expect(resendBatchSend).toHaveBeenCalledTimes(1);
+    expect(resendBatchSend).toHaveBeenCalledWith(
+      [expect.objectContaining({ to: "clipper@example.com" })],
+      expect.objectContaining({ batchValidation: "permissive" }),
+    );
+  });
+
+  it("a aprovação em lote mantém as aprovações quando um e-mail é recusado", async () => {
+    const { admin, db, application } = fixture();
+    application.status = "PENDING";
+    db.$transaction.mockImplementation((fn: (tx: typeof db) => unknown) =>
+      fn(db),
+    );
+    db.clipperApplication.updateManyAndReturn.mockResolvedValue([
+      { id: application.id },
+    ]);
+    db.monthlyRanking.findMany.mockResolvedValue([]);
+    resendBatchSend.mockResolvedValue({
+      data: { data: [], errors: [{ index: 0, message: "Invalid `to` field" }] },
+      error: null,
+    });
+
+    expect(
+      await admin.approveAllApplications({ campaignId: "campaign-1" }),
+    ).toMatchObject({
+      approvedCount: 1,
+      emailsSent: 0,
+      emailError: "clipper@example.com: Invalid `to` field",
+    });
   });
 });
 

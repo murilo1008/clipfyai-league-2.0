@@ -573,6 +573,69 @@ async function notifyCompetitionClippersAboutVideo(input: {
   return { sent, error: errors.length > 0 ? errors.join("; ") : null };
 }
 
+async function sendApplicationApprovalEmails(input: {
+  campaign: {
+    name: string;
+    slug: string;
+    startDate: Date;
+    endDate: Date;
+  };
+  batchKey: string;
+  recipients: Array<{ email: string; name: string }>;
+}) {
+  let sent = 0;
+  const errors: string[] = [];
+
+  for (let index = 0; index < input.recipients.length; index += 100) {
+    // Respeita o limite de requisições por segundo do Resend
+    if (index > 0) await new Promise((resolve) => setTimeout(resolve, 600));
+    const chunk = input.recipients.slice(index, index + 100);
+    try {
+      const { data, error } = await resend.batch.send(
+        chunk.map((recipient) => ({
+          from: "ClipfyAI <noreply@league.clipfyai.com>",
+          to: recipient.email,
+          subject: `🎉 Inscrição aprovada: ${input.campaign.name}`,
+          html: getApplicationApprovalEmailTemplate(
+            recipient.name,
+            input.campaign.name,
+            input.campaign.startDate,
+            input.campaign.endDate,
+            input.campaign.slug,
+          ),
+        })),
+        {
+          idempotencyKey: `application-approval/${input.batchKey}/${index / 100}`,
+          // Um endereço inválido não derruba os outros 99 do lote
+          batchValidation: "permissive" as const,
+        },
+      );
+      if (error) errors.push(error.message);
+      else {
+        sent += data.data.length;
+        for (const failure of data.errors ?? []) {
+          errors.push(`${chunk[failure.index]?.email}: ${failure.message}`);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Erro ao enviar lote de emails de aprovação:", error);
+      errors.push("Não foi possível enviar um lote de e-mails.");
+    }
+  }
+
+  const uniqueErrors = [...new Set(errors)];
+  return {
+    sent,
+    error:
+      uniqueErrors.length === 0
+        ? null
+        : uniqueErrors.slice(0, 5).join("; ") +
+          (uniqueErrors.length > 5
+            ? ` (e mais ${uniqueErrors.length - 5})`
+            : ""),
+  };
+}
+
 type CampaignMetricsExtractionStatus = {
   executionId: string;
   campaignId: string;
@@ -3775,7 +3838,8 @@ export const adminRouter = createTRPCRouter({
       }
     }),
 
-  // Aprovar todas as aplicações pendentes de uma campanha
+  // Aprovar todas as aplicações pendentes de uma campanha.
+  // Tudo em lote: poucas queries no total, independente de quantos pendentes.
   approveAllApplications: adminProcedure
     .input(
       z.object({
@@ -3784,29 +3848,35 @@ export const adminRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       try {
-        // Buscar todas as aplicações pendentes
-        const pendingApplications = await ctx.db.clipperApplication.findMany({
-          where: {
-            campaignId: input.campaignId,
-            status: "PENDING",
+        const campaign = await ctx.db.campaign.findUnique({
+          where: { id: input.campaignId },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            startDate: true,
+            endDate: true,
           },
-          include: {
-            campaign: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-                startDate: true,
-                endDate: true,
-              },
-            },
+        });
+
+        if (!campaign) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Campanha não encontrada",
+          });
+        }
+
+        const pendingApplications = await ctx.db.clipperApplication.findMany({
+          where: { campaignId: input.campaignId, status: "PENDING" },
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            clipperProfileId: true,
             clipperProfile: {
-              include: {
-                user: {
-                  select: {
-                    email: true,
-                  },
-                },
+              select: {
+                fullName: true,
+                artisticName: true,
+                user: { select: { email: true } },
               },
             },
           },
@@ -3817,142 +3887,112 @@ export const adminRouter = createTRPCRouter({
             success: true,
             message: "Nenhuma aplicação pendente encontrada",
             approvedCount: 0,
+            totalApplications: 0,
+            entriesCreated: 0,
+            emailsSent: 0,
           };
         }
 
-        let approvedCount = 0;
-        const errors: string[] = [];
-
-        // Processar cada aplicação
-        for (const application of pendingApplications) {
-          try {
-            // Atualizar status da aplicação
-            const changed = await ctx.db.clipperApplication.updateMany({
-              where: { id: application.id, status: "PENDING" },
-              data: {
-                status: "APPROVED",
-                approvedAt: new Date(),
-                reviewedBy: ctx.userId,
-                reviewedAt: new Date(),
-              },
-            });
-
-            if (changed.count !== 1) continue;
-
-            // Buscar todos os MonthlyRanking da campanha
-            const monthlyRankings = await ctx.db.monthlyRanking.findMany({
-              where: {
-                campaignId: application.campaignId,
-              },
-              select: {
-                id: true,
-                monthPeriod: true,
-              },
-            });
-
-            // Criar MonthlyRankingEntry para cada MonthlyRanking
-            for (const ranking of monthlyRankings) {
-              // Verificar se já existe entry (evitar duplicatas)
-              const existingEntry = await ctx.db.monthlyRankingEntry.findUnique(
-                {
-                  where: {
-                    monthlyRankingId_clipperProfileId: {
-                      monthlyRankingId: ranking.id,
-                      clipperProfileId: application.clipperProfileId,
-                    },
-                  },
-                },
-              );
-
-              if (!existingEntry) {
-                // Contar quantos entries já existem para calcular a posição inicial
-                const currentEntriesCount =
-                  await ctx.db.monthlyRankingEntry.count({
+        const now = new Date();
+        const { approvedApplications, entriesCreated } =
+          await ctx.db.$transaction(
+            async (tx) => {
+              // Reaplica o filtro PENDING: quem desistiu depois da consulta fica de fora
+              const approvedIds = new Set(
+                (
+                  await tx.clipperApplication.updateManyAndReturn({
                     where: {
-                      monthlyRankingId: ranking.id,
+                      id: { in: pendingApplications.map((app) => app.id) },
+                      status: "PENDING",
                     },
-                  });
-
-                // Criar entry
-                await ctx.db.monthlyRankingEntry.create({
-                  data: {
-                    monthlyRankingId: ranking.id,
-                    clipperProfileId: application.clipperProfileId,
-                    applicationId: application.id,
-                    position: currentEntriesCount + 1,
-                    previousPosition: null,
-                    totalViews: 0,
-                    totalLikes: 0,
-                    totalComments: 0,
-                    totalShares: 0,
-                    totalSaves: 0,
-                    postsCount: 0,
-                    averageViewsPerPost: 0,
-                    bestPostViews: null,
-                    bestPostId: null,
-                    engagementRate: 0,
-                    clipperName: application.clipperProfile.fullName,
-                    clipperUsername:
-                      application.clipperProfile.artisticName ||
-                      application.clipperProfile.fullName,
-                    clipperImageUrl: null,
-                  },
-                });
-
-                // Atualizar totalParticipants
-                await ctx.db.monthlyRanking.update({
-                  where: { id: ranking.id },
-                  data: {
-                    totalParticipants: {
-                      increment: 1,
+                    data: {
+                      status: "APPROVED",
+                      approvedAt: now,
+                      reviewedBy: ctx.userId,
+                      reviewedAt: now,
                     },
-                  },
-                });
-              }
-            }
-
-            // Enviar email de aprovação
-            const userEmail = application.clipperProfile.user?.email;
-            if (userEmail) {
-              const emailHtml = getApplicationApprovalEmailTemplate(
-                application.clipperProfile.fullName,
-                application.campaign.name,
-                application.campaign.startDate,
-                application.campaign.endDate,
-                application.campaign.slug,
+                    select: { id: true },
+                  })
+                ).map((app) => app.id),
               );
+              const approved = pendingApplications.filter((app) =>
+                approvedIds.has(app.id),
+              );
+              if (approved.length === 0) {
+                return { approvedApplications: approved, entriesCreated: 0 };
+              }
 
-              resend.emails
-                .send({
-                  from: "ClipfyAI <noreply@league.clipfyai.com>",
-                  to: userEmail,
-                  subject: `🎉 Inscrição aprovada: ${application.campaign.name}`,
-                  html: emailHtml,
-                })
-                .then(() => {
-                  console.log(
-                    `✅ Email de aprovação enviado para ${userEmail}`,
-                  );
-                })
-                .catch((error) => {
-                  console.error(`❌ Erro ao enviar email de aprovação:`, error);
+              const monthlyRankings = await tx.monthlyRanking.findMany({
+                where: { campaignId: input.campaignId },
+                select: { id: true },
+              });
+
+              let created = 0;
+              for (const ranking of monthlyRankings) {
+                const existing = new Set(
+                  (
+                    await tx.monthlyRankingEntry.findMany({
+                      where: {
+                        monthlyRankingId: ranking.id,
+                        clipperProfileId: {
+                          in: approved.map((app) => app.clipperProfileId),
+                        },
+                      },
+                      select: { clipperProfileId: true },
+                    })
+                  ).map((entry) => entry.clipperProfileId),
+                );
+                const newEntries = approved.filter(
+                  (app) => !existing.has(app.clipperProfileId),
+                );
+                if (newEntries.length === 0) continue;
+
+                // Novos clipadores entram no final do ranking
+                const currentEntriesCount = await tx.monthlyRankingEntry.count({
+                  where: { monthlyRankingId: ranking.id },
                 });
-            }
+                const result = await tx.monthlyRankingEntry.createMany({
+                  data: newEntries.map((app, index) => ({
+                    monthlyRankingId: ranking.id,
+                    clipperProfileId: app.clipperProfileId,
+                    applicationId: app.id,
+                    position: currentEntriesCount + index + 1,
+                    averageViewsPerPost: 0,
+                    engagementRate: 0,
+                    clipperName: app.clipperProfile.fullName,
+                    clipperUsername:
+                      app.clipperProfile.artisticName ||
+                      app.clipperProfile.fullName,
+                  })),
+                  skipDuplicates: true,
+                });
 
-            approvedCount++;
-            console.log(
-              `✅ Aplicação aprovada: ${application.clipperProfile.fullName}`,
-            );
-          } catch (error: any) {
-            console.error(
-              `❌ Erro ao aprovar ${application.clipperProfile.fullName}:`,
-              error,
-            );
-            errors.push(
-              `${application.clipperProfile.fullName}: ${error.message}`,
-            );
-          }
-        }
+                await tx.monthlyRanking.update({
+                  where: { id: ranking.id },
+                  data: { totalParticipants: { increment: result.count } },
+                });
+                created += result.count;
+              }
+
+              return { approvedApplications: approved, entriesCreated: created };
+            },
+            { timeout: 60_000 },
+          );
+
+        const emails = await sendApplicationApprovalEmails({
+          campaign,
+          batchKey: `${input.campaignId}/${now.getTime()}`,
+          recipients: approvedApplications.flatMap((app) =>
+            app.clipperProfile.user?.email
+              ? [
+                  {
+                    email: app.clipperProfile.user.email,
+                    name: app.clipperProfile.fullName,
+                  },
+                ]
+              : [],
+          ),
+        });
 
         // Log de auditoria
         await ctx.db.auditLog.create({
@@ -3965,22 +4005,26 @@ export const adminRouter = createTRPCRouter({
             changes: {
               action: "bulk_approve",
               totalApplications: pendingApplications.length,
-              approvedCount,
-              errors: errors.length > 0 ? errors : undefined,
+              approvedCount: approvedApplications.length,
+              entriesCreated,
+              emailsSent: emails.sent,
+              emailError: emails.error ?? undefined,
             },
           },
         });
 
         console.log(
-          `✅ ${approvedCount} de ${pendingApplications.length} aplicações aprovadas em massa`,
+          `✅ ${approvedApplications.length} de ${pendingApplications.length} aplicações aprovadas em massa (${emails.sent} emails)`,
         );
 
         return {
           success: true,
-          message: `${approvedCount} aplicações aprovadas com sucesso!`,
-          approvedCount,
+          message: `${approvedApplications.length} aplicações aprovadas com sucesso!`,
+          approvedCount: approvedApplications.length,
           totalApplications: pendingApplications.length,
-          errors: errors.length > 0 ? errors : undefined,
+          entriesCreated,
+          emailsSent: emails.sent,
+          emailError: emails.error,
         };
       } catch (error: any) {
         console.error("Erro ao aprovar aplicações em massa:", error);
