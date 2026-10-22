@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSanctionPlan,
+  dayPointsResetDateError,
   effectiveWarningStatus,
   levelRequirements,
   SanctionPlanError,
@@ -147,6 +148,17 @@ describe("buildSanctionPlan", () => {
     expect(levelRequirements("LIGHT", 4).requiresBanConfirmation).toBe(true);
     expect(levelRequirements("LIGHT", 3).requiresBanConfirmation).toBe(false);
     expect(levelRequirements("SEVERE", null).requiresBanConfirmation).toBe(false);
+  });
+});
+
+describe("dayPointsResetDateError", () => {
+  it("aceita só um dia que existe e já fechou", () => {
+    // 16/10 às 12h (BRT): o dia aberto é o 16, então o último fechado é o 15.
+    expect(dayPointsResetDateError("2026-10-15", now)).toBeNull();
+    expect(dayPointsResetDateError("2026-10-16", now)).toBe(
+      "Só dá para zerar um dia do ranking já encerrado.",
+    );
+    expect(dayPointsResetDateError("2026-02-31", now)).toBe("Informe o dia do ranking.");
   });
 });
 

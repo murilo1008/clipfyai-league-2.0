@@ -21,8 +21,8 @@ export function isRankingDateYmd(value: string): boolean {
 
 /**
  * Janela do dia D do ranking: [D-1 20:00 UTC, D 20:00 UTC), ou seja, das 17h
- * do dia anterior às 17h do dia D no horário de Brasília. É a mesma de
- * getPostedAtWindowUtc (ranking diário e Top Clipadores).
+ * do dia anterior às 17h do dia D no horário de Brasília. Única definição:
+ * getPostedAtWindowUtc (ranking diário e Top Clipadores) delega para cá.
  */
 export function rankingDayWindowUtc(dateYmd: string): {
   startDate: Date;
@@ -38,6 +38,18 @@ export function rankingDayWindowUtc(dateYmd: string): {
 /** Dia do ranking que está aberto no instante (o que fecha às próximas 17h de Brasília). */
 export function openRankingDateYmd(now: Date): string {
   return new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/** Último dia do ranking já fechado no instante (o anterior ao aberto). */
+export function lastClosedRankingDateYmd(now: Date): string {
+  return new Date(now.getTime() + 4 * 60 * 60 * 1000 - DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** TopClippersDailyRanking.rankingDate do dia do ranking (meia-noite UTC). */
+export function topClippersRankingDate(dateYmd: string): Date {
+  return new Date(`${dateYmd}T00:00:00.000Z`);
 }
 
 /** "16/10/2026". */

@@ -6,6 +6,7 @@ import {
   isSettledDailyPrizeStatus,
   REVERSED_PRIZE_STATUS,
 } from "@/lib/clipper-discipline/constants";
+import { rankingDayWindowUtc } from "@/lib/clipper-discipline/podium";
 import { scoreMultiplierBpsSql } from "@/lib/clipper-discipline/score-multiplier";
 
 function amountsClose(a: number, b: number) {
@@ -197,10 +198,8 @@ export function getPostedAtWindowUtc(ymd: string): {
   startDate: Date;
   endDate: Date;
 } {
-  const { year, month, day } = parseUtcDateParts(ymd);
-  const endDate = new Date(Date.UTC(year, month - 1, day, 20, 0, 0, 0));
-  const startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
-  return { startDate, endDate };
+  parseUtcDateParts(ymd);
+  return rankingDayWindowUtc(ymd);
 }
 
 export async function fetchDailyRankPreviewByViews(
@@ -283,7 +282,7 @@ export async function fetchDailyRankPreviewByViews(
       LEFT JOIN "Wallet" w
         ON w."clipperProfileId" = ca."clipperProfileId"
       CROSS JOIN LATERAL (
-        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"')} AS "scoreMultiplierBps"
+        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"', 'ca."campaignId"', "daily")} AS "scoreMultiplierBps"
       ) sm
       WHERE ca."status" = 'APPROVED' OR (ca."status" IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= ${endDate})
       ORDER BY (e."views"::int8 * sm."scoreMultiplierBps") / 10000 DESC, e."views" DESC
@@ -396,7 +395,7 @@ export async function fetchDailyRankPreviewByEngagement(
       LEFT JOIN "Wallet" w
         ON w."clipperProfileId" = ca."clipperProfileId"
       CROSS JOIN LATERAL (
-        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"')} AS "scoreMultiplierBps"
+        SELECT ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'e."postedAt"', 'ca."campaignId"', "daily")} AS "scoreMultiplierBps"
       ) sm
       WHERE ca."status" = 'APPROVED' OR (ca."status" IN ('WITHDRAWN', 'REVOKED') AND ca."withdrawnAt" >= ${endDate})
       ORDER BY "score" DESC, e."views" DESC

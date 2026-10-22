@@ -7,6 +7,7 @@ import type {
 import { MAX_WARNING_LEVEL } from "./constants";
 import {
   isRankingDateYmd,
+  lastClosedRankingDateYmd,
   openRankingDateYmd,
   rankingDayWindowUtc,
 } from "./podium";
@@ -109,6 +110,19 @@ export function podiumRankingDateError(dateYmd: string, now: Date): string | nul
   if (!isRankingDateYmd(dateYmd)) return "Informe o dia do ranking.";
   if (dateYmd > openRankingDateYmd(now)) {
     return "O dia do ranking não pode ser futuro.";
+  }
+  return null;
+}
+
+/**
+ * Valida o dia do "zerar pontos do dia": existe e já fechou. A zeragem só
+ * pega os vídeos que existem ao aplicar, então no dia aberto os enviados
+ * depois continuariam pontuando.
+ */
+export function dayPointsResetDateError(dateYmd: string, now: Date): string | null {
+  if (!isRankingDateYmd(dateYmd)) return "Informe o dia do ranking.";
+  if (dateYmd > lastClosedRankingDateYmd(now)) {
+    return "Só dá para zerar um dia do ranking já encerrado.";
   }
   return null;
 }

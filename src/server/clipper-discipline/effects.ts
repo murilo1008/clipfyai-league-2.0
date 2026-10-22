@@ -13,7 +13,10 @@ import {
   WARNING_PRIZE_RESTORE_ACTION,
   WARNING_PRIZE_REVERSAL_ACTION,
 } from "@/lib/clipper-discipline/constants";
-import { rankingDayWindowUtc } from "@/lib/clipper-discipline/podium";
+import {
+  rankingDayWindowUtc,
+  topClippersRankingDate,
+} from "@/lib/clipper-discipline/podium";
 import { dailyRankingSnapshotLockSql } from "@/lib/clipper-discipline/podium-sql";
 import { rankingApplicationWhere } from "@/lib/competition-participation";
 import { findReversedPrizeCreditIds } from "@/server/prize-reversals";
@@ -103,6 +106,23 @@ export async function lockClipperProfile(tx: Tx, clipperProfileId: string) {
 }
 
 /**
+ * Predicado de "dia travado" sobre DailyRanking (alias `dr`): o dia já foi
+ * creditado na carteira ou tem PIX em andamento.
+ */
+const LOCKED_DAILY_RANKING_SQL = Prisma.sql`(
+  dr."dailyPixPayoutCompleted" = true
+  OR EXISTS (
+    SELECT 1 FROM "DailyRankingEntry" e
+    WHERE e."dailyRankingId" = dr."id"
+      AND (
+        e."dailyPrizeStatus" IN ('PAID', ${REVERSED_PRIZE_STATUS})
+        OR e."dailyPrizePaid" = true
+        OR e."dailyPixStatus" IN ('PAID', 'PROCESSING', 'QUEUED')
+      )
+  )
+)`;
+
+/**
  * Dias do ranking diário que não podem mais mudar de posição: já creditados
  * na carteira ou com PIX em andamento. Pega o lock da varredura pós-snapshot
  * do league (ou ela vê esta advertência comitada, ou esta advertência vê as
@@ -121,18 +141,7 @@ export async function lockedDailyRankingIds(
     SELECT dr."id"
     FROM "DailyRanking" dr
     WHERE dr."campaignId" = ${campaignId}
-      AND (
-        dr."dailyPixPayoutCompleted" = true
-        OR EXISTS (
-          SELECT 1 FROM "DailyRankingEntry" e
-          WHERE e."dailyRankingId" = dr."id"
-            AND (
-              e."dailyPrizeStatus" IN ('PAID', ${REVERSED_PRIZE_STATUS})
-              OR e."dailyPrizePaid" = true
-              OR e."dailyPixStatus" IN ('PAID', 'PROCESSING', 'QUEUED')
-            )
-        )
-      )
+      AND ${LOCKED_DAILY_RANKING_SQL}
   `;
   return new Set(rows.map((row) => row.id));
 }
@@ -485,13 +494,22 @@ export async function syncWalletHold(
 
 export const DEBT_HOLD_REASON =
   "Saldo devedor após estorno de prêmios por advertência";
+const DEBT_SETTLED_REASON = "Saldo quitado";
+
+/** Metadata da retenção "saldo devedor" liberada pelo admin. */
+export type DebtHoldMetadata = {
+  debtBalance?: number;
+  /** Saldo no "Liberar pagamento": a liberação vale até a dívida passar dele. */
+  releasedBalance?: number;
+};
 
 /**
  * Retenção "saldo devedor": existe enquanto o saldo estiver negativo (prêmio
  * estornado que já tinha saído por PIX). Não pertence a nenhuma advertência,
  * para que revogar uma delas não a libere com a dívida ainda aberta; sai
  * sozinha quando o saldo volta a ficar >= 0 numa ação de advertência, ou pelo
- * admin ("Liberar pagamento").
+ * admin ("Liberar pagamento"). A liberação do admin vale enquanto a dívida não
+ * aumentar: só um estorno novo recria a retenção.
  */
 export async function syncDebtHold(
   tx: Tx,
@@ -519,13 +537,34 @@ export async function syncDebtHold(
         data: {
           revokedAt: input.now,
           revokedById: input.actorUserId,
-          revokeReason: "Saldo quitado",
+          revokeReason: DEBT_SETTLED_REASON,
         },
       });
     }
     return null;
   }
   if (existing) return existing.id;
+  const released = await tx.clipperSanction.findFirst({
+    where: {
+      clipperProfileId: input.clipperProfileId,
+      type: "PAYOUT_HOLD",
+      reason: DEBT_HOLD_REASON,
+      revokedAt: { not: null, lte: input.now },
+      NOT: { revokeReason: DEBT_SETTLED_REASON },
+    },
+    orderBy: { revokedAt: "desc" },
+    select: { metadata: true },
+  });
+  if (released) {
+    const metadata = (released.metadata ?? {}) as DebtHoldMetadata;
+    const acceptedBalance = metadata.releasedBalance ?? metadata.debtBalance;
+    if (
+      typeof acceptedBalance === "number" &&
+      wallet.balance >= acceptedBalance - 0.005
+    ) {
+      return null;
+    }
+  }
   const sanction = await tx.clipperSanction.create({
     data: {
       clipperProfileId: input.clipperProfileId,
@@ -542,42 +581,52 @@ export async function syncDebtHold(
   return sanction.id;
 }
 
+/** Transaction.metadata.source do prêmio mensal (payMonthlyRankByPeriod). */
+const MONTHLY_PRIZE_SOURCE = "monthly_ranking_prize_aggregate";
+
 /**
- * Corte para retirar retroativamente um redutor de score: os vídeos dos dias
- * já creditados/pagos continuam como foram pagos; dali em diante o redutor
- * deixa de valer. É o fim da janela do último dia travado nas competições do
- * clipador (null = nenhum dia travado).
+ * O que já foi pago com o redutor de score, por competição do clipador:
+ * - daily: fim da janela do último dia travado do ranking diário;
+ * - monthlyPaid: competições com prêmio mensal já creditado.
+ * Revogar a advertência mantém o redutor nesses rankings (foram pagos assim)
+ * e o retira do resto.
  */
-export async function lastLockedPostedAtCutoff(
+export async function scoreMultiplierLocks(
   tx: Tx,
   clipperProfileId: string,
-): Promise<Date | null> {
-  const rows = await tx.$queryRaw<{ day: Date | null }[]>`
-    SELECT MAX(dr."rankingDate") AS "day"
-    FROM "DailyRanking" dr
-    WHERE dr."campaignId" IN (
-        SELECT ca."campaignId" FROM "ClipperApplication" ca
-        WHERE ca."clipperProfileId" = ${clipperProfileId}
-      )
-      AND (
-        dr."dailyPixPayoutCompleted" = true
-        OR EXISTS (
-          SELECT 1 FROM "DailyRankingEntry" e
-          WHERE e."dailyRankingId" = dr."id"
-            AND (
-              e."dailyPrizeStatus" IN ('PAID', ${REVERSED_PRIZE_STATUS})
-              OR e."dailyPrizePaid" = true
-              OR e."dailyPixStatus" IN ('PAID', 'PROCESSING', 'QUEUED')
-            )
+): Promise<{ daily: Map<string, Date>; monthlyPaid: Set<string> }> {
+  const [dailyRows, monthlyRows] = await Promise.all([
+    tx.$queryRaw<{ campaignId: string; day: Date }[]>`
+      SELECT dr."campaignId", MAX(dr."rankingDate") AS "day"
+      FROM "DailyRanking" dr
+      WHERE dr."campaignId" IN (
+          SELECT ca."campaignId" FROM "ClipperApplication" ca
+          WHERE ca."clipperProfileId" = ${clipperProfileId}
         )
-      )
-  `;
-  const day = rows[0]?.day;
-  if (!day) return null;
-  // Janela do ranking D: [D-1 20:00 UTC, D 20:00 UTC).
-  return new Date(
-    Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 20),
-  );
+        AND ${LOCKED_DAILY_RANKING_SQL}
+      GROUP BY dr."campaignId"
+    `,
+    tx.$queryRaw<{ campaignId: string }[]>`
+      SELECT DISTINCT t."campaignId"
+      FROM "Transaction" t
+      WHERE t."campaignId" IN (
+          SELECT ca."campaignId" FROM "ClipperApplication" ca
+          WHERE ca."clipperProfileId" = ${clipperProfileId}
+        )
+        AND t."type" = 'PRIZE_CREDIT'
+        AND t."status" = 'COMPLETED'
+        AND t."metadata"->>'source' = ${MONTHLY_PRIZE_SOURCE}
+    `,
+  ]);
+  return {
+    daily: new Map(
+      dailyRows.map((row) => [
+        row.campaignId,
+        rankingDayWindowUtc(row.day.toISOString().slice(0, 10)).endDate,
+      ]),
+    ),
+    monthlyPaid: new Set(monthlyRows.map((row) => row.campaignId)),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -778,11 +827,6 @@ export async function applyDayPointsReset(
     }),
   );
   return effects;
-}
-
-/** TopClippersDailyRanking.rankingDate do dia (meia-noite UTC). */
-function topClippersRankingDate(rankingDate: string) {
-  return new Date(`${rankingDate}T00:00:00.000Z`);
 }
 
 /**
