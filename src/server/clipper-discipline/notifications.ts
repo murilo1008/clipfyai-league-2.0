@@ -45,6 +45,24 @@ export function describeSanction(sanction: SanctionSummaryInput): string {
   return `${label} até ${formatDisciplineDate(sanction.endsAt)}`;
 }
 
+/**
+ * Punição encerrada pela revogação: só o nome, sem prazo ("Pagamento retido
+ * até liberação pela equipe" leria como se ainda valesse).
+ */
+export function describeEndedSanction(sanction: SanctionSummaryInput): string {
+  if (sanction.type === "PODIUM_INELIGIBLE") {
+    const rankingDate = (sanction.metadata as { rankingDate?: unknown } | null)
+      ?.rankingDate;
+    return typeof rankingDate === "string"
+      ? `${SANCTION_TYPE_LABELS.PODIUM_INELIGIBLE} (${formatRankingDateYmd(rankingDate)})`
+      : SANCTION_TYPE_LABELS.PODIUM_INELIGIBLE;
+  }
+  if (sanction.type === "SCORE_MULTIPLIER" && sanction.scoreMultiplierBps) {
+    return `${SANCTION_TYPE_LABELS.SCORE_MULTIPLIER} ${formatScoreMultiplier(sanction.scoreMultiplierBps)}`;
+  }
+  return SANCTION_TYPE_LABELS[sanction.type];
+}
+
 export type WarningNotificationInput = {
   warningId: string;
   userId: string;

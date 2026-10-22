@@ -8,7 +8,7 @@ const effects = vi.hoisted(() => ({
   applyPodiumIneligibility: vi.fn(),
   restorePodiumDay: vi.fn(),
   syncDebtHold: vi.fn(),
-  lastLockedPostedAtCutoff: vi.fn(),
+  scoreMultiplierLocks: vi.fn(),
   syncWalletHold: vi.fn(),
   lockClipperProfile: vi.fn(),
   restoreEffects: vi.fn(),
@@ -23,11 +23,14 @@ vi.mock("./notifications", async (importOriginal) => ({
   sendWarningEmail,
 }));
 
+import { DEBT_HOLD_REASON } from "./effects";
 import {
   applyClipperWarning,
   applyManualSanction,
+  banClipperManually,
   revokeClipperWarning,
   revokeSanction,
+  unbanClipperManually,
 } from "./warnings";
 
 const now = new Date("2026-10-16T15:00:00Z");
@@ -101,7 +104,7 @@ beforeEach(() => {
   effects.applyCompetitionRemoval.mockResolvedValue({});
   effects.applyPlatformBan.mockResolvedValue({});
   effects.syncDebtHold.mockResolvedValue(null);
-  effects.lastLockedPostedAtCutoff.mockResolvedValue(null);
+  effects.scoreMultiplierLocks.mockResolvedValue({ daily: new Map(), monthlyPaid: new Set() });
   // Um resumo novo por chamada: quem revoga soma os resumos.
   effects.restoreEffects.mockImplementation(async () => ({
     restoredPosts: 1,
@@ -464,7 +467,10 @@ describe("revokeClipperWarning", () => {
   it("desfaz o período das sanções, restaura os efeitos e libera a retenção", async () => {
     const { db, tx } = makeDb();
     const cutoff = new Date(now.getTime() - 2 * DAY);
-    effects.lastLockedPostedAtCutoff.mockResolvedValue(cutoff);
+    effects.scoreMultiplierLocks.mockResolvedValue({
+      daily: new Map([["camp-1", cutoff]]),
+      monthlyPaid: new Set(["camp-2"]),
+    });
     tx.clipperWarning.findUnique.mockResolvedValue({ clipperProfileId: "clipper-1" });
     tx.clipperWarning.findUniqueOrThrow.mockResolvedValue({
       id: "warning-1",
@@ -531,8 +537,17 @@ describe("revokeClipperWarning", () => {
     );
     // A suspensão deixa de cobrir o período inteiro (o league libera os vídeos).
     expect(revokedAtById["s-susp"]).toEqual(new Date(now.getTime() - DAY));
-    // O redutor sai a partir do fim do último dia já pago.
-    expect(revokedAtById["s-mult"]).toEqual(cutoff);
+    // O redutor sai desde o início, menos nos rankings já pagos com ele.
+    expect(revokedAtById["s-mult"]).toEqual(new Date(now.getTime() - 3 * DAY));
+    const multUpdate = tx.clipperSanction.update.mock.calls.find(
+      (call) => call[0].where.id === "s-mult",
+    )![0];
+    expect(multUpdate.data.metadata).toEqual({
+      keptUntil: {
+        daily: { "camp-1": cutoff.toISOString() },
+        monthly: { "camp-2": now.toISOString() },
+      },
+    });
     // A retenção termina agora.
     expect(revokedAtById["s-hold"]).toEqual(now);
     expect(effects.syncDebtHold).toHaveBeenCalled();
@@ -546,6 +561,82 @@ describe("revokeClipperWarning", () => {
       idempotencyKey: "clipper-warning:warning-1:revoked",
     });
     expect(summary).toMatchObject({ restoredPosts: 1 });
+  });
+
+  it("puxa para trás a suspensão e o redutor encerrados antes, e o e-mail lista só os nomes", async () => {
+    const { db, tx } = makeDb();
+    const earlyEnd = new Date(now.getTime() - 5 * DAY);
+    tx.clipperWarning.findUnique.mockResolvedValue({ clipperProfileId: "clipper-1" });
+    tx.clipperWarning.findUniqueOrThrow.mockResolvedValue({
+      id: "warning-1",
+      clipperProfileId: "clipper-1",
+      campaignId: "camp-1",
+      status: "ACTIVE",
+      infractionType: "MEDIUM",
+      level: 2,
+      effects: {},
+      sanctions: [
+        {
+          id: "s-susp",
+          type: "POSTING_SUSPENSION",
+          startsAt: new Date(now.getTime() - 9 * DAY),
+          endsAt: new Date(now.getTime() - 6 * DAY),
+          revokedAt: new Date(now.getTime() - 8 * DAY),
+          scoreMultiplierBps: null,
+        },
+        {
+          id: "s-mult",
+          type: "SCORE_MULTIPLIER",
+          startsAt: new Date(now.getTime() - 9 * DAY),
+          endsAt: new Date(now.getTime() - 2 * DAY),
+          revokedAt: earlyEnd,
+          scoreMultiplierBps: 8000,
+        },
+        {
+          id: "s-hold",
+          type: "PAYOUT_HOLD",
+          startsAt: new Date(now.getTime() - 9 * DAY),
+          endsAt: null,
+          revokedAt: earlyEnd,
+          scoreMultiplierBps: null,
+        },
+        {
+          id: "s-hold-open",
+          type: "PAYOUT_HOLD",
+          startsAt: new Date(now.getTime() - DAY),
+          endsAt: null,
+          revokedAt: null,
+          scoreMultiplierBps: null,
+        },
+      ],
+      campaign: { name: "Liga" },
+      clipperProfile: {
+        userId: "user-1",
+        fullName: "Fulano",
+        artisticName: null,
+        user: { email: "fulano@example.com" },
+      },
+    });
+
+    await revokeClipperWarning(db as never, {
+      warningId: "warning-1",
+      reason: "Aplicada por engano",
+      restorePrizes: true,
+      actorUserId: "admin-1",
+      now,
+    });
+
+    const revokedAtById = Object.fromEntries(
+      tx.clipperSanction.update.mock.calls.map((call) => [call[0].where.id, call[0].data.revokedAt]),
+    );
+    // Encerradas antes: deixam de cobrir desde o início (nada travado).
+    expect(revokedAtById["s-susp"]).toEqual(new Date(now.getTime() - 9 * DAY));
+    expect(revokedAtById["s-mult"]).toEqual(new Date(now.getTime() - 9 * DAY));
+    // Uma retenção já liberada fica como está.
+    expect(revokedAtById).not.toHaveProperty("s-hold");
+    expect(revokedAtById["s-hold-open"]).toEqual(now);
+    expect(effects.scoreMultiplierLocks).toHaveBeenCalled();
+    expect(sendWarningEmail.mock.calls[0]![1].punishments).toEqual(["Pagamento retido"]);
   });
 
   it("não revoga duas vezes", async () => {
@@ -657,5 +748,99 @@ describe("itens que ficaram para depois", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(tx.clipperSanction.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("zerar pontos do dia", () => {
+  it("recusa data impossível e o dia ainda aberto", async () => {
+    const { db } = makeDb();
+    const input = {
+      clipperProfileId: "clipper-1",
+      type: "DAY_POINTS_RESET" as const,
+      campaignId: "camp-1",
+      reason: "Views compradas",
+      actorUserId: "admin-1",
+      now,
+    };
+    await expect(
+      applyManualSanction(db as never, { ...input, rankingDate: "2026-02-31" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "Informe o dia do ranking." });
+    await expect(
+      applyManualSanction(db as never, { ...input, rankingDate: "2026-10-16" }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Só dá para zerar um dia do ranking já encerrado.",
+    });
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("liberar a retenção do saldo devedor", () => {
+  it("guarda o saldo aceito para não recriar a retenção com a mesma dívida", async () => {
+    const { db, tx } = makeDb();
+    const sanction = {
+      id: "s-debt",
+      clipperProfileId: "clipper-1",
+      warningId: null,
+      type: "PAYOUT_HOLD",
+      campaignId: null,
+      reason: DEBT_HOLD_REASON,
+      revokedAt: null,
+      metadata: { debtBalance: -50 },
+    };
+    tx.clipperSanction.findUnique.mockResolvedValue({ clipperProfileId: "clipper-1" });
+    tx.clipperSanction.findUniqueOrThrow.mockResolvedValue(sanction);
+    Object.assign(tx, { wallet: { findUnique: vi.fn().mockResolvedValue({ balance: -42.5 }) } });
+    await revokeSanction(db as never, {
+      sanctionId: "s-debt",
+      reason: "Acordo com o clipador",
+      actorUserId: "admin-1",
+      now,
+    });
+    expect(tx.clipperSanction.update.mock.calls[0]![0].data).toMatchObject({
+      revokedAt: now,
+      metadata: { debtBalance: -50, releasedBalance: -42.5 },
+    });
+  });
+});
+
+describe("banimento manual", () => {
+  it("não bane de novo quem já foi banido enquanto esperava o lock", async () => {
+    const { db, tx } = makeDb();
+    tx.clipperProfile.findUnique.mockResolvedValue({ verificationStatus: "BANNED" });
+    await expect(
+      banClipperManually(db as never, {
+        clipperProfileId: "clipper-1",
+        reason: "Fraude",
+        actorUserId: "admin-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "O clipador já está banido." });
+    expect(effects.lockClipperProfile).toHaveBeenCalled();
+    expect(tx.clipperSanction.create).not.toHaveBeenCalled();
+  });
+
+  it("desbanir grava quem desbaniu no audit log", async () => {
+    const { db, tx } = makeDb();
+    tx.clipperSanction.findMany.mockResolvedValue([{ id: "ban-1", metadata: { effects: {} } }]);
+    effects.syncWalletHold.mockResolvedValue(false);
+    await unbanClipperManually(db as never, {
+      clipperProfileId: "clipper-1",
+      actorUserId: "admin-1",
+      now,
+    });
+    expect(tx.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: "admin-1",
+        action: "ENABLE",
+        entityType: "ClipperProfile",
+        entityId: "clipper-1",
+        changes: expect.objectContaining({
+          action: "unban_clipper",
+          sanctionIds: ["ban-1"],
+          walletHeld: false,
+        }),
+      }),
+    });
   });
 });

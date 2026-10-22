@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatRankingDateYmd,
   isRankingDateYmd,
+  lastClosedRankingDateYmd,
   openRankingDateYmd,
   podiumCoversPost,
   rankingDayWindowUtc,
@@ -59,6 +60,12 @@ describe("dia do ranking", () => {
     expect(openRankingDateYmd(new Date("2026-10-16T19:59:59Z"))).toBe("2026-10-16");
     expect(openRankingDateYmd(new Date("2026-10-16T20:00:00Z"))).toBe("2026-10-17");
     expect(openRankingDateYmd(new Date("2026-10-16T02:00:00Z"))).toBe("2026-10-16");
+  });
+
+  it("o último dia fechado é o anterior ao aberto", () => {
+    expect(lastClosedRankingDateYmd(new Date("2026-10-16T19:59:59Z"))).toBe("2026-10-15");
+    expect(lastClosedRankingDateYmd(new Date("2026-10-16T20:00:00Z"))).toBe("2026-10-16");
+    expect(lastClosedRankingDateYmd(new Date("2026-11-01T02:00:00Z"))).toBe("2026-10-31");
   });
 
   it("valida a data e formata para exibição", () => {

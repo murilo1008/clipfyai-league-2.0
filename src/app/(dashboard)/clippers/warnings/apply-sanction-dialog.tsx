@@ -9,11 +9,7 @@ import {
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
-import {
-  brtYmd,
-  formatBrtShort,
-  useNow,
-} from "@/components/clippers/discipline-shared"
+import { formatBrtShort, useNow } from "@/components/clippers/discipline-shared"
 import { Bone } from "@/components/shared/skeletons"
 import { Button } from "@/components/ui/button"
 import {
@@ -40,6 +36,7 @@ import {
 } from "@/lib/clipper-discipline/levels"
 import {
   formatRankingDateYmd,
+  lastClosedRankingDateYmd,
   openRankingDateYmd,
   rankingDayWindowUtc,
 } from "@/lib/clipper-discipline/podium"
@@ -134,7 +131,9 @@ function ApplySanctionForm({
   const [percent, setPercent] = React.useState("80")
   const [days, setDays] = React.useState("7")
   const [campaignId, setCampaignId] = React.useState("")
-  const [rankingDate, setRankingDate] = React.useState(() => brtYmd(new Date()))
+  const [rankingDate, setRankingDate] = React.useState(() =>
+    lastClosedRankingDateYmd(new Date()),
+  )
   const [reason, setReason] = React.useState("")
 
   // Campos travados enquanto o contexto do clipador carrega.
@@ -162,9 +161,12 @@ function ApplySanctionForm({
       : null
   const campaign = context?.competitions.find((item) => item.id === campaignId)
   const isDayScoped = type === "DAY_POINTS_RESET" || type === "PODIUM_INELIGIBLE"
-  // O pódio vale para o dia do ranking ainda aberto, no máximo.
+  // O pódio vale até o dia do ranking ainda aberto; a zeragem, só para um dia
+  // já encerrado (no aberto os vídeos enviados depois continuariam pontuando).
   const maxRankingDate =
-    type === "PODIUM_INELIGIBLE" ? openRankingDateYmd(now) : brtYmd(now)
+    type === "PODIUM_INELIGIBLE"
+      ? openRankingDateYmd(now)
+      : lastClosedRankingDateYmd(now)
   const dayWindow = /^\d{4}-\d{2}-\d{2}$/.test(rankingDate)
     ? rankingDayWindowUtc(rankingDate)
     : null
@@ -233,7 +235,11 @@ function ApplySanctionForm({
         return
       }
       if (rankingDate > maxRankingDate) {
-        toast.error("O dia do ranking não pode ser futuro")
+        toast.error(
+          type === "PODIUM_INELIGIBLE"
+            ? "O dia do ranking não pode ser futuro"
+            : "Só dá para zerar um dia do ranking já encerrado",
+        )
         return
       }
     }
@@ -275,11 +281,12 @@ function ApplySanctionForm({
             onValueChange={(value) => {
               const next = value as ManualSanctionType
               setType(next)
-              // O pódio começa no dia do ranking aberto; a zeragem, no dia de hoje.
+              // O pódio começa no dia do ranking aberto; a zeragem, no último
+              // dia já encerrado.
               if (next === "PODIUM_INELIGIBLE") {
                 setRankingDate(openRankingDateYmd(new Date()))
               } else if (next === "DAY_POINTS_RESET") {
-                setRankingDate(brtYmd(new Date()))
+                setRankingDate(lastClosedRankingDateYmd(new Date()))
               }
               // Observação começa "até liberar"; as demais com duração, 7 dias.
               if (next === "OBSERVATION_MODE") setDays("")

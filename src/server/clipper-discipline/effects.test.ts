@@ -182,6 +182,34 @@ describe("retenção da carteira", () => {
     });
   });
 
+  it("a liberação do admin vale enquanto a dívida não aumentar", async () => {
+    const makeDebtTx = (balance: number) => ({
+      wallet: { findUnique: vi.fn().mockResolvedValue({ balance }) },
+      clipperSanction: {
+        findFirst: vi
+          .fn()
+          // nenhuma retenção ativa
+          .mockResolvedValueOnce(null)
+          // a última liberada pelo admin, com -20 de saldo
+          .mockResolvedValueOnce({ metadata: { debtBalance: -50, releasedBalance: -20 } }),
+        create: vi.fn().mockResolvedValue({ id: "hold-2" }),
+        updateMany: vi.fn(),
+      },
+    });
+    const input = { clipperProfileId: "clipper-1", actorUserId: "admin-1", now };
+
+    const same = makeDebtTx(-20);
+    expect(await syncDebtHold(same as never, input)).toBeNull();
+    expect(same.clipperSanction.create).not.toHaveBeenCalled();
+    expect(same.clipperSanction.findFirst.mock.calls[1]![0].where).toMatchObject({
+      reason: DEBT_HOLD_REASON,
+      NOT: { revokeReason: "Saldo quitado" },
+    });
+
+    const deeper = makeDebtTx(-35);
+    expect(await syncDebtHold(deeper as never, input)).toBe("hold-2");
+  });
+
   it("com o saldo quitado a retenção de saldo devedor é encerrada", async () => {
     const tx = {
       wallet: { findUnique: vi.fn().mockResolvedValue({ balance: 5 }) },

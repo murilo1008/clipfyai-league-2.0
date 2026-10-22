@@ -15,6 +15,7 @@ import {
 } from "@/lib/clipper-discipline/constants";
 import {
   buildSanctionPlan,
+  dayPointsResetDateError,
   levelRequirements,
   podiumRankingDateError,
   SanctionPlanError,
@@ -24,7 +25,7 @@ import {
   type ManualSanctionType,
 } from "@/lib/clipper-discipline/levels";
 import { rankingDayWindowUtc } from "@/lib/clipper-discipline/podium";
-import { getPostedAtWindowUtc } from "@/lib/daily-ranking-preview";
+import { buildScoreMultiplierKeptUntil } from "@/lib/clipper-discipline/score-multiplier";
 import { invalidateCachedQueries } from "@/server/memory-cache";
 
 import {
@@ -33,8 +34,9 @@ import {
   applyPlatformBan,
   applyPodiumIneligibility,
   applyVideoInvalidation,
+  DEBT_HOLD_REASON,
   hasEffects,
-  lastLockedPostedAtCutoff,
+  scoreMultiplierLocks,
   syncDebtHold,
   lockClipperProfile,
   mergeEffects,
@@ -42,11 +44,13 @@ import {
   restoreEffects,
   restorePodiumDay,
   syncWalletHold,
+  type DebtHoldMetadata,
   type DisciplineEffects,
   type RestoreSummary,
 } from "./effects";
 import {
   createWarningNotification,
+  describeEndedSanction,
   describeSanction,
   sendWarningEmail,
 } from "./notifications";
@@ -185,6 +189,18 @@ async function saveWarningDeferred(
   });
 }
 
+function emptyRestoreSummary(): RestoreSummary {
+  return {
+    restoredPosts: 0,
+    restoredEntries: 0,
+    keptLockedEntries: 0,
+    keptCoveredItems: 0,
+    restoredApplications: 0,
+    restoredAmount: 0,
+    unbanned: false,
+  };
+}
+
 /**
  * Tenta de novo o que revogações anteriores deixaram de fora porque outra
  * punição ainda cobria (vídeo invalidado e depois removido da competição, por
@@ -195,15 +211,7 @@ async function retryDeferredRestores(
   tx: Tx,
   input: { clipperProfileId: string; actorUserId: string; now: Date },
 ): Promise<{ summary: RestoreSummary; campaignIds: string[] }> {
-  const summary: RestoreSummary = {
-    restoredPosts: 0,
-    restoredEntries: 0,
-    keptLockedEntries: 0,
-    keptCoveredItems: 0,
-    restoredApplications: 0,
-    restoredAmount: 0,
-    unbanned: false,
-  };
+  const summary = emptyRestoreSummary();
   const campaignIds = new Set<string>();
   const retry = async (deferred: DisciplineEffects) => {
     const next: DisciplineEffects = {};
@@ -708,32 +716,47 @@ export async function revokeClipperWarning(
     // Revogar desfaz a advertência, não só a encerra a partir de agora:
     // - suspensão/observação deixam de cobrir o período (o league volta a
     //   promover os vídeos que segurou);
-    // - o redutor sai de tudo que ainda não foi creditado/pago (dias travados
-    //   continuam como foram pagos);
+    // - o redutor sai desde o início, menos nos rankings já pagos com ele
+    //   (keptUntil: dias travados de cada competição e mensal já pago);
     // - o resto (retenção, ban, remoção) termina agora.
-    const lockedCutoff = warning.sanctions.some(
-      (sanction) => sanction.type === "SCORE_MULTIPLIER" && !sanction.revokedAt,
+    // Uma suspensão/observação/redutor encerrado antes (revokeSanction) ainda
+    // cobria o período até ali: o recuo vale para ela também.
+    const multiplierLocks = warning.sanctions.some(
+      (sanction) => sanction.type === "SCORE_MULTIPLIER",
     )
-      ? await lastLockedPostedAtCutoff(tx, warning.clipperProfileId)
+      ? await scoreMultiplierLocks(tx, warning.clipperProfileId)
       : null;
     for (const sanction of warning.sanctions) {
-      if (sanction.revokedAt) continue;
-      let revokedAt = now;
-      if (
+      const retroactive =
         sanction.type === "POSTING_SUSPENSION" ||
-        sanction.type === "OBSERVATION_MODE"
-      ) {
-        revokedAt = sanction.startsAt < now ? sanction.startsAt : now;
-      } else if (sanction.type === "SCORE_MULTIPLIER") {
-        const cut =
-          lockedCutoff && lockedCutoff > sanction.startsAt
-            ? lockedCutoff
-            : sanction.startsAt;
-        revokedAt = cut < now ? cut : now;
+        sanction.type === "OBSERVATION_MODE" ||
+        sanction.type === "SCORE_MULTIPLIER";
+      if (sanction.revokedAt && !retroactive) continue;
+      const revokedAt = retroactive && sanction.startsAt < now ? sanction.startsAt : now;
+      if (sanction.revokedAt && sanction.revokedAt <= revokedAt) continue;
+      let metadata: Prisma.InputJsonValue | undefined;
+      if (sanction.type === "SCORE_MULTIPLIER" && multiplierLocks) {
+        const keptUntil = buildScoreMultiplierKeptUntil({
+          startsAt: sanction.startsAt,
+          priorEnd: sanction.revokedAt ?? now,
+          dailyLockedUntil: multiplierLocks.daily,
+          monthlyPaidCampaignIds: multiplierLocks.monthlyPaid,
+        });
+        if (keptUntil.daily || keptUntil.monthly) {
+          metadata = {
+            ...((sanction.metadata ?? {}) as Prisma.JsonObject),
+            keptUntil,
+          };
+        }
       }
       await tx.clipperSanction.update({
         where: { id: sanction.id },
-        data: { revokedAt, revokedById: input.actorUserId, revokeReason: reason },
+        data: {
+          revokedAt,
+          revokedById: input.actorUserId,
+          revokeReason: reason,
+          ...(metadata ? { metadata } : {}),
+        },
       });
     }
 
@@ -794,7 +817,7 @@ export async function revokeClipperWarning(
     const title = `${levelLabel} revogada`;
     const punishments = endedSanctions
       .filter((sanction) => sanction.type !== "VIDEO_INVALIDATION")
-      .map((sanction) => describeSanction({ ...sanction, endsAt: null }));
+      .map((sanction) => describeEndedSanction(sanction));
     const notification = await createWarningNotification(tx, {
       warningId: warning.id,
       userId: warning.clipperProfile.userId,
@@ -888,8 +911,11 @@ export async function applyManualSanction(
       message: "Informe a competição e o dia do ranking.",
     });
   }
-  if (input.type === "PODIUM_INELIGIBLE" && input.rankingDate) {
-    const dateError = podiumRankingDateError(input.rankingDate, now);
+  if (isDayScoped && input.rankingDate) {
+    const dateError =
+      input.type === "PODIUM_INELIGIBLE"
+        ? podiumRankingDateError(input.rankingDate, now)
+        : dayPointsResetDateError(input.rankingDate, now);
     if (dateError) throw new TRPCError({ code: "BAD_REQUEST", message: dateError });
   }
 
@@ -904,7 +930,7 @@ export async function applyManualSanction(
     }
     const window =
       input.type === "DAY_POINTS_RESET" && input.rankingDate
-        ? getPostedAtWindowUtc(input.rankingDate)
+        ? rankingDayWindowUtc(input.rankingDate)
         : null;
     // O pódio guarda a janela do dia em startsAt/endsAt (é o que o ranking
     // ao vivo e a varredura do league leem).
@@ -1095,9 +1121,27 @@ export async function revokeSanction(
           "Banimento, remoção de competição e vídeo invalidado são desfeitos revogando a advertência.",
       });
     }
+    // Liberar a retenção do saldo devedor guarda o saldo aceito: syncDebtHold
+    // só recria a retenção se a dívida passar dele.
+    let debtMetadata: Prisma.InputJsonValue | undefined;
+    if (sanction.type === "PAYOUT_HOLD" && sanction.reason === DEBT_HOLD_REASON) {
+      const wallet = await tx.wallet.findUnique({
+        where: { clipperProfileId: sanction.clipperProfileId },
+        select: { balance: true },
+      });
+      debtMetadata = {
+        ...((sanction.metadata ?? {}) as DebtHoldMetadata),
+        releasedBalance: wallet?.balance ?? 0,
+      } satisfies DebtHoldMetadata;
+    }
     await tx.clipperSanction.update({
       where: { id: sanction.id },
-      data: { revokedAt: now, revokedById: input.actorUserId, revokeReason: reason },
+      data: {
+        revokedAt: now,
+        revokedById: input.actorUserId,
+        revokeReason: reason,
+        ...(debtMetadata ? { metadata: debtMetadata } : {}),
+      },
     });
     let summary: RestoreSummary | null = null;
     if (sanction.type === "PODIUM_INELIGIBLE") {
@@ -1209,7 +1253,7 @@ export async function reviewObservationPost(
   db: PrismaClient,
   input: { clipPostId: string; approve: boolean; actorUserId: string },
 ) {
-  return db.$transaction(async (tx) => {
+  const campaignId = await db.$transaction(async (tx) => {
     const post = await tx.clipPost.findUnique({
       where: { id: input.clipPostId },
       select: { id: true, status: true, ineligibilityReason: true, campaignId: true },
@@ -1240,9 +1284,11 @@ export async function reviewObservationPost(
         changes: { action: "review_observation_clip_post", approve: input.approve },
       },
     });
-    invalidateRankingCaches([post.campaignId]);
-    return { success: true };
+    return post.campaignId;
   });
+  // Depois do commit: senão uma leitura concorrente recoloca o estado antigo no cache.
+  invalidateRankingCaches([campaignId]);
+  return { success: true };
 }
 
 /** Infração grave: a equipe decide se bane ou arquiva a análise. */
@@ -1347,6 +1393,18 @@ export async function banClipperManually(
   const reason = input.reason.trim() || "Banimento aplicado pela equipe";
   const result = await db.$transaction(async (tx) => {
     await lockClipperProfile(tx, input.clipperProfileId);
+    // Rechecado sob o lock: dois "Banir" ao mesmo tempo passam juntos pela
+    // checagem do router e criariam dois banimentos e duas retenções.
+    const profile = await tx.clipperProfile.findUnique({
+      where: { id: input.clipperProfileId },
+      select: { verificationStatus: true },
+    });
+    if (!profile) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Clipador não encontrado." });
+    }
+    if (profile.verificationStatus === "BANNED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "O clipador já está banido." });
+    }
     const ban = await tx.clipperSanction.create({
       data: {
         clipperProfileId: input.clipperProfileId,
@@ -1437,12 +1495,13 @@ export async function unbanClipperManually(
     }
     const touched = new Set<string>();
     const deferredByBan: { ban: (typeof bans)[number]; deferred: DisciplineEffects }[] = [];
+    const summary = emptyRestoreSummary();
     for (const ban of bans) {
       const effects = parseEffects(
         (ban.metadata as { effects?: unknown } | null)?.effects,
       );
       const deferred: DisciplineEffects = {};
-      await restoreEffects(tx, effects, {
+      const restored = await restoreEffects(tx, effects, {
         clipperProfileId: input.clipperProfileId,
         restorePrizes: false,
         actorUserId: input.actorUserId,
@@ -1450,6 +1509,7 @@ export async function unbanClipperManually(
         description: "Desbanimento",
         deferred,
       });
+      addRestoreSummary(summary, restored);
       deferredByBan.push({ ban, deferred });
       for (const id of await campaignsTouched(tx, effects, null)) touched.add(id);
     }
@@ -1460,6 +1520,7 @@ export async function unbanClipperManually(
         now,
       });
       for (const id of retried.campaignIds) touched.add(id);
+      addRestoreSummary(summary, retried.summary);
       for (const { ban, deferred } of deferredByBan) {
         await saveSanctionDeferred(tx, ban, deferred);
       }
@@ -1469,7 +1530,21 @@ export async function unbanClipperManually(
         now,
       });
     }
-    await syncWalletHold(tx, input.clipperProfileId, now);
+    const walletHeld = await syncWalletHold(tx, input.clipperProfileId, now);
+    await tx.auditLog.create({
+      data: {
+        userId: input.actorUserId,
+        action: "ENABLE",
+        entityType: "ClipperProfile",
+        entityId: input.clipperProfileId,
+        changes: {
+          action: "unban_clipper",
+          sanctionIds: banIds,
+          walletHeld,
+          ...summary,
+        },
+      },
+    });
     return [...touched];
   }, TRANSACTION_OPTIONS);
   invalidateRankingCaches(result);

@@ -57,6 +57,7 @@ import {
   hasActivePodiumSanction,
   loadPodiumExcludedPostIds,
 } from "@/lib/clipper-discipline/podium-queries";
+import { topClippersRankingDate } from "@/lib/clipper-discipline/podium";
 import { loadScoreMultipliersForPosts } from "@/lib/clipper-discipline/score-multiplier-queries";
 import { disciplineScoringLockMessage } from "@/server/clipper-discipline/restrictions";
 import { findReversedPrizeCreditIds } from "@/server/prize-reversals";
@@ -260,10 +261,6 @@ async function findUnreversedTopPostersPrizesByPosition(
     prizes.set(rankingPosition, candidate);
   }
   return prizes;
-}
-
-function topClippersRankingDate(date: string) {
-  return new Date(`${date}T00:00:00.000Z`);
 }
 
 function topClippersPaymentPlanFingerprint(
@@ -5196,7 +5193,7 @@ export const adminRouter = createTRPCRouter({
         const dailyLimit = campaign.activeRankingRule?.dailyTopCount ?? 15;
         const hasSnapshotMetrics = dailyEntryMetricsMap.size > 0;
         const [todayScoreMultipliers, todayPodiumExcluded] = await Promise.all([
-          loadScoreMultipliersForPosts(ctx.db, todayPosts),
+          loadScoreMultipliersForPosts(ctx.db, campaign.id, todayPosts),
           loadPodiumExcludedPostIds(ctx.db, campaign.id, todayPosts),
         ]);
         const rankedDailyPosts = rankLiveDailyPosts({

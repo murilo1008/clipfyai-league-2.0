@@ -7,11 +7,13 @@ import {
 } from "@/lib/clipper-discipline/score-multiplier";
 
 /**
- * Fator do redutor por post para os caminhos que montam o ranking via Prisma
- * (mesmo predicado do SQL). Uma consulta só, e nenhuma se ninguém tem redutor.
+ * Fator do redutor por post do ranking diário de uma competição, para os
+ * caminhos que montam o ranking via Prisma (mesmo predicado do SQL). Uma
+ * consulta só, e nenhuma se ninguém tem redutor.
  */
 export async function loadScoreMultipliersForPosts(
   db: PrismaClient,
+  campaignId: string,
   posts: readonly { id: string; applicationId: string; postedAt: Date | null }[],
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
@@ -29,6 +31,7 @@ export async function loadScoreMultipliersForPosts(
       startsAt: true,
       endsAt: true,
       revokedAt: true,
+      metadata: true,
     },
   });
   if (sanctions.length === 0) return result;
@@ -48,7 +51,8 @@ export async function loadScoreMultipliersForPosts(
     if (!profileId) continue;
     const bps = resolveScoreMultiplierBps(
       sanctions.filter((sanction) => sanction.clipperProfileId === profileId),
-      post.postedAt,
+      { postedAt: post.postedAt, campaignId },
+      "daily",
     );
     if (bps < SCORE_MULTIPLIER_NEUTRAL_BPS) result.set(post.id, bps);
   }
@@ -98,7 +102,12 @@ export async function loadMonthlyScoreMultiplierCuts(
   if (!anySanction) return new Map();
 
   // Mesmo instante de referência do diário e do JS: postedAt (sem data, sem redutor).
-  const bps = scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"');
+  const bps = scoreMultiplierBpsSql(
+    'ca."clipperProfileId"',
+    'cp."postedAt"',
+    'ca."campaignId"',
+    "monthly",
+  );
   const rows = input.cutoff
     ? await db.$queryRaw<CutRow[]>`
         SELECT

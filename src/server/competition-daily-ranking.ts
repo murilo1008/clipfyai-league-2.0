@@ -332,7 +332,7 @@ export async function loadLiveDailyRanking(
         SELECT
           cp."id", cp."applicationId", cp."username",
           cp."platform"::text AS "platform", cp."thumbnailUrl", cp."postedAt",
-          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"')} AS "scoreMultiplierBps",
+          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"', 'ca."campaignId"', "daily")} AS "scoreMultiplierBps",
           dre."dailyViews" AS "views",
           dre."dailyLikes" AS "likes",
           dre."dailyComments" AS "comments",
@@ -349,7 +349,7 @@ export async function loadLiveDailyRanking(
         SELECT
           cp."id", cp."applicationId", cp."username",
           cp."platform"::text AS "platform", cp."thumbnailUrl", cp."postedAt",
-          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"')} AS "scoreMultiplierBps",
+          ${scoreMultiplierBpsSql('ca."clipperProfileId"', 'cp."postedAt"', 'ca."campaignId"', "daily")} AS "scoreMultiplierBps",
           cp."views", cp."likes", cp."comments", cp."shares", cp."saves"
         FROM "ClipPost" cp
         INNER JOIN "ClipperApplication" ca ON ca."id" = cp."applicationId"
