@@ -34,6 +34,7 @@ import {
 import {
   InfractionTypeBadge,
   WarningStatusBadge,
+  formatBrtDate,
   formatBrtDateTime,
   formatSanctionDuration,
   sanctionLabel,
@@ -75,6 +76,7 @@ import {
   WARNING_STATUS_LABELS,
   warningLevelLabel,
 } from "@/lib/clipper-discipline/levels";
+import { formatScoreMultiplier } from "@/lib/clipper-discipline/score-multiplier";
 import { cn } from "@/lib/utils";
 import { api } from "@/trpc/react";
 
@@ -95,10 +97,11 @@ const PAGE_SIZE = 20;
 const ALL = "ALL";
 const NO_WARNINGS: AdminWarning[] = [];
 
+/** Iniciais só de letras e números: emoji ("🌍 Ise") quebrava em "�I". */
 function initials(name: string) {
   return name
-    .split(" ")
-    .map((part) => part[0])
+    .split(/\s+/)
+    .map((part) => Array.from(part.replace(/[^\p{L}\p{N}]/gu, ""))[0])
     .filter(Boolean)
     .slice(0, 2)
     .join("")
@@ -117,7 +120,7 @@ function SanctionChips({
     return <span className="text-muted-foreground text-xs">—</span>;
   }
   return (
-    <div className="flex max-w-[240px] flex-wrap gap-1">
+    <div className="flex max-w-[200px] flex-wrap gap-1">
       {warning.sanctions.map((sanction) => {
         const state = sanctionState(sanction, now);
         const duration = formatSanctionDuration(
@@ -129,11 +132,15 @@ function SanctionChips({
             ? "Removido"
             : sanction.type === "POSTING_SUSPENSION"
               ? "Suspensão"
-              : sanctionLabel(sanction);
+              : sanction.type === "SCORE_MULTIPLIER" &&
+                  sanction.scoreMultiplierBps
+                ? `Redutor ${formatScoreMultiplier(sanction.scoreMultiplierBps)}`
+                : sanctionLabel(sanction);
         return (
           <Badge
             key={sanction.id}
             variant="outline"
+            title={sanctionLabel(sanction)}
             className={cn(
               "rounded-full text-[10px]",
               state === "active"
@@ -175,10 +182,10 @@ function createColumns(
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0">
-              <p className="max-w-[180px] truncate text-sm font-semibold">
+              <p className="max-w-[170px] truncate text-sm font-semibold">
                 {name}
               </p>
-              <p className="text-muted-foreground max-w-[180px] truncate text-xs">
+              <p className="text-muted-foreground max-w-[170px] truncate text-xs">
                 {warning.clipperProfile.user.email}
               </p>
             </div>
@@ -187,36 +194,37 @@ function createColumns(
       },
     },
     {
-      id: "campaign",
-      header: "Competição",
-      cell: ({ row }) => (
-        <span className="block max-w-[160px] truncate text-sm">
-          {row.original.campaign?.name ?? "—"}
-        </span>
-      ),
-    },
-    {
-      id: "type",
-      header: "Tipo",
-      cell: ({ row }) => (
-        <InfractionTypeBadge type={row.original.infractionType} />
-      ),
-    },
-    {
-      id: "level",
-      header: "Nível",
-      cell: ({ row }) => (
-        <span className="text-sm font-medium whitespace-nowrap">
-          {warningLevelLabel(row.original.infractionType, row.original.level)}
-        </span>
-      ),
+      id: "warning",
+      header: "Advertência",
+      cell: ({ row }) => {
+        const campaignName = row.original.campaign?.name;
+        return (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 whitespace-nowrap">
+              <span className="text-sm font-semibold">
+                {warningLevelLabel(
+                  row.original.infractionType,
+                  row.original.level,
+                )}
+              </span>
+              <InfractionTypeBadge type={row.original.infractionType} />
+            </div>
+            <span
+              className="text-muted-foreground block max-w-[170px] truncate text-xs"
+              title={campaignName}
+            >
+              {campaignName ?? "Sem competição"}
+            </span>
+          </div>
+        );
+      },
     },
     {
       id: "reason",
       header: "Motivo",
       cell: ({ row }) => (
         <p
-          className="text-muted-foreground line-clamp-2 max-w-[220px] text-xs"
+          className="text-muted-foreground line-clamp-2 max-w-[220px] min-w-[140px] text-xs break-words"
           title={row.original.reason}
         >
           {row.original.reason}
@@ -230,27 +238,21 @@ function createColumns(
     },
     {
       id: "applied",
-      header: "Aplicada em / por",
+      header: "Aplicada",
       cell: ({ row }) => (
-        <div className="text-xs whitespace-nowrap">
+        <div className="flex flex-col gap-0.5 text-xs whitespace-nowrap">
           <p className="font-medium">
             {formatBrtDateTime(row.original.appliedAt)}
           </p>
-          <p className="text-muted-foreground">
-            {row.original.appliedByName ?? "—"}
+          <p className="text-muted-foreground max-w-[150px] truncate">
+            por {row.original.appliedByName ?? "—"}
           </p>
+          {row.original.effectiveStatus !== "REVOKED" && (
+            <p className="text-muted-foreground">
+              expira {formatBrtDate(row.original.expiresAt)}
+            </p>
+          )}
         </div>
-      ),
-    },
-    {
-      id: "expires",
-      header: "Expira em",
-      cell: ({ row }) => (
-        <span className="text-xs whitespace-nowrap">
-          {row.original.effectiveStatus === "REVOKED"
-            ? "—"
-            : formatBrtDateTime(row.original.expiresAt)}
-        </span>
       ),
     },
     {
@@ -567,7 +569,8 @@ export default function Warnings() {
 
       {/* ===== Lista ===== */}
       <Reveal immediate delayMs={120}>
-        <div className="glass-card overflow-hidden rounded-3xl">
+        {/* Cards ou tabela pela largura do próprio card (a sidebar come a tela). */}
+        <div className="glass-card @container overflow-hidden rounded-3xl">
           <div className="border-border/60 border-b px-4 py-3.5 text-right">
             <p className="text-muted-foreground text-xs">
               <span className="text-foreground font-semibold">{total}</span>{" "}
@@ -576,7 +579,7 @@ export default function Warnings() {
           </div>
 
           {/* Mobile: cards */}
-          <div className="space-y-3 p-3.5 lg:hidden">
+          <div className="space-y-3 p-3.5 @5xl:hidden">
             {isLoading ? (
               Array.from({ length: 4 }).map((_, index) => (
                 <Bone
@@ -632,7 +635,7 @@ export default function Warnings() {
           </div>
 
           {/* Desktop: tabela */}
-          <div className="hidden overflow-x-auto lg:block">
+          <div className="hidden overflow-x-auto @5xl:block">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -643,7 +646,7 @@ export default function Warnings() {
                     {headerGroup.headers.map((header) => (
                       <TableHead
                         key={header.id}
-                        className="text-muted-foreground h-12 px-4 text-[11px] font-semibold tracking-[0.12em] whitespace-nowrap uppercase"
+                        className="text-muted-foreground h-12 px-3 text-[11px] font-semibold tracking-[0.12em] whitespace-nowrap uppercase"
                       >
                         {header.isPlaceholder
                           ? null
@@ -666,7 +669,7 @@ export default function Warnings() {
                       {columns.map((column, cellIndex) => (
                         <TableCell
                           key={column.id ?? cellIndex}
-                          className="px-4 py-3.5"
+                          className="px-3 py-3.5"
                         >
                           <Bone
                             delay={index * 90 + cellIndex * 40}
@@ -692,7 +695,7 @@ export default function Warnings() {
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-3.5 align-middle"
+                          className="px-3 py-3.5 align-middle whitespace-normal"
                           onClick={
                             cell.column.id === "actions"
                               ? (event) => event.stopPropagation()
