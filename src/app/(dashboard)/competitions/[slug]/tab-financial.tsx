@@ -93,6 +93,7 @@ import {
   useFormatCurrency,
 } from "./shared";
 import type { CompetitionTabProps } from "./shared";
+import { MonthlyPixReconciliationDialog } from "./monthly-pix-reconciliation-dialog";
 
 /* ============================================================
    Tipos
@@ -260,6 +261,15 @@ export function FinancialTab(props: CompetitionTabProps) {
   const [isUploadingProof, setIsUploadingProof] = React.useState(false);
   const [isPixConfirmDialogOpen, setIsPixConfirmDialogOpen] =
     React.useState(false);
+
+  /* ===== Dialog: concluir pagamento do mensal (Conta Simples) ===== */
+  const [isMonthlyPixDialogOpen, setIsMonthlyPixDialogOpen] =
+    React.useState(false);
+  // O mensal só é pago depois que a competição termina (ou é fechada antes).
+  const isCampaignOver =
+    data.campaign.status === "COMPLETED" ||
+    data.campaign.status === "ARCHIVED" ||
+    new Date(data.campaign.endDate).getTime() <= Date.now();
 
   /* ===== Transações agregadas (dialog Todas as Transações) ===== */
   const allTransactions = React.useMemo<FlatTransaction[]>(() => {
@@ -811,6 +821,23 @@ export function FinancialTab(props: CompetitionTabProps) {
               onClick={handleDownloadMissingCsv}
             >
               <FileCsv className="size-4" weight="fill" />
+            </Button>
+            <Button
+              variant="outline"
+              className="h-9 flex-1 cursor-pointer rounded-xl sm:flex-none"
+              disabled={!isCampaignOver}
+              title={
+                isCampaignOver
+                  ? "Registrar os PIX do mensal enviados pela Conta Simples"
+                  : "Disponível quando a competição terminar"
+              }
+              onClick={() => setIsMonthlyPixDialogOpen(true)}
+            >
+              <CheckCircle className="size-4" weight="fill" />
+              <span className="hidden sm:inline">
+                Concluir Pagamento do Mensal
+              </span>
+              <span className="sm:hidden">Concluir Mensal</span>
             </Button>
             <Button
               className="btn-gradient-auth h-9 w-full cursor-pointer rounded-xl font-semibold sm:w-auto"
@@ -2429,6 +2456,14 @@ export function FinancialTab(props: CompetitionTabProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <MonthlyPixReconciliationDialog
+        open={isMonthlyPixDialogOpen}
+        onOpenChange={setIsMonthlyPixDialogOpen}
+        slug={slug}
+        campaignId={campaignId}
+        campaignName={data.campaign.name}
+      />
     </div>
   );
 }

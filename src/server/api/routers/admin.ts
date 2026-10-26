@@ -36,6 +36,8 @@ import {
 import { computeMonthlyLeaderboard } from "@/lib/monthly-ranking-leaderboard";
 import {
   DailyPayoutConfigError,
+  DailyPayoutHttpError,
+  fetchContaSimplesPayoutReconciliation,
   fetchDailyPixReconciliation,
   fetchDailyPayoutPay,
   fetchDailyPayoutPreview,
@@ -7201,6 +7203,94 @@ export const adminRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message || "Erro ao enviar PIX",
+        });
+      }
+    }),
+
+  /**
+   * "Concluir pagamento do mensal": concilia os PIX enviados pela Conta Simples
+   * a partir da data do pagamento com os saldos da competição. Com dryRun só
+   * simula; sem ele, registra cada PIX com o comprovante, como o "Registrar PIX".
+   */
+  reconcileMonthlyContaSimplesPix: adminProcedure
+    .input(
+      z.object({
+        campaignId: z.string(),
+        paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        dryRun: z.boolean(),
+        /** Pares PIX + clipador aprovados na simulação; o diálogo manda em lotes pequenos. */
+        approvedMatches: z
+          .array(
+            z.object({
+              bankTransactionId: z.number().int(),
+              clipperProfileId: z.string(),
+            }),
+          )
+          .max(50)
+          .optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const todayInSaoPaulo = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Sao_Paulo",
+      }).format(new Date());
+      if (input.paymentDate > todayInSaoPaulo) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A data do pagamento não pode ser futura.",
+        });
+      }
+
+      const campaign = await ctx.db.campaign.findUnique({
+        where: { id: input.campaignId },
+        select: { id: true },
+      });
+      if (!campaign) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Competição não encontrada",
+        });
+      }
+
+      try {
+        return await fetchContaSimplesPayoutReconciliation({
+          campaignId: input.campaignId,
+          startDate: input.paymentDate,
+          dryRun: input.dryRun,
+          requestedBy: ctx.userId,
+          approvedMatches: input.approvedMatches,
+        });
+      } catch (error: unknown) {
+        if (error instanceof DailyPayoutConfigError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
+        }
+        if (error instanceof DailyPayoutHttpError) {
+          if (error.status === 409) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Já existe uma conciliação da Conta Simples em andamento. Tente de novo em instantes.",
+            });
+          }
+          // 400: janela ou parâmetro inválido; 503: integração desligada ou incompleta.
+          if (error.status === 400 || error.status === 503) {
+            throw new TRPCError({
+              code:
+                error.status === 400 ? "BAD_REQUEST" : "PRECONDITION_FAILED",
+              message: error.detail ?? error.message,
+            });
+          }
+        }
+        console.error("reconcileMonthlyContaSimplesPix:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao conciliar os PIX do mensal",
         });
       }
     }),
