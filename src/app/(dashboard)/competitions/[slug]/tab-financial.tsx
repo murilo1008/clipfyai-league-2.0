@@ -828,7 +828,7 @@ export function FinancialTab(props: CompetitionTabProps) {
               disabled={!isCampaignOver}
               title={
                 isCampaignOver
-                  ? "Registrar os PIX do mensal enviados pela Conta Simples"
+                  ? "Registrar os PIX pagos no mensal"
                   : "Disponível quando a competição terminar"
               }
               onClick={() => setIsMonthlyPixDialogOpen(true)}
