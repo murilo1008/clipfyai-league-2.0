@@ -82,6 +82,10 @@ describe("gráfico de CPM na performance do cliente", () => {
       expect(html).not.toContain('data-testid="cpm-chart"');
       expect(html).toContain("CPM efetivo");
       expect(html).not.toContain("Ainda não há histórico suficiente");
+      // A comparação com o mercado segue a regra do gráfico.
+      expect(html).not.toContain("Acima do mercado");
+      expect(html).not.toContain("Economia estimada");
+      expect(html).not.toContain("Diferença estimada");
     },
   );
 
@@ -91,6 +95,7 @@ describe("gráfico de CPM na performance do cliente", () => {
       const html = renderPerformance(performance(8, 10, historyCount));
       expect(html).not.toContain('data-testid="cpm-chart"');
       expect(html).toContain("Ainda não há histórico suficiente");
+      expect(html).toContain("Economia estimada");
     },
   );
 
