@@ -156,6 +156,7 @@ export function PostCommentsAnalysisPanel({
       revealDelayMs={revealDelayMs}
       title="Análise de comentários"
       emptyDescription="Colete os comentários deste post e rode a análise para classificar sentimento, tópicos recorrentes, críticas e sugestões."
+      canReanalyze
       headerActions={
         <Button
           type="button"
