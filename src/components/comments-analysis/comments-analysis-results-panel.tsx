@@ -92,6 +92,11 @@ interface PanelChromeProps {
   emptyDescription?: string;
   /** Ações à direita do cabeçalho (ex.: botão "Reanalisar"). */
   headerActions?: React.ReactNode;
+  /**
+   * Quem vê o painel pode disparar uma nova análise (admin). Muda o texto do
+   * aviso de análise desatualizada; cliente e CS só leem o resultado.
+   */
+  canReanalyze?: boolean;
   /** Conteúdo extra logo abaixo do cabeçalho (ex.: progresso do job). */
   children?: React.ReactNode;
   /** Delay do Reveal externo, para cascatas com outros blocos. */
@@ -252,6 +257,7 @@ export function CommentsAnalysisResults({
   description,
   emptyDescription,
   headerActions,
+  canReanalyze = false,
   children,
   revealDelayMs = 0,
   className,
@@ -331,7 +337,10 @@ export function CommentsAnalysisResults({
                         ? "1 comentário novo"
                         : `${(aggregate.newCommentsSinceGeneratedAt ?? 0).toLocaleString("pt-BR")} comentários novos`}
                     </strong>
-                    . Rode uma nova análise para atualizar os números.
+                    .{" "}
+                    {canReanalyze
+                      ? "Rode uma nova análise para atualizar os números."
+                      : "Os números serão atualizados na próxima análise da Clipfy League."}
                   </span>
                 </p>
               </Reveal>

@@ -624,7 +624,15 @@ export default function ClientPerformance() {
             <section className="flex flex-col gap-4">
               <SectionTitle icon={ChartLineUp} title="Resultado dos cortes" />
               {!showCpmChart && (
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div
+                  className={cn(
+                    "grid gap-3 sm:grid-cols-2",
+                    isCpmBelowMarket
+                      ? "xl:grid-cols-4"
+                      : // 3 cards: o último ocupa a linha toda nas 2 colunas.
+                        "sm:[&>:last-child]:col-span-2 xl:grid-cols-3 xl:[&>:last-child]:col-span-1",
+                  )}
+                >
                   <SummaryCard
                     label="Visualizações dos cortes"
                     value={NUMBER.format(asNumber(summary?.totalViews))}
@@ -652,35 +660,17 @@ export default function ClientPerformance() {
                     hint="Custo por mil visualizações dos cortes"
                     icon={ChartLineUp}
                   />
-                  <SummaryCard
-                    label={
-                      !hasComparison
-                        ? "Diferença estimada"
-                        : savings >= 0
-                          ? "Economia estimada"
-                          : "Acima do mercado"
-                    }
-                    value={hasComparison ? currency(Math.abs(savings)) : "—"}
-                    hint={
-                      !hasViews
-                        ? "Disponível após as primeiras visualizações"
-                        : !hasComparison
-                          ? "Aguardando CPM médio de mercado"
-                          : savings > 0
-                            ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% abaixo do custo estimado em anúncios`
-                            : savings < 0
-                              ? `${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% acima do custo estimado em anúncios`
-                              : "Mesmo custo estimado em anúncios"
-                    }
-                    icon={TrendUp}
-                    tone={
-                      !hasComparison
-                        ? "default"
-                        : savings >= 0
-                          ? "positive"
-                          : "negative"
-                    }
-                  />
+                  {/* Mesma regra do gráfico: a comparação com o mercado só
+                      aparece para o cliente quando o CPM está abaixo dele. */}
+                  {isCpmBelowMarket && (
+                    <SummaryCard
+                      label="Economia estimada"
+                      value={currency(Math.abs(savings))}
+                      hint={`${Math.abs(asNumber(summary?.savingsPercent)).toFixed(1)}% abaixo do custo estimado em anúncios`}
+                      icon={TrendUp}
+                      tone="positive"
+                    />
+                  )}
                 </div>
               )}
               {showCpmChart && (

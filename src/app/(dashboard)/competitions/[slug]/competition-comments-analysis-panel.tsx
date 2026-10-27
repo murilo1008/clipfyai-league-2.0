@@ -357,6 +357,7 @@ export function CompetitionCommentsAnalysisPanel({
       }
       emptyDescription="Colete e analise os comentários para acompanhar sentimento, elogios, críticas e oportunidades percebidas pela audiência."
       className="border-cyan-500/15 bg-[radial-gradient(circle_at_8%_0%,rgba(34,211,238,0.08),transparent_28%),var(--card)]"
+      canReanalyze
       headerActions={
         <>
           <Button
