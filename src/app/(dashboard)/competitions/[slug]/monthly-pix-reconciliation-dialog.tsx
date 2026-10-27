@@ -284,10 +284,9 @@ export function MonthlyPixReconciliationDialog({
             Concluir pagamento do mensal
           </DialogTitle>
           <DialogDescription>
-            Procura no extrato da Conta Simples os PIX enviados para os
-            clipadores de <strong>{campaignName}</strong> a partir da data do
-            pagamento e registra cada um com o comprovante, como o
-            &quot;Registrar PIX&quot;.
+            Encontra os PIX pagos aos clipadores de{" "}
+            <strong>{campaignName}</strong> a partir da data do pagamento e
+            registra cada um com o comprovante. Nada é salvo até você confirmar.
           </DialogDescription>
         </DialogHeader>
 
