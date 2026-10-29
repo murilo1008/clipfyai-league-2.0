@@ -551,3 +551,33 @@ export function MetricPill({
     </span>
   )
 }
+
+/** Célula de métrica (ícone + rótulo + valor) dos cards de ranking. */
+export function StatCell({
+  icon,
+  label,
+  value,
+  className,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  className?: string
+}) {
+  return (
+    <div className="border-border/60 bg-muted/30 rounded-xl border px-2.5 py-2">
+      <div className="text-muted-foreground flex items-center gap-1.5 text-[10px] font-medium">
+        <span className={cn("shrink-0", className)}>{icon}</span>
+        <span className="truncate">{label}</span>
+      </div>
+      <p
+        className={cn(
+          "mt-0.5 text-sm font-bold tabular-nums sm:text-base",
+          className,
+        )}
+      >
+        {value}
+      </p>
+    </div>
+  )
+}

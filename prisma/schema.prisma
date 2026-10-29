@@ -91,6 +91,7 @@ model User {
   notifications            Notification[]
   googleCalendarConnection GoogleCalendarConnection?
   calendarSubscriptions    CampaignCalendarSubscription[]
+  competitionSandboxes     CompetitionSandbox[]
   fraudReviews             FraudFlag[]                    @relation("FraudReviewer")
   referredByClipper        ClipperProfile?                @relation("ClipperReferrals", fields: [referredByClipperId], references: [id], onDelete: SetNull)
 
@@ -320,6 +321,7 @@ model Campaign {
   announcements             CompetitionAnnouncement[]
   clipperWarnings           ClipperWarning[]
   clipperSanctions          ClipperSanction[]
+  sandboxes                 CompetitionSandbox[] // Cópias editáveis (não alteram a competição)
 
   @@index([organizationId])
   @@index([slug])
@@ -363,6 +365,31 @@ model CompetitionAnnouncement {
 
   @@index([campaignId, createdAt, id])
   @@index([recipientClipperProfileId])
+}
+
+// ============================================================================
+// SANDBOX DE COMPETIÇÃO
+// Cópia dos dados de uma competição (snapshot em JSON) que o admin edita
+// livremente. Nada aqui é lido pelo resto do sistema: a competição real,
+// os posts e os rankings não mudam.
+// ============================================================================
+
+model CompetitionSandbox {
+  id                 String   @id @default(cuid())
+  name               String   @db.VarChar(200)
+  sourceCampaignId   String? // Competição de origem (null se ela for excluída)
+  sourceCampaignName String   @db.VarChar(200) // Nome da origem na importação
+  data               Json // Snapshot editável (src/lib/competition-sandbox.ts)
+  createdById        String?
+  importedAt         DateTime @default(now()) // Última importação dos dados reais
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  sourceCampaign Campaign? @relation(fields: [sourceCampaignId], references: [id], onDelete: SetNull)
+  createdBy      User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([updatedAt])
+  @@index([sourceCampaignId])
 }
 
 // ============================================================================

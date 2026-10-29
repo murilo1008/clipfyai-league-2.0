@@ -6,6 +6,7 @@ import { AppBreadcrumbs } from "@/components/header/app-breadcrumbs"
 import { CsClientSelector } from "@/components/header/cs-client-selector"
 import { FinancialVisibilityToggle } from "@/components/header/financial-visibility-toggle"
 import { NotificationsBell } from "@/components/header/notifications-bell"
+import { PresentationModeToggle } from "@/components/header/presentation-mode"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -25,6 +26,7 @@ export function AppTopbar() {
 
         <div className="flex flex-1 items-center justify-end gap-1.5">
           <CsClientSelector />
+          <PresentationModeToggle />
           <FinancialVisibilityToggle />
           <NotificationsBell />
           <ThemeToggle />

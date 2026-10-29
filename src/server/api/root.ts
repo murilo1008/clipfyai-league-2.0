@@ -19,6 +19,7 @@ import { competitionAnnouncementsRouter } from "@/server/api/routers/competition
 import { notificationsRouter } from "@/server/api/routers/notifications";
 import { csRouter } from "@/server/api/routers/cs";
 import { clipperDisciplineRouter } from "@/server/api/routers/clipper-discipline";
+import { competitionSandboxRouter } from "@/server/api/routers/competition-sandbox";
 import { createCallerFactory, createTRPCRouter } from "@/server/api/trpc";
 
 /**
@@ -48,6 +49,7 @@ export const appRouter = createTRPCRouter({
   notifications: notificationsRouter,
   cs: csRouter,
   clipperDiscipline: clipperDisciplineRouter,
+  competitionSandbox: competitionSandboxRouter,
 });
 
 // export type definition of API

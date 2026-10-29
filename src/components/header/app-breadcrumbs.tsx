@@ -16,6 +16,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/trpc/react"
 
+import { useBreadcrumbOverride } from "./breadcrumb-override"
+
 /**
  * Labels PT-BR por segmento de rota.
  * Mantido em sincronia com os títulos da sidebar (src/config/navigation.ts):
@@ -45,6 +47,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   announcements: "Mural de avisos",
   "spotify-metrics": "Músicas Spotify",
   "video-downloads": "Downloads",
+  sandbox: "Sandbox",
 
   /* ── Pessoas e organizações ──────────────────────────────────────────── */
   organizations: "Organizações",
@@ -137,6 +140,7 @@ const ID_LABELS: Record<string, string> = {
   organizations: "Detalhes da organização",
   clippers: "Detalhes do clipador",
   competitions: "Detalhes da competição",
+  sandbox: "Edição do sandbox",
   lessons: "Detalhes da aula",
   modules: "Detalhes do módulo",
 }
@@ -212,11 +216,28 @@ export function AppBreadcrumbs() {
     { enabled: !!clanTag && user?.role === "ADMIN" },
   )
 
+  // A página pode trocar a trilha (ex.: modo apresentação do sandbox)
+  const override = useBreadcrumbOverride()
+  const crumbs: Array<{ href: string; label: React.ReactNode }> =
+    override ??
+    segments.map((segment, index) => {
+      // Nome real do clã em /clans/[tag] (skeleton enquanto carrega)
+      let label: React.ReactNode = labelFor(segment, segments[index - 1])
+      if (clanTag && index === 1) {
+        if (isLoadingClan && user?.role === "ADMIN") {
+          label = <Skeleton className="h-4 w-28" />
+        } else if (clan?.name) {
+          label = clan.name
+        }
+      }
+      return { href: `/${segments.slice(0, index + 1).join("/")}`, label }
+    })
+
   return (
     <Breadcrumb>
       <BreadcrumbList>
         <BreadcrumbItem>
-          {segments.length === 0 ? (
+          {crumbs.length === 0 ? (
             <BreadcrumbPage className="flex items-center gap-1.5">
               <House className="size-3.5" weight="duotone" />
               Início
@@ -230,19 +251,8 @@ export function AppBreadcrumbs() {
             </BreadcrumbLink>
           )}
         </BreadcrumbItem>
-        {segments.map((segment, index) => {
-          const href = `/${segments.slice(0, index + 1).join("/")}`
-          const isLast = index === segments.length - 1
-
-          // Nome real do clã em /clans/[tag] (skeleton enquanto carrega)
-          let label: React.ReactNode = labelFor(segment, segments[index - 1])
-          if (clanTag && index === 1) {
-            if (isLoadingClan && user?.role === "ADMIN") {
-              label = <Skeleton className="h-4 w-28" />
-            } else if (clan?.name) {
-              label = clan.name
-            }
-          }
+        {crumbs.map(({ href, label }, index) => {
+          const isLast = index === crumbs.length - 1
 
           return (
             <React.Fragment key={href}>

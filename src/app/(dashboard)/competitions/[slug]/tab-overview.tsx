@@ -221,26 +221,35 @@ function GrowthTooltip({
 }
 
 /* ============================================================
-   Tab "Visão Geral"
+   Gráficos por plataforma (distribuição, engajamento, crescimento)
+   Também usados pelo sandbox de competição, com dados editados.
    ============================================================ */
 
-export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
-  const formatCurrency = useFormatCurrency()
+export interface PlatformDistributionEntry {
+  platform: string
+  views: number
+  posts: number
+  likes: number
+  comments: number
+  shares: number
+  saves: number
+}
 
-  const { data: chartsData, isLoading: isLoadingCharts } =
-    api.admin.getCompetitionChartsAdmin.useQuery(
-      { slug },
-      { enabled: active && !!data },
-    )
-
-  const hasAffiliateLinks = AFFILIATE_LINKS.some(
-    ({ key }) => !!data.campaign[key],
-  )
-
+export function PlatformCharts({
+  platformDistribution,
+  growthData,
+  growthPlatforms,
+  engagementRate,
+}: {
+  platformDistribution: PlatformDistributionEntry[]
+  /** Pontos acumulados: `date`, `total` e uma chave por plataforma. */
+  growthData: Array<Record<string, number | string | undefined>>
+  growthPlatforms: string[]
+  engagementRate: number
+}) {
   /* ===== Distribuição por plataforma ===== */
   const pieData = React.useMemo<PieDatum[]>(() => {
-    if (!chartsData?.platformDistribution) return []
-    return chartsData.platformDistribution
+    return platformDistribution
       .map((entry) => ({
         platform: entry.platform,
         name:
@@ -253,12 +262,11 @@ export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
       }))
       .filter((entry) => entry.value > 0)
       .sort((a, b) => b.value - a.value)
-  }, [chartsData])
+  }, [platformDistribution])
 
   /* ===== Engajamento por plataforma ===== */
   const engagementRows = React.useMemo(() => {
-    if (!chartsData?.platformDistribution) return []
-    return chartsData.platformDistribution
+    return platformDistribution
       .filter((entry) => Number(entry.views ?? 0) > 0)
       .map((entry) => {
         const views = Number(entry.views ?? 0)
@@ -275,10 +283,10 @@ export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
         }
       })
       .sort((a, b) => b.rate - a.rate)
-  }, [chartsData])
+  }, [platformDistribution])
 
   const totals = React.useMemo(() => {
-    const distribution = chartsData?.platformDistribution ?? []
+    const distribution = platformDistribution
     const sum = (picker: (entry: (typeof distribution)[number]) => number) =>
       distribution.reduce((acc, entry) => acc + picker(entry), 0)
     const views = sum((entry) => Number(entry.views ?? 0))
@@ -292,16 +300,504 @@ export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
       interactions,
       posts: sum((entry) => Number(entry.posts ?? 0)),
     }
-  }, [chartsData])
+  }, [platformDistribution])
 
   const maxEngagementRate = engagementRows.reduce(
     (max, row) => Math.max(max, row.rate),
     0,
   )
 
-  const growthData = chartsData?.platformGrowthData ?? []
-  const growthPlatforms = chartsData?.growthPlatforms ?? []
   const growthInterval = Math.max(Math.floor((growthData.length || 1) / 8), 1)
+
+  return (
+    <>
+      {pieData.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* ===== Distribuição por Plataforma ===== */}
+          <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
+            <div className="flex items-center gap-2.5">
+              <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
+                <ChartPieSlice className="size-4" weight="fill" />
+              </span>
+              <div className="leading-tight">
+                <p className="text-sm font-bold sm:text-base">
+                  Distribuição por Plataforma
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Views por rede social
+                </p>
+              </div>
+            </div>
+
+            <div className="relative mx-auto size-44 shrink-0 sm:size-52">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Tooltip
+                    content={<DonutTooltip totalViews={totals.views} />}
+                  />
+                  <Pie
+                    data={pieData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius="66%"
+                    outerRadius="94%"
+                    paddingAngle={2}
+                    cornerRadius={4}
+                    stroke="var(--card)"
+                    strokeWidth={2}
+                  >
+                    {pieData.map((entry) => (
+                      <Cell key={entry.platform} fill={entry.fill} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-xl font-bold tabular-nums">
+                  {formatNumber(totals.views)}
+                </span>
+                <span className="text-muted-foreground text-[10px] font-semibold tracking-[0.12em] uppercase">
+                  views
+                </span>
+              </div>
+            </div>
+
+            {/* Legenda: dot + ícone + % + views + trilha proporcional */}
+            <div className="flex flex-col gap-2.5">
+              {pieData.map((entry) => {
+                const pct =
+                  totals.views > 0 ? (entry.value / totals.views) * 100 : 0
+                const PlatformIcon =
+                  platformConfig[entry.platform as PlatformKey]?.icon
+                return (
+                  <div key={entry.platform} className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-3 text-[13px]">
+                      <span className="text-foreground/90 inline-flex min-w-0 items-center gap-2">
+                        <span
+                          className="size-2.5 shrink-0 rounded-[4px]"
+                          style={{ background: entry.fill }}
+                        />
+                        {PlatformIcon && (
+                          <PlatformIcon className="size-3.5 shrink-0" />
+                        )}
+                        <span className="truncate">{entry.name}</span>
+                      </span>
+                      <span className="shrink-0 tabular-nums">
+                        <span className="font-bold">
+                          {pct.toLocaleString("pt-BR", {
+                            maximumFractionDigits: 1,
+                          })}
+                          %
+                        </span>
+                        <span className="text-muted-foreground ml-1.5 text-xs">
+                          {formatNumber(entry.value)}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="bg-muted/50 h-1 w-full overflow-hidden rounded-full">
+                      <div
+                        className="h-full rounded-full transition-[width] duration-700 ease-out"
+                        style={{
+                          width: `${Math.max(pct, 2)}%`,
+                          background: entry.fill,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* ===== Taxa de Engajamento ===== */}
+          <div className="glass-card flex flex-col gap-5 rounded-3xl p-4 sm:p-5">
+            <div className="flex items-center gap-2.5">
+              <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
+                <Pulse className="size-4" weight="bold" />
+              </span>
+              <div className="leading-tight">
+                <p className="text-sm font-bold sm:text-base">
+                  Taxa de Engajamento
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Desempenho por plataforma
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-emerald-500/15 bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 p-5 text-center">
+              <p className="text-muted-foreground text-xs">
+                Engajamento Geral
+              </p>
+              <p className="text-4xl font-bold text-emerald-500 tabular-nums sm:text-5xl dark:text-emerald-400">
+                {engagementRate.toFixed(2)}%
+              </p>
+              <p className="text-muted-foreground/70 mt-2 text-xs">
+                {formatMetricFull(totals.interactions)} interações /{" "}
+                {formatMetricFull(totals.views)} views
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <p className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
+                Por plataforma
+              </p>
+              {engagementRows.map((row) => {
+                const config = platformConfig[row.platform as PlatformKey]
+                const PlatformIcon = config?.icon
+                const color =
+                  PLATFORM_CHART_COLORS[row.platform] ?? "#6b7280"
+                const barWidth =
+                  maxEngagementRate > 0
+                    ? Math.max(5, (row.rate / maxEngagementRate) * 100)
+                    : 0
+                return (
+                  <div key={row.platform} className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-2">
+                        {PlatformIcon && (
+                          <PlatformIcon
+                            className="size-4"
+                            style={{ color }}
+                          />
+                        )}
+                        <span className="text-xs font-medium sm:text-sm">
+                          {config?.label ?? row.platform}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="text-muted-foreground/70 text-[10px] tabular-nums sm:text-xs">
+                          {formatMetricFull(row.interactions)} /{" "}
+                          {formatMetricFull(row.views)}
+                        </span>
+                        <span
+                          className="text-xs font-bold tabular-nums sm:text-sm"
+                          style={{ color }}
+                        >
+                          {row.rate.toFixed(2)}%
+                        </span>
+                      </span>
+                    </div>
+                    <div className="bg-muted/40 h-2 overflow-hidden rounded-full">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${barWidth}%`,
+                          backgroundColor: color,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="border-border/40 mt-auto grid grid-cols-3 gap-3 border-t pt-3">
+              <div className="text-center">
+                <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
+                  Total Posts
+                </p>
+                <p className="text-sm font-bold tabular-nums sm:text-lg">
+                  {formatMetricFull(totals.posts)}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
+                  Total Views
+                </p>
+                <p className="text-sm font-bold text-violet-500 tabular-nums sm:text-lg dark:text-violet-400">
+                  {formatMetricFull(totals.views)}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
+                  Interações
+                </p>
+                <p className="text-sm font-bold text-pink-500 tabular-nums sm:text-lg dark:text-pink-400">
+                  {formatMetricFull(totals.interactions)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Crescimento de Views ===== */}
+      {growthData.length > 0 && (
+        <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
+          <div className="flex items-center gap-2.5">
+            <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
+              <TrendUp className="size-4" weight="bold" />
+            </span>
+            <div className="leading-tight">
+              <p className="text-sm font-bold sm:text-base">
+                Crescimento de Views
+              </p>
+              <p className="text-muted-foreground text-[10px] sm:text-xs">
+                Crescimento acumulado por rede social durante a competição
+              </p>
+            </div>
+          </div>
+
+          <div className="h-[280px] w-full sm:h-[340px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart
+                data={growthData}
+                margin={{ left: 0, right: 8, top: 8, bottom: 0 }}
+              >
+                <defs>
+                  <linearGradient
+                    id="ovTotalGrad"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="0%"
+                      stopColor="var(--brand-cyan)"
+                      stopOpacity={0.25}
+                    />
+                    <stop
+                      offset="100%"
+                      stopColor="var(--brand-mint)"
+                      stopOpacity={0}
+                    />
+                  </linearGradient>
+                  {growthPlatforms.map((platform) => {
+                    const stroke =
+                      PLATFORM_GROWTH_COLORS[platform]?.stroke ?? "#888"
+                    return (
+                      <linearGradient
+                        key={platform}
+                        id={`ovGrad-${platform}`}
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="1"
+                      >
+                        <stop
+                          offset="0%"
+                          stopColor={stroke}
+                          stopOpacity={0.15}
+                        />
+                        <stop
+                          offset="100%"
+                          stopColor={stroke}
+                          stopOpacity={0}
+                        />
+                      </linearGradient>
+                    )
+                  })}
+                </defs>
+                <CartesianGrid
+                  vertical={false}
+                  stroke="color-mix(in oklab, var(--foreground) 7%, transparent)"
+                />
+                <XAxis
+                  dataKey="date"
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={10}
+                  tick={{ fill: "var(--muted-foreground)", fontSize: 10 }}
+                  tickFormatter={formatGrowthDate}
+                  interval={growthInterval}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fill: "var(--muted-foreground)", fontSize: 10 }}
+                  tickFormatter={(value: number) =>
+                    value >= 1_000_000
+                      ? `${(value / 1_000_000).toFixed(1)}M`
+                      : value >= 1000
+                        ? `${(value / 1000).toFixed(0)}K`
+                        : String(value)
+                  }
+                  width={45}
+                />
+                <Tooltip
+                  content={<GrowthTooltip />}
+                  cursor={{
+                    stroke:
+                      "color-mix(in oklab, var(--foreground) 22%, transparent)",
+                    strokeDasharray: "4 4",
+                  }}
+                />
+                <Legend
+                  iconType="circle"
+                  iconSize={8}
+                  wrapperStyle={{
+                    fontSize: "11px",
+                    paddingTop: "8px",
+                    color: "var(--muted-foreground)",
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="total"
+                  name="Total"
+                  stroke="var(--brand-cyan)"
+                  strokeWidth={2.5}
+                  strokeLinecap="round"
+                  fill="url(#ovTotalGrad)"
+                  dot={false}
+                  activeDot={{
+                    r: 5,
+                    strokeWidth: 2,
+                    fill: "var(--brand-mint)",
+                    stroke: "var(--card)",
+                  }}
+                />
+                {growthPlatforms.map((platform) => {
+                  const config = PLATFORM_GROWTH_COLORS[platform] ?? {
+                    stroke: "#888",
+                    label: platform,
+                  }
+                  return (
+                    <Area
+                      key={platform}
+                      type="monotone"
+                      dataKey={platform}
+                      name={config.label}
+                      stroke={config.stroke}
+                      strokeWidth={1.5}
+                      strokeDasharray="4 3"
+                      fill={`url(#ovGrad-${platform})`}
+                      dot={false}
+                      activeDot={{
+                        r: 4,
+                        strokeWidth: 1.5,
+                        fill: config.stroke,
+                        stroke: "var(--card)",
+                      }}
+                    />
+                  )
+                })}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ============================================================
+   Cards de premiação (diária, mensal e bônus)
+   ============================================================ */
+
+export interface PrizeCardsRule {
+  dailyEnabled: boolean
+  dailyTopCount: number
+  dailyTotalPrize: number
+  monthlyEnabled: boolean
+  monthlyTopCount: number
+  monthlyTotalPrize: number
+  bonusEnabled: boolean
+  bonusMilestone: number
+  bonusAmount: number
+}
+
+export function PrizeCards({ rule }: { rule: PrizeCardsRule }) {
+  const formatCurrency = useFormatCurrency()
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {rule.dailyEnabled && (
+        <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
+          <div className="flex items-center gap-2.5">
+            <span className="bg-gradient-custom flex size-9 shrink-0 items-center justify-center rounded-xl text-[#04222A]">
+              <Coins className="size-4.5" weight="fill" />
+            </span>
+            <p className="text-base font-bold">Premiação Diária</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="text-muted-foreground text-sm">Top Posições</p>
+              <p className="text-brand-cyan not-dark:text-primary text-2xl font-bold tabular-nums">
+                {rule.dailyTopCount}
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-sm">Prêmio Diário</p>
+              <p className="text-xl font-bold tabular-nums">
+                {formatCurrency(rule.dailyTotalPrize)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rule.monthlyEnabled && (
+        <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/15 text-violet-500 dark:text-violet-400">
+              <Trophy className="size-4.5" weight="fill" />
+            </span>
+            <p className="text-base font-bold">Premiação Mensal</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="text-muted-foreground text-sm">Top Posições</p>
+              <p className="text-2xl font-bold text-violet-500 tabular-nums dark:text-violet-400">
+                {rule.monthlyTopCount}
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-sm">Prêmio Mensal</p>
+              <p className="text-xl font-bold tabular-nums">
+                {formatCurrency(rule.monthlyTotalPrize)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rule.bonusEnabled && (
+        <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500 dark:text-amber-400">
+              <Medal className="size-4.5" weight="fill" />
+            </span>
+            <p className="text-base font-bold">Bônus por Marco</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="text-muted-foreground text-sm">Milestone</p>
+              <p className="text-2xl font-bold text-amber-500 tabular-nums dark:text-amber-400">
+                {formatNumber(rule.bonusMilestone)} views
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-sm">Bônus</p>
+              <p className="text-xl font-bold tabular-nums">
+                {formatCurrency(rule.bonusAmount)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ============================================================
+   Tab "Visão Geral"
+   ============================================================ */
+
+export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
+  const { data: chartsData, isLoading: isLoadingCharts } =
+    api.admin.getCompetitionChartsAdmin.useQuery(
+      { slug },
+      { enabled: active && !!data },
+    )
+
+  const hasAffiliateLinks = AFFILIATE_LINKS.some(
+    ({ key }) => !!data.campaign[key],
+  )
 
   const rule = data.rankingRule
 
@@ -383,459 +879,16 @@ export function OverviewTab({ slug, data, active }: CompetitionTabProps) {
           <ChartSkeleton heightClass="h-[280px] sm:h-[340px]" />
         </>
       ) : chartsData ? (
-        <>
-          {pieData.length > 0 && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {/* ===== Distribuição por Plataforma ===== */}
-              <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
-                <div className="flex items-center gap-2.5">
-                  <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
-                    <ChartPieSlice className="size-4" weight="fill" />
-                  </span>
-                  <div className="leading-tight">
-                    <p className="text-sm font-bold sm:text-base">
-                      Distribuição por Plataforma
-                    </p>
-                    <p className="text-muted-foreground text-xs">
-                      Views por rede social
-                    </p>
-                  </div>
-                </div>
-
-                <div className="relative mx-auto size-44 shrink-0 sm:size-52">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Tooltip
-                        content={<DonutTooltip totalViews={totals.views} />}
-                      />
-                      <Pie
-                        data={pieData}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        innerRadius="66%"
-                        outerRadius="94%"
-                        paddingAngle={2}
-                        cornerRadius={4}
-                        stroke="var(--card)"
-                        strokeWidth={2}
-                      >
-                        {pieData.map((entry) => (
-                          <Cell key={entry.platform} fill={entry.fill} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-xl font-bold tabular-nums">
-                      {formatNumber(totals.views)}
-                    </span>
-                    <span className="text-muted-foreground text-[10px] font-semibold tracking-[0.12em] uppercase">
-                      views
-                    </span>
-                  </div>
-                </div>
-
-                {/* Legenda: dot + ícone + % + views + trilha proporcional */}
-                <div className="flex flex-col gap-2.5">
-                  {pieData.map((entry) => {
-                    const pct =
-                      totals.views > 0 ? (entry.value / totals.views) * 100 : 0
-                    const PlatformIcon =
-                      platformConfig[entry.platform as PlatformKey]?.icon
-                    return (
-                      <div key={entry.platform} className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between gap-3 text-[13px]">
-                          <span className="text-foreground/90 inline-flex min-w-0 items-center gap-2">
-                            <span
-                              className="size-2.5 shrink-0 rounded-[4px]"
-                              style={{ background: entry.fill }}
-                            />
-                            {PlatformIcon && (
-                              <PlatformIcon className="size-3.5 shrink-0" />
-                            )}
-                            <span className="truncate">{entry.name}</span>
-                          </span>
-                          <span className="shrink-0 tabular-nums">
-                            <span className="font-bold">
-                              {pct.toLocaleString("pt-BR", {
-                                maximumFractionDigits: 1,
-                              })}
-                              %
-                            </span>
-                            <span className="text-muted-foreground ml-1.5 text-xs">
-                              {formatNumber(entry.value)}
-                            </span>
-                          </span>
-                        </div>
-                        <div className="bg-muted/50 h-1 w-full overflow-hidden rounded-full">
-                          <div
-                            className="h-full rounded-full transition-[width] duration-700 ease-out"
-                            style={{
-                              width: `${Math.max(pct, 2)}%`,
-                              background: entry.fill,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* ===== Taxa de Engajamento ===== */}
-              <div className="glass-card flex flex-col gap-5 rounded-3xl p-4 sm:p-5">
-                <div className="flex items-center gap-2.5">
-                  <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
-                    <Pulse className="size-4" weight="bold" />
-                  </span>
-                  <div className="leading-tight">
-                    <p className="text-sm font-bold sm:text-base">
-                      Taxa de Engajamento
-                    </p>
-                    <p className="text-muted-foreground text-xs">
-                      Desempenho por plataforma
-                    </p>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-emerald-500/15 bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 p-5 text-center">
-                  <p className="text-muted-foreground text-xs">
-                    Engajamento Geral
-                  </p>
-                  <p className="text-4xl font-bold text-emerald-500 tabular-nums sm:text-5xl dark:text-emerald-400">
-                    {data.stats.engagementRate.toFixed(2)}%
-                  </p>
-                  <p className="text-muted-foreground/70 mt-2 text-xs">
-                    {formatMetricFull(totals.interactions)} interações /{" "}
-                    {formatMetricFull(totals.views)} views
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-3">
-                  <p className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                    Por plataforma
-                  </p>
-                  {engagementRows.map((row) => {
-                    const config = platformConfig[row.platform as PlatformKey]
-                    const PlatformIcon = config?.icon
-                    const color =
-                      PLATFORM_CHART_COLORS[row.platform] ?? "#6b7280"
-                    const barWidth =
-                      maxEngagementRate > 0
-                        ? Math.max(5, (row.rate / maxEngagementRate) * 100)
-                        : 0
-                    return (
-                      <div key={row.platform} className="flex flex-col gap-1.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-2">
-                            {PlatformIcon && (
-                              <PlatformIcon
-                                className="size-4"
-                                style={{ color }}
-                              />
-                            )}
-                            <span className="text-xs font-medium sm:text-sm">
-                              {config?.label ?? row.platform}
-                            </span>
-                          </span>
-                          <span className="inline-flex items-center gap-2">
-                            <span className="text-muted-foreground/70 text-[10px] tabular-nums sm:text-xs">
-                              {formatMetricFull(row.interactions)} /{" "}
-                              {formatMetricFull(row.views)}
-                            </span>
-                            <span
-                              className="text-xs font-bold tabular-nums sm:text-sm"
-                              style={{ color }}
-                            >
-                              {row.rate.toFixed(2)}%
-                            </span>
-                          </span>
-                        </div>
-                        <div className="bg-muted/40 h-2 overflow-hidden rounded-full">
-                          <div
-                            className="h-full rounded-full transition-all duration-700"
-                            style={{
-                              width: `${barWidth}%`,
-                              backgroundColor: color,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-
-                <div className="border-border/40 mt-auto grid grid-cols-3 gap-3 border-t pt-3">
-                  <div className="text-center">
-                    <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
-                      Total Posts
-                    </p>
-                    <p className="text-sm font-bold tabular-nums sm:text-lg">
-                      {formatMetricFull(totals.posts)}
-                    </p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
-                      Total Views
-                    </p>
-                    <p className="text-sm font-bold text-violet-500 tabular-nums sm:text-lg dark:text-violet-400">
-                      {formatMetricFull(totals.views)}
-                    </p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-muted-foreground/70 mb-0.5 text-[10px] sm:text-xs">
-                      Interações
-                    </p>
-                    <p className="text-sm font-bold text-pink-500 tabular-nums sm:text-lg dark:text-pink-400">
-                      {formatMetricFull(totals.interactions)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ===== Crescimento de Views ===== */}
-          {growthData.length > 0 && (
-            <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
-              <div className="flex items-center gap-2.5">
-                <span className="bg-gradient-custom flex size-8 shrink-0 items-center justify-center rounded-lg text-[#04222A]">
-                  <TrendUp className="size-4" weight="bold" />
-                </span>
-                <div className="leading-tight">
-                  <p className="text-sm font-bold sm:text-base">
-                    Crescimento de Views
-                  </p>
-                  <p className="text-muted-foreground text-[10px] sm:text-xs">
-                    Crescimento acumulado por rede social durante a competição
-                  </p>
-                </div>
-              </div>
-
-              <div className="h-[280px] w-full sm:h-[340px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart
-                    data={growthData}
-                    margin={{ left: 0, right: 8, top: 8, bottom: 0 }}
-                  >
-                    <defs>
-                      <linearGradient
-                        id="ovTotalGrad"
-                        x1="0"
-                        y1="0"
-                        x2="0"
-                        y2="1"
-                      >
-                        <stop
-                          offset="0%"
-                          stopColor="var(--brand-cyan)"
-                          stopOpacity={0.25}
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="var(--brand-mint)"
-                          stopOpacity={0}
-                        />
-                      </linearGradient>
-                      {growthPlatforms.map((platform) => {
-                        const stroke =
-                          PLATFORM_GROWTH_COLORS[platform]?.stroke ?? "#888"
-                        return (
-                          <linearGradient
-                            key={platform}
-                            id={`ovGrad-${platform}`}
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                          >
-                            <stop
-                              offset="0%"
-                              stopColor={stroke}
-                              stopOpacity={0.15}
-                            />
-                            <stop
-                              offset="100%"
-                              stopColor={stroke}
-                              stopOpacity={0}
-                            />
-                          </linearGradient>
-                        )
-                      })}
-                    </defs>
-                    <CartesianGrid
-                      vertical={false}
-                      stroke="color-mix(in oklab, var(--foreground) 7%, transparent)"
-                    />
-                    <XAxis
-                      dataKey="date"
-                      tickLine={false}
-                      axisLine={false}
-                      tickMargin={10}
-                      tick={{ fill: "var(--muted-foreground)", fontSize: 10 }}
-                      tickFormatter={formatGrowthDate}
-                      interval={growthInterval}
-                    />
-                    <YAxis
-                      tickLine={false}
-                      axisLine={false}
-                      tick={{ fill: "var(--muted-foreground)", fontSize: 10 }}
-                      tickFormatter={(value: number) =>
-                        value >= 1_000_000
-                          ? `${(value / 1_000_000).toFixed(1)}M`
-                          : value >= 1000
-                            ? `${(value / 1000).toFixed(0)}K`
-                            : String(value)
-                      }
-                      width={45}
-                    />
-                    <Tooltip
-                      content={<GrowthTooltip />}
-                      cursor={{
-                        stroke:
-                          "color-mix(in oklab, var(--foreground) 22%, transparent)",
-                        strokeDasharray: "4 4",
-                      }}
-                    />
-                    <Legend
-                      iconType="circle"
-                      iconSize={8}
-                      wrapperStyle={{
-                        fontSize: "11px",
-                        paddingTop: "8px",
-                        color: "var(--muted-foreground)",
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="total"
-                      name="Total"
-                      stroke="var(--brand-cyan)"
-                      strokeWidth={2.5}
-                      strokeLinecap="round"
-                      fill="url(#ovTotalGrad)"
-                      dot={false}
-                      activeDot={{
-                        r: 5,
-                        strokeWidth: 2,
-                        fill: "var(--brand-mint)",
-                        stroke: "var(--card)",
-                      }}
-                    />
-                    {growthPlatforms.map((platform) => {
-                      const config = PLATFORM_GROWTH_COLORS[platform] ?? {
-                        stroke: "#888",
-                        label: platform,
-                      }
-                      return (
-                        <Area
-                          key={platform}
-                          type="monotone"
-                          dataKey={platform}
-                          name={config.label}
-                          stroke={config.stroke}
-                          strokeWidth={1.5}
-                          strokeDasharray="4 3"
-                          fill={`url(#ovGrad-${platform})`}
-                          dot={false}
-                          activeDot={{
-                            r: 4,
-                            strokeWidth: 1.5,
-                            fill: config.stroke,
-                            stroke: "var(--card)",
-                          }}
-                        />
-                      )
-                    })}
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-        </>
+        <PlatformCharts
+          platformDistribution={chartsData.platformDistribution}
+          growthData={chartsData.platformGrowthData}
+          growthPlatforms={chartsData.growthPlatforms}
+          engagementRate={data.stats.engagementRate}
+        />
       ) : null}
 
       {/* ===== Premiações ===== */}
-      {rule && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {rule.dailyEnabled && (
-            <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
-              <div className="flex items-center gap-2.5">
-                <span className="bg-gradient-custom flex size-9 shrink-0 items-center justify-center rounded-xl text-[#04222A]">
-                  <Coins className="size-4.5" weight="fill" />
-                </span>
-                <p className="text-base font-bold">Premiação Diária</p>
-              </div>
-              <div className="flex flex-col gap-3">
-                <div>
-                  <p className="text-muted-foreground text-sm">Top Posições</p>
-                  <p className="text-brand-cyan not-dark:text-primary text-2xl font-bold tabular-nums">
-                    {rule.dailyTopCount}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-sm">Prêmio Diário</p>
-                  <p className="text-xl font-bold tabular-nums">
-                    {formatCurrency(rule.dailyTotalPrize)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {rule.monthlyEnabled && (
-            <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
-              <div className="flex items-center gap-2.5">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/15 text-violet-500 dark:text-violet-400">
-                  <Trophy className="size-4.5" weight="fill" />
-                </span>
-                <p className="text-base font-bold">Premiação Mensal</p>
-              </div>
-              <div className="flex flex-col gap-3">
-                <div>
-                  <p className="text-muted-foreground text-sm">Top Posições</p>
-                  <p className="text-2xl font-bold text-violet-500 tabular-nums dark:text-violet-400">
-                    {rule.monthlyTopCount}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-sm">Prêmio Mensal</p>
-                  <p className="text-xl font-bold tabular-nums">
-                    {formatCurrency(rule.monthlyTotalPrize)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {rule.bonusEnabled && (
-            <div className="glass-card flex flex-col gap-4 rounded-3xl p-4 sm:p-5">
-              <div className="flex items-center gap-2.5">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500 dark:text-amber-400">
-                  <Medal className="size-4.5" weight="fill" />
-                </span>
-                <p className="text-base font-bold">Bônus por Marco</p>
-              </div>
-              <div className="flex flex-col gap-3">
-                <div>
-                  <p className="text-muted-foreground text-sm">Milestone</p>
-                  <p className="text-2xl font-bold text-amber-500 tabular-nums dark:text-amber-400">
-                    {formatNumber(rule.bonusMilestone)} views
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-sm">Bônus</p>
-                  <p className="text-xl font-bold tabular-nums">
-                    {formatCurrency(rule.bonusAmount)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {rule && <PrizeCards rule={rule} />}
     </div>
   )
 }

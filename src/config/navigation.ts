@@ -61,6 +61,7 @@ const MENU_BY_ROLE: Record<string, NavItem[]> = {
         { title: "Financeiro", url: "/competitions/financial" },
         { title: "Músicas Spotify", url: "/competitions/spotify-metrics" },
         { title: "Downloads", url: "/competitions/video-downloads" },
+        { title: "Sandbox", url: "/competitions/sandbox" },
       ],
     },
     {
