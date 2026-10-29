@@ -1177,6 +1177,21 @@ function getApplicationApprovalEmailTemplate(
 }
 
 /**
+ * Sub-rotas fixas de /competitions: uma competição com um desses slugs
+ * ficaria inacessível em /competitions/[slug].
+ */
+const RESERVED_COMPETITION_SLUGS = new Set([
+  "announcements",
+  "data-metrics",
+  "financial",
+  "library",
+  "reports",
+  "sandbox",
+  "spotify-metrics",
+  "video-downloads",
+]);
+
+/**
  * ADMIN ROUTER - CRUD Completo
  * Acesso exclusivo para Admin Clipfy
  */
@@ -2600,11 +2615,13 @@ export const adminRouter = createTRPCRouter({
             .replace(/^-+|-+$/g, "") // Remove hífens no início e fim
             .replace(/-+/g, "-"); // Remove hífens duplicados
 
-          // Verificar se slug já existe, se sim, adicionar sufixo
+          // Verificar se slug já existe (ou é uma sub-rota fixa de
+          // /competitions), se sim, adicionar sufixo
           let uniqueSlug = slug;
           let counter = 1;
           while (
-            await ctx.db.campaign.findUnique({ where: { slug: uniqueSlug } })
+            RESERVED_COMPETITION_SLUGS.has(uniqueSlug) ||
+            (await ctx.db.campaign.findUnique({ where: { slug: uniqueSlug } }))
           ) {
             uniqueSlug = `${slug}-${counter}`;
             counter++;
